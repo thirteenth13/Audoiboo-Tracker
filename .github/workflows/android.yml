@@ -29,22 +29,27 @@ jobs:
         with:
           gradle-version: "9.5.0"
 
-      - name: Build dev APK
-        run: gradle :app:assembleDebug --stacktrace
+      - name: Decode stable signing key
+        run: |
+          base64 -d .github/keys/audoiboo-release.keystore.b64 > .github/keys/audoiboo-release.jks
+          keytool -list -keystore .github/keys/audoiboo-release.jks -storepass Audoiboo2026 -alias audoiboo >/dev/null
+
+      - name: Build release APK
+        run: gradle :app:assembleRelease --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Audoiboo-Tracker-0.3.3-dev.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.0.0.apk
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Audoiboo-Tracker-0.3.3-dev
-          path: Audoiboo-Tracker-0.3.3-dev.apk
+          name: Audoiboo-Tracker-1.0.0
+          path: Audoiboo-Tracker-1.0.0.apk
 
-      - name: Publish rolling dev release
+      - name: Publish stable release
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete dev --yes --cleanup-tag || true
-          gh release create dev Audoiboo-Tracker-0.3.3-dev.apk --target "$GITHUB_SHA" --prerelease --title "Audoiboo Tracker 0.3.3-dev" --notes "Development build: removable cancelled downloads, per-book extraction folders and refreshed launcher icon."
+          gh release delete v1.0.0 --yes --cleanup-tag || true
+          gh release create v1.0.0 Audoiboo-Tracker-1.0.0.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.0.0" --notes "Stable release: series tracking, hidden archive discovery, managed resumable downloads, ZIP extraction, built-in Audioboo browser, configurable UI controls, local/Google Drive backup via Android document provider, and stable APK signing for future in-place updates."

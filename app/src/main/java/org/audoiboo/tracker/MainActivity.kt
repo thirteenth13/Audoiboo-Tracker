@@ -1,14 +1,12 @@
 package org.audoiboo.tracker
 
 import android.annotation.SuppressLint
-import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -27,6 +25,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -37,9 +36,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import coil3.compose.AsyncImage
 import org.json.JSONArray
 import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.net.URLDecoder
 import java.util.UUID
 
 private enum class BookStatus { NEW, UNREAD, READING, READ }
@@ -70,14 +67,6 @@ private data class SyncTask(
 )
 
 private data class ParsedSeriesPage(val books: List<Book>, val nextUrl: String?)
-private data class DownloadRecord(
-    val id: Long,
-    val title: String,
-    val series: String,
-    val author: String?,
-    val path: String,
-    val createdAt: Long
-)
 
 class MainActivity : ComponentActivity() {
     private var initialDark = false
@@ -180,7 +169,7 @@ private fun TrackerScreen() {
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when {
-                syncTask != null -> BrowserSync(
+                syncTask != null -> HiddenBrowserSync(
                     task = syncTask!!,
                     onSeriesParsed = { seriesId, parsedBooks ->
                         val current = library.firstOrNull { it.id == seriesId }
@@ -213,7 +202,7 @@ private fun TrackerScreen() {
                     onCancel = { syncTask = null }
                 )
 
-                tab == MainTab.DOWNLOADS -> DownloadsScreen(context)
+                tab == MainTab.DOWNLOADS -> ManagedDownloadsScreen(context)
 
                 selectedSeries == null -> SeriesList(
                     library = library.filter { query.isBlank() || it.name.contains(query, true) },
@@ -235,7 +224,16 @@ private fun TrackerScreen() {
                     },
                     onOpenPage = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) },
                     onFindArchive = { book -> syncTask = SyncTask(SyncKind.BOOK, selectedSeries.id, book.url, book.url) },
-                    onDownload = { book -> book.archiveUrl?.let { downloadArchive(context, selectedSeries, book, it) } }
+                    onDownload = { book ->
+                        book.archiveUrl?.let { archive ->
+                            if (AppPrefs.wifiOnly(context) && !isOnWifi(context)) {
+                                Toast.makeText(context, "Увімкнено завантаження лише по Wi‑Fi", Toast.LENGTH_LONG).show()
+                            } else {
+                                ManagedDownloads.enqueue(context, book.title, selectedSeries.name, book.author, book.url, archive)
+                                Toast.makeText(context, "Додано до завантажень", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
                 )
             }
         }
@@ -245,8 +243,10 @@ private fun TrackerScreen() {
         AddSeriesDialog(
             onDismiss = { showAddDialog = false },
             onAdd = { name, url ->
-                commit(library + Series(name = name.trim(), url = url.trim()))
+                val series = Series(name = name.trim().ifBlank { suggestSeriesName(url) }, url = url.trim())
+                commit(library + series)
                 showAddDialog = false
+                syncTask = SyncTask(SyncKind.SERIES, series.id, url = series.url)
             }
         )
     }
@@ -270,11 +270,21 @@ private fun SeriesList(library: List<Series>, onOpen: (String) -> Unit, onDelete
                 modifier = Modifier.fillMaxWidth().clickable { onOpen(series.id) },
                 shape = RoundedCornerShape(16.dp)
             ) {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center
-                    ) { Icon(Icons.Filled.MenuBook, null, tint = MaterialTheme.colorScheme.primary) }
+                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val logo = series.books.firstOrNull()?.coverUrl
+                    if (!logo.isNullOrBlank()) {
+                        AsyncImage(
+                            model = logo,
+                            contentDescription = series.name,
+                            modifier = Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Box(
+                            Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) { Icon(Icons.Filled.MenuBook, null, tint = MaterialTheme.colorScheme.primary) }
+                    }
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(series.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -321,7 +331,11 @@ private fun SeriesDetail(
 
         if (series.books.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Натисни «Оновити», щоб отримати список книг із Audioboo.")
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text("Оновлення серії…")
+                }
             }
         } else {
             LazyColumn(
@@ -366,59 +380,19 @@ private fun BookCard(
                 book.author?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (book.status == BookStatus.NEW) {
-                        SuggestionChip(onClick = {}, label = { Text("Нова") })
-                    }
-                    AssistChip(
-                        onClick = { onStatus(book, nextStatus(book.status)) },
-                        label = { Text(statusLabel(book.status)) }
-                    )
+                    if (book.status == BookStatus.NEW) SuggestionChip(onClick = {}, label = { Text("Нова") })
+                    AssistChip(onClick = { onStatus(book, nextStatus(book.status)) }, label = { Text(statusLabel(book.status)) })
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = { onOpenPage(book.url) }) { Text("Сторінка") }
-                    if (book.archiveUrl == null) {
-                        TextButton(onClick = { onFindArchive(book) }) { Text("Знайти архів") }
-                    }
+                    if (book.archiveUrl == null) TextButton(onClick = { onFindArchive(book) }) { Text("Знайти архів") }
                 }
             }
-            IconButton(onClick = {
-                if (book.archiveUrl == null) onFindArchive(book) else onDownload(book)
-            }) {
+            IconButton(onClick = { if (book.archiveUrl == null) onFindArchive(book) else onDownload(book) }) {
                 Icon(
                     if (book.archiveUrl == null) Icons.Filled.Search else Icons.Filled.CloudDownload,
                     contentDescription = if (book.archiveUrl == null) "Знайти архів" else "Завантажити"
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DownloadsScreen(context: Context) {
-    val records = remember { loadDownloadRecords(context) }
-    if (records.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("Тут з’являться завантажені аудіокниги.")
-        }
-        return
-    }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        items(records, key = { it.id }) { record ->
-            ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Download, null, tint = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(record.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text(listOfNotNull(record.author, record.series).joinToString(" • "), style = MaterialTheme.typography.bodySmall)
-                        Text(record.path, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(downloadStatus(context, record.id), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                    }
-                }
             }
         }
     }
@@ -442,17 +416,37 @@ private fun nextStatus(status: BookStatus) = when (status) {
 private fun AddSeriesDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
     var name by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
+    var lastSuggestion by remember { mutableStateOf("") }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Додати серію") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(name, { name = it }, label = { Text("Назва") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(url, { url = it }, label = { Text("URL серії Audioboo") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { value ->
+                        url = value
+                        val suggestion = suggestSeriesName(value)
+                        if (name.isBlank() || name == lastSuggestion) name = suggestion
+                        lastSuggestion = suggestion
+                    },
+                    label = { Text("URL серії Audioboo") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Назва серії") },
+                    supportingText = { Text("Заповнюється автоматично з посилання") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onAdd(name, url) }, enabled = name.isNotBlank() && url.startsWith("http")) { Text("Додати") }
+            TextButton(onClick = { onAdd(name, url) }, enabled = url.startsWith("http") && name.isNotBlank()) { Text("Додати") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Скасувати") } }
     )
@@ -460,7 +454,7 @@ private fun AddSeriesDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Un
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun BrowserSync(
+private fun HiddenBrowserSync(
     task: SyncTask,
     onSeriesParsed: (String, List<Book>) -> Unit,
     onArchiveFound: (String, String, String) -> Unit,
@@ -470,10 +464,12 @@ private fun BrowserSync(
     val visited = remember(task) { mutableSetOf<String>() }
     var page by remember(task) { mutableIntStateOf(1) }
 
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(if (task.kind == SyncKind.SERIES) "Синхронізація… сторінка $page" else "Пошук архіву…")
-            TextButton(onClick = onCancel) { Text("Закрити") }
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator()
+            Spacer(Modifier.height(12.dp))
+            Text(if (task.kind == SyncKind.SERIES) "Оновлення серії • сторінка $page" else "Пошук архіву")
+            TextButton(onClick = onCancel) { Text("Скасувати") }
         }
         AndroidView(
             factory = { ctx ->
@@ -499,18 +495,17 @@ private fun BrowserSync(
                                 } else {
                                     view.evaluateJavascript(archiveParserJs) { raw ->
                                         val archive = decodeJsString(raw).takeIf { it.startsWith("http") }
-                                        if (archive != null && task.bookUrl != null) {
-                                            onArchiveFound(task.seriesId, task.bookUrl, archive)
-                                        }
+                                        if (archive != null && task.bookUrl != null) onArchiveFound(task.seriesId, task.bookUrl, archive)
+                                        else Toast.makeText(ctx, "Архів не знайдено", Toast.LENGTH_SHORT).show()
                                     }
                                 }
-                            }, 1200)
+                            }, 1000)
                         }
                     }
                     loadUrl(task.url)
                 }
             },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.size(1.dp).alpha(0f)
         )
     }
 }
@@ -629,33 +624,17 @@ private fun loadLibrary(context: Context): List<Series> {
     } catch (_: Exception) { emptyList() }
 }
 
-private fun downloadArchive(context: Context, series: Series, book: Book, url: String) {
-    if (AppPrefs.wifiOnly(context) && !isOnWifi(context)) {
-        Toast.makeText(context, "Увімкнено завантаження лише по Wi‑Fi", Toast.LENGTH_LONG).show()
-        return
-    }
-
-    val base = safePathPart(AppPrefs.baseFolder(context))
-    val seriesFolder = safePathPart(series.name)
-    val author = book.author?.takeIf { it.isNotBlank() }?.let(::safePathPart)
-    val parts = mutableListOf(base)
-    if (AppPrefs.useAuthorFolder(context) && author != null) parts += author
-    parts += seriesFolder
-    val file = safeFileName(book.title) + archiveExtension(url)
-    val relative = (parts + file).joinToString("/")
-
-    val request = DownloadManager.Request(Uri.parse(url))
-        .setTitle(book.title)
-        .setDescription("Audoiboo Tracker dev")
-        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, relative)
-
-    CookieManager.getInstance().getCookie(url)?.let { request.addRequestHeader("Cookie", it) }
-    request.addRequestHeader("Referer", book.url)
-    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-    val id = manager.enqueue(request)
-    addDownloadRecord(context, DownloadRecord(id, book.title, series.name, book.author, "Downloads/$relative", System.currentTimeMillis()))
-    Toast.makeText(context, "Downloads/$relative", Toast.LENGTH_LONG).show()
+private fun suggestSeriesName(url: String): String {
+    if (url.isBlank()) return ""
+    return runCatching {
+        val path = Uri.parse(url.trim()).path.orEmpty().trim('/')
+        val parts = path.split('/').filter { it.isNotBlank() }
+        val raw = when {
+            "cikl" in parts -> parts.getOrNull(parts.indexOf("cikl") + 1)
+            else -> parts.lastOrNull()
+        }.orEmpty()
+        URLDecoder.decode(raw, "UTF-8").replace('+', ' ').trim()
+    }.getOrDefault("")
 }
 
 private fun isOnWifi(context: Context): Boolean {
@@ -664,52 +643,3 @@ private fun isOnWifi(context: Context): Boolean {
     val caps = cm.getNetworkCapabilities(network) ?: return false
     return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
 }
-
-private fun addDownloadRecord(context: Context, record: DownloadRecord) {
-    val current = loadDownloadRecords(context).toMutableList()
-    current.add(0, record)
-    val arr = JSONArray()
-    current.take(100).forEach { r ->
-        arr.put(JSONObject().put("id", r.id).put("title", r.title).put("series", r.series).put("author", r.author).put("path", r.path).put("createdAt", r.createdAt))
-    }
-    context.getSharedPreferences("downloads", Context.MODE_PRIVATE).edit().putString("items", arr.toString()).apply()
-}
-
-private fun loadDownloadRecords(context: Context): List<DownloadRecord> {
-    val raw = context.getSharedPreferences("downloads", Context.MODE_PRIVATE).getString("items", null) ?: return emptyList()
-    return try {
-        val arr = JSONArray(raw)
-        (0 until arr.length()).map { i ->
-            val o = arr.getJSONObject(i)
-            DownloadRecord(
-                id = o.optLong("id"),
-                title = o.optString("title"),
-                series = o.optString("series"),
-                author = o.optString("author").takeIf { it.isNotBlank() && it != "null" },
-                path = o.optString("path"),
-                createdAt = o.optLong("createdAt")
-            )
-        }
-    } catch (_: Exception) { emptyList() }
-}
-
-private fun downloadStatus(context: Context, id: Long): String {
-    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-    val cursor = manager.query(DownloadManager.Query().setFilterById(id))
-    cursor.use {
-        if (!it.moveToFirst()) return "Невідомий стан"
-        val status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-        return when (status) {
-            DownloadManager.STATUS_PENDING -> "Очікує"
-            DownloadManager.STATUS_RUNNING -> "Завантажується"
-            DownloadManager.STATUS_PAUSED -> "Призупинено"
-            DownloadManager.STATUS_SUCCESSFUL -> "Завантажено"
-            DownloadManager.STATUS_FAILED -> "Помилка"
-            else -> "Невідомий стан"
-        }
-    }
-}
-
-private fun safePathPart(value: String) = value.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }.take(80)
-private fun safeFileName(value: String) = safePathPart(value).take(120)
-private fun archiveExtension(url: String) = Regex("\\.(zip|rar|7z)(?:\\?|$)", RegexOption.IGNORE_CASE).find(url)?.value?.substringBefore('?') ?: ".zip"

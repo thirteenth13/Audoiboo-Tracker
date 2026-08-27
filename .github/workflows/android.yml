@@ -7,6 +7,9 @@ on:
     branches: ["main"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,11 +29,32 @@ jobs:
         with:
           gradle-version: "9.5.0"
 
-      - name: Build debug APK
+      - name: Decode stable dev keystore
+        run: base64 -d .github/keys/audoiboo-debug.keystore.b64 > ci-debug.keystore
+
+      - name: Validate signing key
+        run: keytool -list -keystore ci-debug.keystore -storepass audoiboo123 -alias audoiboo
+
+      - name: Build dev APK
         run: gradle :app:assembleDebug --stacktrace
 
-      - name: Upload APK
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk Audoiboo-Tracker-0.3.0-dev.apk
+
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AudoibooTracker-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Audoiboo-Tracker-0.3.0-dev
+          path: Audoiboo-Tracker-0.3.0-dev.apk
+
+      - name: Publish rolling dev release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete dev --yes --cleanup-tag || true
+          gh release create dev Audoiboo-Tracker-0.3.0-dev.apk \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Audoiboo Tracker 0.3.0-dev" \
+            --notes "Development build. Multi-series tracking, structured downloads, settings and hidden diagnostics."

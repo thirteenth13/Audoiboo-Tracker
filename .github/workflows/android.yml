@@ -26,9 +26,6 @@ jobs:
         with:
           gradle-version: "9.5.0"
 
-      - name: Decode stable debug keystore
-        run: base64 -d .github/keys/audoiboo-debug.keystore.b64 > ci-debug.keystore
-
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 

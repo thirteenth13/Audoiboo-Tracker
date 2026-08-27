@@ -7,6 +7,17 @@
         android:allowBackup="true"
         android:label="Audoiboo Tracker"
         android:theme="@style/Theme.AudoibooTracker">
+
+        <activity
+            android:name=".DiagnosticActivity"
+            android:exported="true"
+            android:label="Audoiboo DOM">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
         <activity
             android:name=".MainActivity"
             android:exported="true">

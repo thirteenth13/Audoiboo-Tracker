@@ -11,8 +11,23 @@ android {
         applicationId = "org.audoiboo.tracker"
         minSdk = 23
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
+    }
+
+    signingConfigs {
+        create("ciDebug") {
+            storeFile = rootProject.file("ci-debug.keystore")
+            storePassword = "audoiboo123"
+            keyAlias = "audoiboo"
+            keyPassword = "audoiboo123"
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("ciDebug")
+        }
     }
 
     buildFeatures {

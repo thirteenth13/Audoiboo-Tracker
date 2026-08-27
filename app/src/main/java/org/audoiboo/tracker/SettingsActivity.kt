@@ -3,9 +3,11 @@ package org.audoiboo.tracker
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.clickable
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -24,6 +26,9 @@ object AppPrefs {
     private const val WIFI = "wifi_only"
     private const val UNPACK = "unpack"
     private const val UPDATE_WIFI = "update_wifi"
+    private const val SHOW_PAGE = "show_page_button"
+    private const val SHOW_FIND = "show_find_archive_button"
+    private const val AUTO_ARCHIVES = "auto_find_archives"
 
     private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -33,8 +38,11 @@ object AppPrefs {
     fun darkTheme(context: Context): Boolean = prefs(context).getBoolean(DARK, false)
     fun askPath(context: Context): Boolean = prefs(context).getBoolean(ASK, false)
     fun wifiOnly(context: Context): Boolean = prefs(context).getBoolean(WIFI, false)
-    fun unpack(context: Context): Boolean = prefs(context).getBoolean(UNPACK, false)
+    fun unpack(context: Context): Boolean = prefs(context).getBoolean(UNPACK, true)
     fun updateWifiOnly(context: Context): Boolean = prefs(context).getBoolean(UPDATE_WIFI, true)
+    fun showPageButton(context: Context): Boolean = prefs(context).getBoolean(SHOW_PAGE, true)
+    fun showFindArchiveButton(context: Context): Boolean = prefs(context).getBoolean(SHOW_FIND, true)
+    fun autoFindArchives(context: Context): Boolean = prefs(context).getBoolean(AUTO_ARCHIVES, false)
 
     fun save(
         context: Context,
@@ -45,7 +53,10 @@ object AppPrefs {
         askPath: Boolean,
         wifiOnly: Boolean,
         unpack: Boolean,
-        updateWifiOnly: Boolean
+        updateWifiOnly: Boolean,
+        showPage: Boolean,
+        showFind: Boolean,
+        autoArchives: Boolean
     ) {
         prefs(context).edit()
             .putString(BASE, baseFolder.trim().trim('/'))
@@ -56,16 +67,16 @@ object AppPrefs {
             .putBoolean(WIFI, wifiOnly)
             .putBoolean(UNPACK, unpack)
             .putBoolean(UPDATE_WIFI, updateWifiOnly)
+            .putBoolean(SHOW_PAGE, showPage)
+            .putBoolean(SHOW_FIND, showFind)
+            .putBoolean(AUTO_ARCHIVES, autoArchives)
             .apply()
     }
 }
 
 @Composable
 fun AudoibooTheme(context: Context, content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (AppPrefs.darkTheme(context)) darkColorScheme() else lightColorScheme(),
-        content = content
-    )
+    MaterialTheme(colorScheme = if (AppPrefs.darkTheme(context)) darkColorScheme() else lightColorScheme(), content = content)
 }
 
 class SettingsActivity : ComponentActivity() {
@@ -86,66 +97,71 @@ private fun SettingsScreen(activity: ComponentActivity) {
     var wifi by remember { mutableStateOf(AppPrefs.wifiOnly(activity)) }
     var unpack by remember { mutableStateOf(AppPrefs.unpack(activity)) }
     var updateWifi by remember { mutableStateOf(AppPrefs.updateWifiOnly(activity)) }
+    var showPage by remember { mutableStateOf(AppPrefs.showPageButton(activity)) }
+    var showFind by remember { mutableStateOf(AppPrefs.showFindArchiveButton(activity)) }
+    var autoArchives by remember { mutableStateOf(AppPrefs.autoFindArchives(activity)) }
 
-    fun save() {
-        AppPrefs.save(activity, base, author, dev, dark, ask, wifi, unpack, updateWifi)
+    fun save() = AppPrefs.save(activity, base, author, dev, dark, ask, wifi, unpack, updateWifi, showPage, showFind, autoArchives)
+
+    val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) runCatching {
+            activity.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(BackupStore.exportJson(activity)) }
+        }.onSuccess { Toast.makeText(activity, "Резервну копію створено", Toast.LENGTH_SHORT).show() }
+            .onFailure { Toast.makeText(activity, "Помилка резервної копії: ${it.message}", Toast.LENGTH_LONG).show() }
+    }
+    val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) runCatching {
+            val raw = activity.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("Порожній файл")
+            BackupStore.importJson(activity, raw)
+        }.onSuccess {
+            Toast.makeText(activity, "Дані відновлено. Перезапусти додаток", Toast.LENGTH_LONG).show()
+        }.onFailure { Toast.makeText(activity, "Помилка відновлення: ${it.message}", Toast.LENGTH_LONG).show() }
     }
 
     MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Налаштування") },
-                    navigationIcon = { TextButton(onClick = { activity.finish() }) { Text("←") } }
-                )
-            }
-        ) { padding ->
+        Scaffold(topBar = { TopAppBar(title = { Text("Налаштування") }, navigationIcon = { TextButton(onClick = { activity.finish() }) { Text("←") } }) }) { padding ->
             Column(
-                Modifier
-                    .padding(padding)
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
+                Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 SectionTitle("Зовнішній вигляд")
-                SettingCard(
-                    title = "Тема інтерфейсу",
-                    subtitle = if (dark) "Темна (Material You)" else "Світла (Material 3)"
-                ) {
+                SettingCard("Тема інтерфейсу", if (dark) "Темна (Material You)" else "Світла (Material 3)") {
                     Switch(checked = dark, onCheckedChange = { dark = it; save() })
+                }
+
+                SectionTitle("Картка книги")
+                SettingCard("Кнопка «Сторінка»", "Відкривати сторінку книги в браузері") {
+                    Switch(checked = showPage, onCheckedChange = { showPage = it; save() })
+                }
+                SettingCard("Кнопка «Знайти архів»", "Ручний пошук посилання на архів") {
+                    Switch(checked = showFind, onCheckedChange = { showFind = it; save() })
+                }
+                SettingCard("Автоматично шукати архіви", "Після оновлення серії перевіряти книги без архіву") {
+                    Switch(checked = autoArchives, onCheckedChange = { autoArchives = it; save() })
                 }
 
                 SectionTitle("Завантаження")
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        OutlinedTextField(
-                            value = base,
-                            onValueChange = { base = it },
-                            label = { Text("Базова папка") },
-                            supportingText = { Text("/storage/emulated/0/Download/${base.ifBlank { "Audoiboo" }}") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
+                        OutlinedTextField(value = base, onValueChange = { base = it }, label = { Text("Базова папка") }, supportingText = { Text("/storage/emulated/0/Download/${base.ifBlank { "Audoiboo" }}") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                         Text("Структура папок", style = MaterialTheme.typography.titleSmall)
                         Text(if (author) "Автор → Серія → Книга" else "Серія → Книга")
-                        Text(
-                            "${base.ifBlank { "Audoiboo" }}/${if (author) "Автор/" else ""}Серія/Книга.zip",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        SettingRow("Папка автора", "Автор першим рівнем") {
-                            Switch(checked = author, onCheckedChange = { author = it; save() })
-                        }
-                        SettingRow("Запитувати шлях завантаження", "Перед кожним завантаженням") {
-                            Switch(checked = ask, onCheckedChange = { ask = it; save() })
-                        }
-                        SettingRow("Завантажувати тільки по Wi‑Fi", "Економія мобільного трафіку") {
-                            Switch(checked = wifi, onCheckedChange = { wifi = it; save() })
-                        }
-                        SettingRow("Розпаковувати архіви", "Після завантаження (dev)") {
-                            Switch(checked = unpack, onCheckedChange = { unpack = it; save() })
-                        }
+                        Text("${base.ifBlank { "Audoiboo" }}/${if (author) "Автор/" else ""}Серія/Назва книги/...", style = MaterialTheme.typography.bodySmall)
+                        SettingRow("Папка автора", "Автор першим рівнем") { Switch(checked = author, onCheckedChange = { author = it; save() }) }
+                        SettingRow("Запитувати шлях завантаження", "Перед кожним завантаженням") { Switch(checked = ask, onCheckedChange = { ask = it; save() }) }
+                        SettingRow("Завантажувати тільки по Wi‑Fi", "Економія мобільного трафіку") { Switch(checked = wifi, onCheckedChange = { wifi = it; save() }) }
+                        SettingRow("Розпаковувати ZIP", "Після розпакування архів видаляється") { Switch(checked = unpack, onCheckedChange = { unpack = it; save() }) }
                         Button(onClick = { save() }) { Text("Зберегти") }
+                    }
+                }
+
+                SectionTitle("Резервна копія")
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Зберігаються серії, книги, статуси, знайдені архіви, налаштування та історія завантажень.")
+                        Button(onClick = { backupLauncher.launch("Audoiboo-Tracker-backup.json") }, modifier = Modifier.fillMaxWidth()) { Text("Створити резервну копію") }
+                        OutlinedButton(onClick = { restoreLauncher.launch(arrayOf("application/json", "text/plain")) }, modifier = Modifier.fillMaxWidth()) { Text("Відновити з копії") }
+                        Text("У системному вікні можна вибрати Google Drive, локальну пам’ять або інший файловий провайдер.", style = MaterialTheme.typography.bodySmall)
                     }
                 }
 
@@ -153,24 +169,13 @@ private fun SettingsScreen(activity: ComponentActivity) {
                 SettingCard("Перевіряти оновлення", if (updateWifi) "Лише по Wi‑Fi" else "Будь-яка мережа") {
                     Switch(checked = updateWifi, onCheckedChange = { updateWifi = it; save() })
                 }
-                Card(Modifier.fillMaxWidth().clickable { }) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Про додаток")
-                        Text("Audoiboo Tracker 0.3.1-dev", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("Про додаток"); Text("Audoiboo Tracker 1.0.0", style = MaterialTheme.typography.bodySmall) } }
 
                 SectionTitle("Розробка")
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
-                        SettingRow("Інструменти налагодження", "DOM-діагностика") {
-                            Switch(checked = dev, onCheckedChange = { dev = it; save() })
-                        }
-                        if (dev) {
-                            OutlinedButton(onClick = {
-                                activity.startActivity(Intent(activity, DiagnosticActivity::class.java))
-                            }) { Text("Відкрити DOM-діагностику") }
-                        }
+                        SettingRow("Інструменти налагодження", "DOM-діагностика") { Switch(checked = dev, onCheckedChange = { dev = it; save() }) }
+                        if (dev) OutlinedButton(onClick = { activity.startActivity(Intent(activity, DiagnosticActivity::class.java)) }) { Text("Відкрити DOM-діагностику") }
                     }
                 }
             }
@@ -178,26 +183,11 @@ private fun SettingsScreen(activity: ComponentActivity) {
     }
 }
 
-@Composable
-private fun SectionTitle(text: String) {
-    Text(text, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-}
-
-@Composable
-private fun SettingCard(title: String, subtitle: String, end: @Composable () -> Unit) {
-    Card(Modifier.fillMaxWidth()) { SettingRow(title, subtitle, end) }
-}
-
-@Composable
-private fun SettingRow(title: String, subtitle: String, end: @Composable () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(title)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall)
-        }
+@Composable private fun SectionTitle(text: String) { Text(text, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary) }
+@Composable private fun SettingCard(title: String, subtitle: String, end: @Composable () -> Unit) { Card(Modifier.fillMaxWidth()) { SettingRow(title, subtitle, end) } }
+@Composable private fun SettingRow(title: String, subtitle: String, end: @Composable () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Column(Modifier.weight(1f)) { Text(title); Text(subtitle, style = MaterialTheme.typography.bodySmall) }
         end()
     }
 }

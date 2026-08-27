@@ -109,15 +109,15 @@ private fun TrackerScreen() {
                     } else {
                         TextButton(onClick = {
                             syncTask = SyncTask(
-                                kind = SyncKind.SERIES_DIAGNOSTIC,
-                                seriesId = selectedSeries.id,
+                                SyncKind.SERIES_DIAGNOSTIC,
+                                selectedSeries.id,
                                 url = selectedSeries.url
                             )
                         }) { Text("DOM") }
                         TextButton(onClick = {
                             syncTask = SyncTask(
-                                kind = SyncKind.SERIES,
-                                seriesId = selectedSeries.id,
+                                SyncKind.SERIES,
+                                selectedSeries.id,
                                 url = selectedSeries.url
                             )
                         }) { Text("Оновити") }
@@ -187,20 +187,10 @@ private fun TrackerScreen() {
                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     },
                     onFindArchive = { book ->
-                        syncTask = SyncTask(
-                            kind = SyncKind.BOOK,
-                            seriesId = selectedSeries.id,
-                            bookUrl = book.url,
-                            url = book.url
-                        )
+                        syncTask = SyncTask(SyncKind.BOOK, selectedSeries.id, book.url, book.url)
                     },
                     onDiagnoseBook = { book ->
-                        syncTask = SyncTask(
-                            kind = SyncKind.BOOK_DIAGNOSTIC,
-                            seriesId = selectedSeries.id,
-                            bookUrl = book.url,
-                            url = book.url
-                        )
+                        syncTask = SyncTask(SyncKind.BOOK_DIAGNOSTIC, selectedSeries.id, book.url, book.url)
                     },
                     onDownload = { book ->
                         book.archiveUrl?.let { downloadArchive(context, book, it) }
@@ -464,7 +454,8 @@ private fun BrowserSync(
                                     SyncKind.BOOK -> {
                                         view.evaluateJavascript(archiveParserJs) { raw ->
                                             val archive = decodeJsString(raw).takeIf {
-                                                it.startsWith("http") && !it.contains("torrent", ignoreCase = true)
+                                                it.startsWith("http") &&
+                                                    !it.contains("torrent", ignoreCase = true)
                                             }
                                             if (archive != null && task.bookUrl != null) {
                                                 onArchiveFound(task.seriesId, task.bookUrl, archive)
@@ -500,30 +491,73 @@ private val seriesParserJs = """
 (function() {
   const abs = u => { try { return new URL(u, location.href).href; } catch(e) { return null; } };
   const norm = s => (s || '').replace(/\s+/g, ' ').trim();
-  const books = [], seen = new Set();
-  const detailLinks = Array.from(document.querySelectorAll('a[href]')).filter(a => {
-    const t = norm(a.textContent).toLowerCase();
-    return t === 'подробнее' || t === 'детальніше';
+  const root = document.querySelector('#dle-content') || document.querySelector('main') || document.querySelector('.content') || document.body;
+  const articlePattern = /\/[^\/]+\/\d{4,}-[^\/]+\.html(?:$|\?)/i;
+  const seen = new Set();
+  const books = [];
+
+  const anchors = Array.from(root.querySelectorAll('a[href]')).filter(a => {
+    const href = abs(a.getAttribute('href')) || '';
+    return articlePattern.test(href);
   });
-  for (const details of detailLinks) {
-    const href = abs(details.getAttribute('href'));
+
+  for (const a of anchors) {
+    const href = abs(a.getAttribute('href'));
     if (!href || seen.has(href)) continue;
-    const card = details.closest('article,.shortstory,.short,.story,.item,.news-item,.book-item,.short-item,.card') || details.parentElement?.parentElement?.parentElement || details.parentElement;
+
+    let node = a;
+    let card = a.parentElement;
+    for (let depth = 0; depth < 6 && node; depth++, node = node.parentElement) {
+      const cls = String(node.className || '').toLowerCase();
+      if (/short|story|item|book|news|card|post/.test(cls) || ['ARTICLE','LI'].includes(node.tagName)) {
+        card = node;
+        break;
+      }
+    }
+
     let title = '';
     if (card) {
       const heading = card.querySelector('h1,h2,h3,h4,.title,.short-title,.book-title,.book_name,.name');
       title = norm(heading && heading.textContent);
-      if (!title) { const img = card.querySelector('img[alt]'); title = norm(img && img.getAttribute('alt')); }
+      if (!title) {
+        const same = Array.from(card.querySelectorAll('a[href]')).filter(x => abs(x.getAttribute('href')) === href);
+        title = same.map(x => norm(x.textContent)).filter(Boolean).sort((x,y) => y.length-x.length)[0] || '';
+      }
+      if (!title) {
+        const img = card.querySelector('img[alt]');
+        title = norm(img && img.getAttribute('alt'));
+      }
     }
-    if (!title) continue;
-    seen.add(href); books.push({title, url: href});
+
+    if (!title) title = norm(a.textContent || a.getAttribute('title'));
+    if (!title || title.length < 4) continue;
+
+    seen.add(href);
+    books.push({title, url: href});
   }
+
   let currentPage = 1;
-  const m = location.pathname.match(/\/page\/(\d+)\/?$/i);
-  if (m) currentPage = parseInt(m[1], 10);
-  const pages = Array.from(document.querySelectorAll('a[href]')).map(a => abs(a.getAttribute('href'))).filter(Boolean).map(h => {
-    try { const u = new URL(h), x = u.pathname.match(/\/page\/(\d+)\/?$/i); return x ? {href:h,page:parseInt(x[1],10)} : null; } catch(e) { return null; }
-  }).filter(Boolean).filter(x => x.page > currentPage).sort((a,b) => a.page-b.page);
+  const currentMatch = location.pathname.match(/\/page\/(\d+)\/?$/i);
+  if (currentMatch) currentPage = parseInt(currentMatch[1], 10);
+
+  const basePath = location.pathname.replace(/\/page\/\d+\/?$/i, '/');
+  const pages = Array.from(document.querySelectorAll('a[href]'))
+    .map(a => abs(a.getAttribute('href')))
+    .filter(Boolean)
+    .map(href => {
+      try {
+        const u = new URL(href);
+        const m = u.pathname.match(/\/page\/(\d+)\/?$/i);
+        if (!m) return null;
+        const normalized = u.pathname.replace(/\/page\/\d+\/?$/i, '/');
+        if (normalized !== basePath) return null;
+        return {href, page: parseInt(m[1],10)};
+      } catch(e) { return null; }
+    })
+    .filter(Boolean)
+    .filter(x => x.page > currentPage)
+    .sort((a,b) => a.page-b.page);
+
   return JSON.stringify({books, nextUrl: pages.length ? pages[0].href : null});
 })();
 """.trimIndent()
@@ -533,16 +567,24 @@ private val archiveParserJs = """
   const abs = u => { try { return new URL(u, location.href).href; } catch(e) { return null; } };
   const norm = s => (s || '').replace(/\s+/g, ' ').trim();
   const candidates = [];
+
   for (const a of document.querySelectorAll('a[href]')) {
-    const raw = a.getAttribute('href') || '', href = abs(raw), text = norm(a.textContent), lower = text.toLowerCase();
-    if (!href || raw.toLowerCase().startsWith('magnet:') || href.toLowerCase().startsWith('magnet:')) continue;
+    const raw = a.getAttribute('href') || '';
+    const href = abs(raw);
+    const text = norm(a.textContent);
+    const lower = text.toLowerCase();
+    if (!href) continue;
+    if (raw.toLowerCase().startsWith('magnet:') || href.toLowerCase().startsWith('magnet:')) continue;
     if (lower.includes('торрент') || lower.includes('примагнит') || href.toLowerCase().includes('torrent')) continue;
+
     let score = 0;
-    if (/^скачать\s+.+/i.test(text) || /^завантажити\s+.+/i.test(text)) score += 100;
+    if (/^скачать\s+.+/i.test(text)) score += 150;
+    if (/^завантажити\s+.+/i.test(text)) score += 150;
     if (/\.(zip|rar|7z)(?:\?|$)/i.test(href)) score += 40;
     if (lower === 'скачать' || lower === 'завантажити') score += 20;
-    if (score > 0) candidates.push({href,score,text});
+    if (score > 0) candidates.push({href, score, text});
   }
+
   candidates.sort((a,b) => b.score-a.score || b.text.length-a.text.length);
   return candidates.length ? candidates[0].href : '';
 })();
@@ -552,27 +594,48 @@ private val seriesDiagnosticJs = """
 (function() {
   const abs = u => { try { return new URL(u, location.href).href; } catch(e) { return null; } };
   const norm = s => (s || '').replace(/\s+/g, ' ').trim();
-  const links = Array.from(document.querySelectorAll('a[href]')).map((a,i) => {
-    const href = abs(a.getAttribute('href')) || '';
-    const text = norm(a.textContent);
-    const parent = a.parentElement;
-    return {
-      i,
-      text,
-      href,
-      cls: a.className || '',
-      parentTag: parent ? parent.tagName : '',
-      parentClass: parent ? (parent.className || '') : '',
-      html: (a.outerHTML || '').slice(0,700),
-      parentHtml: parent ? (parent.outerHTML || '').slice(0,1000) : ''
-    };
-  }).filter(x => x.text || /\.html|\/page\//i.test(x.href));
+  const root = document.querySelector('#dle-content') || document.querySelector('main') || document.querySelector('.content') || document.body;
+  const articlePattern = /\/[^\/]+\/\d{4,}-[^\/]+\.html(?:$|\?)/i;
+
+  const candidates = Array.from(root.querySelectorAll('a[href]'))
+    .map((a,i) => {
+      const href = abs(a.getAttribute('href')) || '';
+      if (!articlePattern.test(href)) return null;
+      let p = a.parentElement;
+      const ancestry = [];
+      for (let n = 0; n < 5 && p; n++, p = p.parentElement) {
+        ancestry.push({
+          tag: p.tagName,
+          cls: String(p.className || ''),
+          text: norm(p.textContent).slice(0,500),
+          html: (p.outerHTML || '').slice(0,1200)
+        });
+      }
+      return {
+        i,
+        text: norm(a.textContent),
+        title: a.getAttribute('title') || '',
+        href,
+        cls: String(a.className || ''),
+        html: (a.outerHTML || '').slice(0,800),
+        ancestry
+      };
+    })
+    .filter(Boolean);
+
+  const pagination = Array.from(document.querySelectorAll('a[href]'))
+    .map(a => ({text:norm(a.textContent), href:abs(a.getAttribute('href')) || ''}))
+    .filter(x => /\/page\/\d+\/?$/i.test(x.href));
+
   return JSON.stringify({
-    type: 'SERIES',
+    type: 'SERIES_FOCUSED',
     url: location.href,
     title: document.title,
-    bodyClass: document.body ? document.body.className : '',
-    links: links.slice(0,120)
+    rootTag: root.tagName,
+    rootId: root.id || '',
+    rootClass: String(root.className || ''),
+    candidates: candidates.slice(0,80),
+    pagination: pagination.slice(0,30)
   }, null, 2);
 })();
 """.trimIndent()
@@ -586,19 +649,24 @@ private val bookDiagnosticJs = """
     const text = norm(el.textContent);
     const onclick = el.getAttribute('onclick') || '';
     const parent = el.parentElement;
+    const grand = parent ? parent.parentElement : null;
     return {
       i,
       tag: el.tagName,
       text,
       raw,
       href: raw ? abs(raw) : '',
-      cls: el.className || '',
+      cls: String(el.className || ''),
       id: el.id || '',
       onclick,
-      html: (el.outerHTML || '').slice(0,900),
-      parentHtml: parent ? (parent.outerHTML || '').slice(0,1500) : ''
+      html: (el.outerHTML || '').slice(0,1000),
+      parentHtml: parent ? (parent.outerHTML || '').slice(0,1800) : '',
+      grandParentHtml: grand ? (grand.outerHTML || '').slice(0,2200) : ''
     };
-  }).filter(x => /скач|download|торрент|torrent|магнит|magnet|архив|zip|rar|7z/i.test(x.text + ' ' + x.raw + ' ' + x.href + ' ' + x.onclick));
+  }).filter(x => /скач|download|торрент|torrent|магнит|magnet|архив|zip|rar|7z/i.test(
+    x.text + ' ' + x.raw + ' ' + x.href + ' ' + x.onclick
+  ));
+
   return JSON.stringify({
     type: 'BOOK',
     url: location.href,
@@ -637,16 +705,27 @@ private fun saveLibrary(context: Context, library: List<Series>) {
         val obj = JSONObject().put("id", series.id).put("name", series.name).put("url", series.url)
         val books = JSONArray()
         series.books.forEach { book ->
-            books.put(JSONObject().put("title", book.title).put("url", book.url).put("status", book.status.name).put("archiveUrl", book.archiveUrl))
+            books.put(
+                JSONObject()
+                    .put("title", book.title)
+                    .put("url", book.url)
+                    .put("status", book.status.name)
+                    .put("archiveUrl", book.archiveUrl)
+            )
         }
         obj.put("books", books)
         array.put(obj)
     }
-    context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", array.toString()).apply()
+    context.getSharedPreferences("tracker", Context.MODE_PRIVATE)
+        .edit()
+        .putString("library", array.toString())
+        .apply()
 }
 
 private fun loadLibrary(context: Context): List<Series> {
-    val raw = context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", null) ?: return emptyList()
+    val raw = context.getSharedPreferences("tracker", Context.MODE_PRIVATE)
+        .getString("library", null) ?: return emptyList()
+
     return try {
         val array = JSONArray(raw)
         (0 until array.length()).map { i ->
@@ -657,8 +736,11 @@ private fun loadLibrary(context: Context): List<Series> {
                 Book(
                     title = book.optString("title"),
                     url = book.optString("url"),
-                    status = runCatching { BookStatus.valueOf(book.optString("status", "NEW")) }.getOrDefault(BookStatus.NEW),
-                    archiveUrl = book.optString("archiveUrl").takeIf { it.isNotBlank() && it != "null" }
+                    status = runCatching {
+                        BookStatus.valueOf(book.optString("status", "NEW"))
+                    }.getOrDefault(BookStatus.NEW),
+                    archiveUrl = book.optString("archiveUrl")
+                        .takeIf { it.isNotBlank() && it != "null" }
                 )
             }
             Series(
@@ -678,17 +760,26 @@ private fun downloadArchive(context: Context, book: Book, url: String) {
         .setTitle(book.title)
         .setDescription("Audioboo Tracker")
         .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeFileName(book.title) + archiveExtension(url))
+        .setDestinationInExternalPublicDir(
+            Environment.DIRECTORY_DOWNLOADS,
+            safeFileName(book.title) + archiveExtension(url)
+        )
 
-    CookieManager.getInstance().getCookie(url)?.let { request.addRequestHeader("Cookie", it) }
+    CookieManager.getInstance().getCookie(url)?.let {
+        request.addRequestHeader("Cookie", it)
+    }
     request.addRequestHeader("Referer", book.url)
 
     (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
     Toast.makeText(context, "Завантаження розпочато", Toast.LENGTH_SHORT).show()
 }
 
-private fun safeFileName(value: String): String = value.replace(Regex("[\\/:*?\"<>|]"), "_").take(100)
+private fun safeFileName(value: String): String =
+    value.replace(Regex("[\\/:*?\"<>|]"), "_").take(100)
 
 private fun archiveExtension(url: String): String =
     Regex("\\.(zip|rar|7z)(?:\\?|$)", RegexOption.IGNORE_CASE)
-        .find(url)?.value?.substringBefore('?') ?: ".zip"
+        .find(url)
+        ?.value
+        ?.substringBefore('?')
+        ?: ".zip"

@@ -38,18 +38,18 @@ jobs:
         run: gradle :app:assembleRelease --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.0.1.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.0.2.apk
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Audoiboo-Tracker-1.0.1
-          path: Audoiboo-Tracker-1.0.1.apk
+          name: Audoiboo-Tracker-1.0.2
+          path: Audoiboo-Tracker-1.0.2.apk
 
       - name: Publish stable release
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete v1.0.1 --yes --cleanup-tag || true
-          gh release create v1.0.1 Audoiboo-Tracker-1.0.1.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.0.1" --notes "Bugfix release: book URLs are resolved to their Audioboo cycle before syncing, embedded-browser additions now resolve the correct cycle name/link, and automatic archive discovery has per-task completion guards and timeouts to prevent endless syncing."
+          gh release delete v1.0.2 --yes --cleanup-tag || true
+          gh release create v1.0.2 Audoiboo-Tracker-1.0.2.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.0.2" --notes "Bugfix release: automatic archive discovery now recreates the hidden WebView for every queued book, so each book URL is actually loaded and the queue completes instead of hanging."

@@ -10,8 +10,8 @@
     <application
         android:allowBackup="true"
         android:label="Audoiboo Tracker dev"
-        android:icon="@drawable/ic_launcher_audoiboo"
-        android:roundIcon="@drawable/ic_launcher_audoiboo"
+        android:icon="@drawable/ic_audoiboo_launcher"
+        android:roundIcon="@drawable/ic_audoiboo_launcher"
         android:theme="@style/Theme.AudoibooTracker">
 
         <service

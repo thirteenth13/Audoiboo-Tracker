@@ -115,15 +115,65 @@ private fun nextStatus(s: BookStatus) = when(s){ BookStatus.NEW->BookStatus.UNRE
 }
 
 @SuppressLint("SetJavaScriptEnabled") @Composable private fun BrowserSync(task: SyncTask, onSeriesParsed:(String,List<Book>)->Unit, onArchiveFound:(String,String,String)->Unit, onCancel:()->Unit) {
-    Column(Modifier.fillMaxSize()) { Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement=Arrangement.SpaceBetween){Text(if(task.kind==SyncKind.SERIES)"Синхронізація серії…" else "Пошук архіву…");TextButton(onCancel){Text("Закрити")}}
-        AndroidView(Modifier.fillMaxSize(), factory={ context -> WebView(context).apply { settings.javaScriptEnabled=true; settings.domStorageEnabled=true; CookieManager.getInstance().setAcceptCookie(true); CookieManager.getInstance().setAcceptThirdPartyCookies(this,true); setDownloadListener{url,_,_,_,_->if(task.kind==SyncKind.BOOK&&task.bookUrl!=null&&url.isNotBlank())onArchiveFound(task.seriesId,task.bookUrl,url)}; webViewClient=object:WebViewClient(){override fun onPageFinished(view:WebView,url:String){view.postDelayed({if(task.kind==SyncKind.SERIES)view.evaluateJavascript(seriesParserJs){r->parseSeriesResult(r).takeIf{it.isNotEmpty()}?.let{onSeriesParsed(task.seriesId,it)}} else view.evaluateJavascript(archiveParserJs){r->decodeJsString(r).takeIf{it.startsWith("http")}?.let{a->task.bookUrl?.let{onArchiveFound(task.seriesId,it,a)}}}},1200)}}; loadUrl(task.url) } })
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement=Arrangement.SpaceBetween){
+            Text(if(task.kind==SyncKind.SERIES)"Синхронізація серії…" else "Пошук архіву…")
+            TextButton(onCancel){Text("Закрити")}
+        }
+        AndroidView(
+            factory = { context ->
+                WebView(context).apply {
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    CookieManager.getInstance().setAcceptCookie(true)
+                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                    setDownloadListener { url, _, _, _, _ ->
+                        if (task.kind == SyncKind.BOOK && task.bookUrl != null && url.isNotBlank()) {
+                            onArchiveFound(task.seriesId, task.bookUrl, url)
+                        }
+                    }
+                    webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView, url: String) {
+                            view.postDelayed({
+                                if (task.kind == SyncKind.SERIES) {
+                                    view.evaluateJavascript(seriesParserJs) { raw ->
+                                        val books = parseSeriesResult(raw)
+                                        if (books.isNotEmpty()) onSeriesParsed(task.seriesId, books)
+                                    }
+                                } else {
+                                    view.evaluateJavascript(archiveParserJs) { raw ->
+                                        val archive = decodeJsString(raw).takeIf { it.startsWith("http") }
+                                        if (archive != null && task.bookUrl != null) {
+                                            onArchiveFound(task.seriesId, task.bookUrl, archive)
+                                        }
+                                    }
+                                }
+                            }, 1200)
+                        }
+                    }
+                    loadUrl(task.url)
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
     }
 }
 
 private val seriesParserJs="""(function(){const a=u=>{try{return new URL(u,location.href).href}catch(e){return null}},s=new Set(),r=[];for(const x of document.querySelectorAll('a[href]')){const h=a(x.getAttribute('href'));if(!h||s.has(h))continue;const p=new URL(h).pathname;if(!/\/[^\/]+\/\d{4,}[^\/]*\.html$/i.test(p))continue;const c=x.closest('article,.short,.shortstory,.story,.item,.news-item,li,div'),q=c&&c.querySelector('h1,h2,h3,h4,.title,.name,.book-name,.book_name'),t=((q&&q.textContent)||x.title||x.textContent||'').replace(/\s+/g,' ').trim();if(t.length<3)continue;s.add(h);r.push({title:t,url:h})}return JSON.stringify(r)})()"""
 private val archiveParserJs="""(function(){const a=u=>{try{return new URL(u,location.href).href}catch(e){return null}};for(const x of document.querySelectorAll('a[href]')){const h=a(x.getAttribute('href')),t=(x.textContent||'').toLowerCase();if(h&&(/\.(zip|rar|7z)(\?|$)/i.test(h)||/скач|download|архив/.test(t)))return h}return ''})()"""
 private fun decodeJsString(raw:String):String=try{JSONArray("[$raw]").getString(0)}catch(_:Exception){raw.trim('"')}
-private fun parseSeriesResult(raw:String):List<Book>=try{val text=decodeJsString(raw);val a=JSONArray(text);(0 until a.length()).mapNotNull{i->val o=a.optJSONObject(i)?:return@mapNotNull null;val t=o.optString("title").trim();val u=o.optString("url").trim();if(t.isBlank()||u.isBlank())null else Book(t,u)}}catch(_:Exception){emptyList()}
+private fun parseSeriesResult(raw:String): List<Book> = try {
+    val text = decodeJsString(raw)
+    val array = JSONArray(text)
+    (0 until array.length()).mapNotNull { i ->
+        val obj = array.optJSONObject(i) ?: return@mapNotNull null
+        val title = obj.optString("title").trim()
+        val url = obj.optString("url").trim()
+        if (title.isBlank() || url.isBlank()) null else Book(title, url)
+    }
+} catch (_: Exception) {
+    emptyList()
+}
 private fun saveLibrary(context:Context,library:List<Series>){val a=JSONArray();library.forEach{s->val o=JSONObject().put("id",s.id).put("name",s.name).put("url",s.url);val b=JSONArray();s.books.forEach{x->b.put(JSONObject().put("title",x.title).put("url",x.url).put("status",x.status.name).put("archiveUrl",x.archiveUrl))};o.put("books",b);a.put(o)};context.getSharedPreferences("tracker",Context.MODE_PRIVATE).edit().putString("library",a.toString()).apply()}
 private fun loadLibrary(context:Context):List<Series>{val raw=context.getSharedPreferences("tracker",Context.MODE_PRIVATE).getString("library",null)?:return emptyList();return try{val a=JSONArray(raw);(0 until a.length()).map{i->val o=a.getJSONObject(i);val ba=o.optJSONArray("books")?:JSONArray();val books=(0 until ba.length()).map{j->val b=ba.getJSONObject(j);Book(b.optString("title"),b.optString("url"),runCatching{BookStatus.valueOf(b.optString("status","NEW"))}.getOrDefault(BookStatus.NEW),b.optString("archiveUrl").takeIf{it.isNotBlank()&&it!="null"})};Series(o.optString("id",UUID.randomUUID().toString()),o.optString("name"),o.optString("url"),books)}}catch(_:Exception){emptyList()}}
 private fun downloadArchive(context:Context,book:Book,url:String){val request=DownloadManager.Request(Uri.parse(url)).setTitle(book.title).setDescription("Audioboo Tracker").setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED).setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,safeFileName(book.title)+archiveExtension(url));CookieManager.getInstance().getCookie(url)?.let{request.addRequestHeader("Cookie",it)};request.addRequestHeader("Referer",book.url);(context.getSystemService(Context.DOWNLOAD_SERVICE)as DownloadManager).enqueue(request);Toast.makeText(context,"Завантаження розпочато",Toast.LENGTH_SHORT).show()}

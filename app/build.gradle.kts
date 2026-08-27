@@ -15,21 +15,6 @@ android {
         versionName = "0.3.0-dev"
     }
 
-    signingConfigs {
-        create("dev") {
-            storeFile = rootProject.file("ci-debug.keystore")
-            storePassword = "audoiboo123"
-            keyAlias = "audoiboo"
-            keyPassword = "audoiboo123"
-        }
-    }
-
-    buildTypes {
-        getByName("debug") {
-            signingConfig = signingConfigs.getByName("dev")
-        }
-    }
-
     buildFeatures {
         compose = true
     }

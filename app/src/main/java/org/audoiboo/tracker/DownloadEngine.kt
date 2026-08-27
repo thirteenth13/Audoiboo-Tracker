@@ -7,7 +7,6 @@ import android.app.Service
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
@@ -18,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -89,6 +89,14 @@ internal object ManagedDownloads {
     fun pause(context: Context, id: String) = send(context, ManagedDownloadService.ACTION_PAUSE, id)
     fun resume(context: Context, id: String) = send(context, ManagedDownloadService.ACTION_RESUME, id)
     fun cancel(context: Context, id: String) = send(context, ManagedDownloadService.ACTION_CANCEL, id)
+
+    @Synchronized fun remove(context: Context, id: String) {
+        val items = list(context).filterNot { it.id == id }
+        val arr = JSONArray()
+        items.take(200).forEach { arr.put(toJson(it)) }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, arr.toString()).apply()
+        File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "staging/$id.part").delete()
+    }
 
     fun list(context: Context): List<ManagedDownloadRecord> {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null) ?: return emptyList()
@@ -239,7 +247,8 @@ class ManagedDownloadService : Service() {
 
             if (AppPrefs.unpack(this) && record.fileName.endsWith(".zip", true)) {
                 update(record.copy(state = ManagedDownloadState.EXTRACTING))
-                extractZipToDownloads(part, record.relativeDir)
+                val bookFolder = record.title.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Книга" }.take(120)
+                extractZipToDownloads(part, "${record.relativeDir}/$bookFolder")
                 part.delete()
             } else {
                 publishFile(part, record.relativeDir, record.fileName)
@@ -357,7 +366,12 @@ internal fun ManagedDownloadsScreen(context: Context) {
                             ManagedDownloadState.PAUSED, ManagedDownloadState.FAILED -> IconButton(onClick = { ManagedDownloads.resume(context, r.id) }) { Icon(Icons.Filled.PlayArrow, "Продовжити") }
                             else -> Unit
                         }
-                        if (r.state !in listOf(ManagedDownloadState.COMPLETED, ManagedDownloadState.CANCELLED)) IconButton(onClick = { ManagedDownloads.cancel(context, r.id) }) { Icon(Icons.Filled.Cancel, "Скасувати") }
+                        if (r.state !in listOf(ManagedDownloadState.COMPLETED, ManagedDownloadState.CANCELLED)) {
+                            IconButton(onClick = { ManagedDownloads.cancel(context, r.id) }) { Icon(Icons.Filled.Cancel, "Скасувати") }
+                        }
+                        if (r.state == ManagedDownloadState.CANCELLED) {
+                            IconButton(onClick = { ManagedDownloads.remove(context, r.id); tick++ }) { Icon(Icons.Filled.Delete, "Видалити") }
+                        }
                     }
                     val progress = if (r.total > 0) r.downloaded.toFloat() / r.total.toFloat() else 0f
                     if (r.state in listOf(ManagedDownloadState.DOWNLOADING, ManagedDownloadState.PAUSED, ManagedDownloadState.EXTRACTING)) {
@@ -366,7 +380,11 @@ internal fun ManagedDownloadsScreen(context: Context) {
                     }
                     Text(stateLabel(r), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     r.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-                    Text("Downloads/${r.relativeDir}/${r.fileName}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val displayPath = if (AppPrefs.unpack(context) && r.fileName.endsWith(".zip", true)) {
+                        val bookFolder = r.title.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Книга" }.take(120)
+                        "Downloads/${r.relativeDir}/$bookFolder/"
+                    } else "Downloads/${r.relativeDir}/${r.fileName}"
+                    Text(displayPath, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }

@@ -5,18 +5,11 @@
 
     <application
         android:allowBackup="true"
-        android:label="Audoiboo Tracker"
+        android:label="Audoiboo Tracker dev"
         android:theme="@style/Theme.AudoibooTracker">
 
-        <activity
-            android:name=".DiagnosticActivity"
-            android:exported="true"
-            android:label="Audoiboo DOM">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+        <activity android:name=".DiagnosticActivity" android:exported="false" android:label="Audoiboo DOM" />
+        <activity android:name=".SettingsActivity" android:exported="false" android:label="Налаштування" />
 
         <activity
             android:name=".MainActivity"

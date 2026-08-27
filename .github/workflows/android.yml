@@ -29,12 +29,6 @@ jobs:
         with:
           gradle-version: "9.5.0"
 
-      - name: Decode stable dev keystore
-        run: base64 -d .github/keys/audoiboo-debug.keystore.b64 > ci-debug.keystore
-
-      - name: Validate signing key
-        run: keytool -list -keystore ci-debug.keystore -storepass audoiboo123 -alias audoiboo
-
       - name: Build dev APK
         run: gradle :app:assembleDebug --stacktrace
 
@@ -53,8 +47,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete dev --yes --cleanup-tag || true
-          gh release create dev Audoiboo-Tracker-0.3.0-dev.apk \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --title "Audoiboo Tracker 0.3.0-dev" \
-            --notes "Development build. Multi-series tracking, structured downloads, settings and hidden diagnostics."
+          gh release create dev Audoiboo-Tracker-0.3.0-dev.apk --target "$GITHUB_SHA" --prerelease --title "Audoiboo Tracker 0.3.0-dev" --notes "Development build"

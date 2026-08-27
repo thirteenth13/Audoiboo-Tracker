@@ -33,13 +33,13 @@ jobs:
         run: gradle :app:assembleDebug --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Audoiboo-Tracker-0.3.0-dev.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk Audoiboo-Tracker-0.3.2-dev.apk
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Audoiboo-Tracker-0.3.0-dev
-          path: Audoiboo-Tracker-0.3.0-dev.apk
+          name: Audoiboo-Tracker-0.3.2-dev
+          path: Audoiboo-Tracker-0.3.2-dev.apk
 
       - name: Publish rolling dev release
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -47,4 +47,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete dev --yes --cleanup-tag || true
-          gh release create dev Audoiboo-Tracker-0.3.0-dev.apk --target "$GITHUB_SHA" --prerelease --title "Audoiboo Tracker 0.3.0-dev" --notes "Development build"
+          gh release create dev Audoiboo-Tracker-0.3.2-dev.apk --target "$GITHUB_SHA" --prerelease --title "Audoiboo Tracker 0.3.2-dev" --notes "Development build: managed resumable downloads, hidden sync, automatic series naming, cover logos and ZIP extraction."

@@ -2,6 +2,8 @@ package org.audoiboo.tracker
 
 import android.annotation.SuppressLint
 import android.app.DownloadManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -43,7 +45,7 @@ private data class Series(
     val books: List<Book> = emptyList()
 )
 
-private enum class SyncKind { SERIES, BOOK }
+private enum class SyncKind { SERIES, BOOK, SERIES_DIAGNOSTIC, BOOK_DIAGNOSTIC }
 
 private data class SyncTask(
     val kind: SyncKind,
@@ -73,12 +75,20 @@ private fun TrackerScreen() {
     var syncTask by remember { mutableStateOf<SyncTask?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
     var filter by remember { mutableStateOf<BookStatus?>(null) }
+    var diagnosticDump by remember { mutableStateOf<String?>(null) }
 
     val selectedSeries = library.firstOrNull { it.id == selectedSeriesId }
 
     fun commit(newLibrary: List<Series>) {
         library = newLibrary
         saveLibrary(context, newLibrary)
+    }
+
+    fun copyDiagnostic(text: String) {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Audoiboo DOM diagnostic", text))
+        diagnosticDump = text
+        Toast.makeText(context, "DOM-діагностику скопійовано", Toast.LENGTH_LONG).show()
     }
 
     Scaffold(
@@ -97,6 +107,13 @@ private fun TrackerScreen() {
                     if (selectedSeries == null) {
                         TextButton(onClick = { showAddDialog = true }) { Text("+ Серія") }
                     } else {
+                        TextButton(onClick = {
+                            syncTask = SyncTask(
+                                kind = SyncKind.SERIES_DIAGNOSTIC,
+                                seriesId = selectedSeries.id,
+                                url = selectedSeries.url
+                            )
+                        }) { Text("DOM") }
                         TextButton(onClick = {
                             syncTask = SyncTask(
                                 kind = SyncKind.SERIES,
@@ -125,11 +142,7 @@ private fun TrackerScreen() {
                             commit(library.map {
                                 if (it.id == seriesId) it.copy(books = merged) else it
                             })
-                            Toast.makeText(
-                                context,
-                                "Знайдено книг: ${merged.size}",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            Toast.makeText(context, "Знайдено книг: ${merged.size}", Toast.LENGTH_SHORT).show()
                         }
                         syncTask = null
                     },
@@ -141,11 +154,11 @@ private fun TrackerScreen() {
                                 }
                             )
                         })
-                        Toast.makeText(
-                            context,
-                            "Посилання на архів збережено",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        Toast.makeText(context, "Посилання на архів збережено", Toast.LENGTH_SHORT).show()
+                        syncTask = null
+                    },
+                    onDiagnostic = { dump ->
+                        copyDiagnostic(dump)
                         syncTask = null
                     },
                     onCancel = { syncTask = null }
@@ -181,6 +194,14 @@ private fun TrackerScreen() {
                             url = book.url
                         )
                     },
+                    onDiagnoseBook = { book ->
+                        syncTask = SyncTask(
+                            kind = SyncKind.BOOK_DIAGNOSTIC,
+                            seriesId = selectedSeries.id,
+                            bookUrl = book.url,
+                            url = book.url
+                        )
+                    },
                     onDownload = { book ->
                         book.archiveUrl?.let { downloadArchive(context, book, it) }
                     }
@@ -195,6 +216,29 @@ private fun TrackerScreen() {
             onAdd = { name, url ->
                 commit(library + Series(name = name.trim(), url = url.trim()))
                 showAddDialog = false
+            }
+        )
+    }
+
+    diagnosticDump?.let { dump ->
+        AlertDialog(
+            onDismissRequest = { diagnosticDump = null },
+            title = { Text("DOM-діагностика") },
+            text = {
+                Column {
+                    Text("Результат уже скопійований у буфер. Надішли його мені в чат.")
+                    Spacer(Modifier.height(8.dp))
+                    Text(dump.take(3500), style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    copyDiagnostic(dump)
+                    diagnosticDump = null
+                }) { Text("Скопіювати") }
+            },
+            dismissButton = {
+                TextButton(onClick = { diagnosticDump = null }) { Text("Закрити") }
             }
         )
     }
@@ -242,6 +286,7 @@ private fun SeriesDetail(
     onStatus: (Book, BookStatus) -> Unit,
     onOpenPage: (String) -> Unit,
     onFindArchive: (Book) -> Unit,
+    onDiagnoseBook: (Book) -> Unit,
     onDownload: (Book) -> Unit
 ) {
     val books = if (filter == null) series.books else series.books.filter { it.status == filter }
@@ -258,10 +303,7 @@ private fun SeriesDetail(
         }
 
         if (series.books.isEmpty()) {
-            Text(
-                "Натисни «Оновити», щоб отримати список книг із Audioboo.",
-                Modifier.padding(16.dp)
-            )
+            Text("Натисни «Оновити», щоб отримати список книг із Audioboo.", Modifier.padding(16.dp))
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
                 items(books, key = { it.url }) { book ->
@@ -270,6 +312,7 @@ private fun SeriesDetail(
                         onStatus = { onStatus(book, it) },
                         onOpenPage = { onOpenPage(book.url) },
                         onFindArchive = { onFindArchive(book) },
+                        onDiagnose = { onDiagnoseBook(book) },
                         onDownload = { onDownload(book) }
                     )
                     HorizontalDivider()
@@ -285,6 +328,7 @@ private fun BookRow(
     onStatus: (BookStatus) -> Unit,
     onOpenPage: () -> Unit,
     onFindArchive: () -> Unit,
+    onDiagnose: () -> Unit,
     onDownload: () -> Unit
 ) {
     Column(Modifier.fillMaxWidth().padding(12.dp)) {
@@ -299,13 +343,13 @@ private fun BookRow(
             TextButton(onClick = onOpenPage) { Text("Сторінка") }
         }
 
-        if (book.archiveUrl == null) {
-            TextButton(onClick = onFindArchive) { Text("Знайти архів") }
-        } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (book.archiveUrl == null) {
+                TextButton(onClick = onFindArchive) { Text("Знайти архів") }
+            } else {
                 TextButton(onClick = onDownload) { Text("Завантажити архів") }
-                Text("Архів знайдено", style = MaterialTheme.typography.bodySmall)
             }
+            TextButton(onClick = onDiagnose) { Text("DOM архів") }
         }
     }
 }
@@ -328,9 +372,7 @@ private fun nextStatus(status: BookStatus): BookStatus = when (status) {
 private fun AddSeriesDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
     var name by remember { mutableStateOf("Другая сторона") }
     var url by remember {
-        mutableStateOf(
-            "https://audioboo.org/xfsearch/cikl/%D0%94%D1%80%D1%83%D0%B3%D0%B0%D1%8F%20%D1%81%D1%82%D0%BE%D1%80%D0%BE%D0%BD%D0%B0/"
-        )
+        mutableStateOf("https://audioboo.org/xfsearch/cikl/%D0%94%D1%80%D1%83%D0%B3%D0%B0%D1%8F%20%D1%81%D1%82%D0%BE%D1%80%D0%BE%D0%BD%D0%B0/")
     }
 
     AlertDialog(
@@ -338,18 +380,8 @@ private fun AddSeriesDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Un
         title = { Text("Додати серію") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Назва") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    label = { Text("URL серії Audioboo") },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                OutlinedTextField(name, { name = it }, label = { Text("Назва") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(url, { url = it }, label = { Text("URL серії Audioboo") }, modifier = Modifier.fillMaxWidth())
             }
         },
         confirmButton = {
@@ -358,9 +390,7 @@ private fun AddSeriesDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Un
                 enabled = name.isNotBlank() && url.startsWith("http")
             ) { Text("Додати") }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Скасувати") }
-        }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Скасувати") } }
     )
 }
 
@@ -370,6 +400,7 @@ private fun BrowserSync(
     task: SyncTask,
     onSeriesParsed: (String, List<Book>) -> Unit,
     onArchiveFound: (String, String, String) -> Unit,
+    onDiagnostic: (String) -> Unit,
     onCancel: () -> Unit
 ) {
     val collectedBooks = remember(task) { linkedMapOf<String, Book>() }
@@ -382,10 +413,11 @@ private fun BrowserSync(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                if (task.kind == SyncKind.SERIES) {
-                    "Синхронізація серії… сторінка $pageNumber"
-                } else {
-                    "Пошук правильного архіву…"
+                when (task.kind) {
+                    SyncKind.SERIES -> "Синхронізація серії… сторінка $pageNumber"
+                    SyncKind.BOOK -> "Пошук правильного архіву…"
+                    SyncKind.SERIES_DIAGNOSTIC -> "DOM-діагностика серії…"
+                    SyncKind.BOOK_DIAGNOSTIC -> "DOM-діагностика архіву…"
                 }
             )
             TextButton(onClick = onCancel) { Text("Закрити") }
@@ -413,39 +445,46 @@ private fun BrowserSync(
                     webViewClient = object : WebViewClient() {
                         override fun onPageFinished(view: WebView, url: String) {
                             view.postDelayed({
-                                if (task.kind == SyncKind.SERIES) {
-                                    if (!visitedPages.add(url)) return@postDelayed
-
-                                    view.evaluateJavascript(seriesParserJs) { raw ->
-                                        val page = parseSeriesPage(raw)
-                                        page.books.forEach { book -> collectedBooks[book.url] = book }
-
-                                        val next = page.nextUrl
-                                            ?.takeIf { it.isNotBlank() && it !in visitedPages }
-
-                                        if (next != null) {
-                                            pageNumber += 1
-                                            view.loadUrl(next)
-                                        } else {
-                                            onSeriesParsed(
-                                                task.seriesId,
-                                                collectedBooks.values.toList()
-                                            )
+                                when (task.kind) {
+                                    SyncKind.SERIES -> {
+                                        if (!visitedPages.add(url)) return@postDelayed
+                                        view.evaluateJavascript(seriesParserJs) { raw ->
+                                            val page = parseSeriesPage(raw)
+                                            page.books.forEach { book -> collectedBooks[book.url] = book }
+                                            val next = page.nextUrl?.takeIf { it.isNotBlank() && it !in visitedPages }
+                                            if (next != null) {
+                                                pageNumber += 1
+                                                view.loadUrl(next)
+                                            } else {
+                                                onSeriesParsed(task.seriesId, collectedBooks.values.toList())
+                                            }
                                         }
                                     }
-                                } else {
-                                    view.evaluateJavascript(archiveParserJs) { raw ->
-                                        val archive = decodeJsString(raw)
-                                            .takeIf {
-                                                it.startsWith("http") &&
-                                                    !it.contains("torrent", ignoreCase = true)
+
+                                    SyncKind.BOOK -> {
+                                        view.evaluateJavascript(archiveParserJs) { raw ->
+                                            val archive = decodeJsString(raw).takeIf {
+                                                it.startsWith("http") && !it.contains("torrent", ignoreCase = true)
                                             }
-                                        if (archive != null && task.bookUrl != null) {
-                                            onArchiveFound(task.seriesId, task.bookUrl, archive)
+                                            if (archive != null && task.bookUrl != null) {
+                                                onArchiveFound(task.seriesId, task.bookUrl, archive)
+                                            }
+                                        }
+                                    }
+
+                                    SyncKind.SERIES_DIAGNOSTIC -> {
+                                        view.evaluateJavascript(seriesDiagnosticJs) { raw ->
+                                            onDiagnostic(decodeJsString(raw))
+                                        }
+                                    }
+
+                                    SyncKind.BOOK_DIAGNOSTIC -> {
+                                        view.evaluateJavascript(bookDiagnosticJs) { raw ->
+                                            onDiagnostic(decodeJsString(raw))
                                         }
                                     }
                                 }
-                            }, 1200)
+                            }, 1500)
                         }
                     }
 
@@ -457,129 +496,115 @@ private fun BrowserSync(
     }
 }
 
-/*
- * Сторінка циклу Audioboo має картки книг із кнопкою «Подробнее».
- * Саме ця кнопка використовується як надійна ознака книги — це відсікає
- * дати, меню, коментарі, рекламні та інші .html-посилання.
- *
- * Також повертається наступна сторінка /page/N/ для автоматичного обходу
- * багатосторінкових циклів.
- */
 private val seriesParserJs = """
 (function() {
-  const abs = (u) => {
-    try { return new URL(u, location.href).href; } catch (e) { return null; }
-  };
-  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
-  const books = [];
-  const seen = new Set();
-
+  const abs = u => { try { return new URL(u, location.href).href; } catch(e) { return null; } };
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+  const books = [], seen = new Set();
   const detailLinks = Array.from(document.querySelectorAll('a[href]')).filter(a => {
-    const text = norm(a.textContent).toLowerCase();
-    return text === 'подробнее' || text === 'детальніше';
+    const t = norm(a.textContent).toLowerCase();
+    return t === 'подробнее' || t === 'детальніше';
   });
-
   for (const details of detailLinks) {
     const href = abs(details.getAttribute('href'));
     if (!href || seen.has(href)) continue;
-
-    const card = details.closest(
-      'article, .shortstory, .short, .story, .item, .news-item, .book-item, .short-item, .card'
-    ) || details.parentElement?.parentElement?.parentElement || details.parentElement;
-
+    const card = details.closest('article,.shortstory,.short,.story,.item,.news-item,.book-item,.short-item,.card') || details.parentElement?.parentElement?.parentElement || details.parentElement;
     let title = '';
     if (card) {
-      const heading = card.querySelector(
-        'h1, h2, h3, h4, .title, .short-title, .book-title, .book_name, .name'
-      );
+      const heading = card.querySelector('h1,h2,h3,h4,.title,.short-title,.book-title,.book_name,.name');
       title = norm(heading && heading.textContent);
-
-      if (!title) {
-        const image = card.querySelector('img[alt]');
-        title = norm(image && image.getAttribute('alt'));
-      }
-
-      if (!title) {
-        const candidates = Array.from(card.querySelectorAll('a[href]'))
-          .filter(a => abs(a.getAttribute('href')) === href)
-          .map(a => norm(a.textContent))
-          .filter(t => t && t.toLowerCase() !== 'подробнее');
-        title = candidates.sort((a, b) => b.length - a.length)[0] || '';
-      }
+      if (!title) { const img = card.querySelector('img[alt]'); title = norm(img && img.getAttribute('alt')); }
     }
-
-    if (!title) {
-      try {
-        const slug = new URL(href).pathname.split('/').pop().replace(/\.html$/i, '');
-        title = decodeURIComponent(slug).replace(/^\d+-/, '').replace(/-/g, ' ');
-      } catch (e) {}
-    }
-
     if (!title) continue;
-    seen.add(href);
-    books.push({ title: title, url: href });
+    seen.add(href); books.push({title, url: href});
   }
-
   let currentPage = 1;
-  const currentMatch = location.pathname.match(/\/page\/(\d+)\/?$/i);
-  if (currentMatch) currentPage = parseInt(currentMatch[1], 10);
-
-  const pageCandidates = Array.from(document.querySelectorAll('a[href]'))
-    .map(a => abs(a.getAttribute('href')))
-    .filter(Boolean)
-    .map(href => {
-      try {
-        const u = new URL(href);
-        const m = u.pathname.match(/\/page\/(\d+)\/?$/i);
-        return m ? { href: href, page: parseInt(m[1], 10) } : null;
-      } catch (e) { return null; }
-    })
-    .filter(Boolean)
-    .filter(x => x.page > currentPage)
-    .sort((a, b) => a.page - b.page);
-
-  const nextUrl = pageCandidates.length ? pageCandidates[0].href : null;
-  return JSON.stringify({ books: books, nextUrl: nextUrl });
+  const m = location.pathname.match(/\/page\/(\d+)\/?$/i);
+  if (m) currentPage = parseInt(m[1], 10);
+  const pages = Array.from(document.querySelectorAll('a[href]')).map(a => abs(a.getAttribute('href'))).filter(Boolean).map(h => {
+    try { const u = new URL(h), x = u.pathname.match(/\/page\/(\d+)\/?$/i); return x ? {href:h,page:parseInt(x[1],10)} : null; } catch(e) { return null; }
+  }).filter(Boolean).filter(x => x.page > currentPage).sort((a,b) => a.page-b.page);
+  return JSON.stringify({books, nextUrl: pages.length ? pages[0].href : null});
 })();
 """.trimIndent()
 
-/*
- * На сторінці книги є торрент, magnet і звичайна кнопка
- * «Скачать Автор - Название ...». Нам потрібна саме остання.
- * Торрент/магнет-посилання відсікаються явно.
- */
 private val archiveParserJs = """
 (function() {
-  const abs = (u) => {
-    try { return new URL(u, location.href).href; } catch (e) { return null; }
-  };
-  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  const abs = u => { try { return new URL(u, location.href).href; } catch(e) { return null; } };
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim();
   const candidates = [];
-
   for (const a of document.querySelectorAll('a[href]')) {
-    const raw = a.getAttribute('href') || '';
-    const href = abs(raw);
-    const text = norm(a.textContent);
-    const lower = text.toLowerCase();
-
-    if (!href) continue;
-    if (raw.toLowerCase().startsWith('magnet:')) continue;
-    if (href.toLowerCase().startsWith('magnet:')) continue;
-    if (lower.includes('торрент')) continue;
-    if (lower.includes('примагнит')) continue;
-    if (href.toLowerCase().includes('torrent')) continue;
-
+    const raw = a.getAttribute('href') || '', href = abs(raw), text = norm(a.textContent), lower = text.toLowerCase();
+    if (!href || raw.toLowerCase().startsWith('magnet:') || href.toLowerCase().startsWith('magnet:')) continue;
+    if (lower.includes('торрент') || lower.includes('примагнит') || href.toLowerCase().includes('torrent')) continue;
     let score = 0;
-    if (/^скачать\s+.+/i.test(text)) score += 100;
-    if (/^завантажити\s+.+/i.test(text)) score += 100;
+    if (/^скачать\s+.+/i.test(text) || /^завантажити\s+.+/i.test(text)) score += 100;
     if (/\.(zip|rar|7z)(?:\?|$)/i.test(href)) score += 40;
     if (lower === 'скачать' || lower === 'завантажити') score += 20;
-
-    if (score > 0) candidates.push({ href: href, score: score, text: text });
+    if (score > 0) candidates.push({href,score,text});
   }
-
-  candidates.sort((a, b) => b.score - a.score || b.text.length - a.text.length);
+  candidates.sort((a,b) => b.score-a.score || b.text.length-a.text.length);
   return candidates.length ? candidates[0].href : '';
+})();
+""".trimIndent()
+
+private val seriesDiagnosticJs = """
+(function() {
+  const abs = u => { try { return new URL(u, location.href).href; } catch(e) { return null; } };
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+  const links = Array.from(document.querySelectorAll('a[href]')).map((a,i) => {
+    const href = abs(a.getAttribute('href')) || '';
+    const text = norm(a.textContent);
+    const parent = a.parentElement;
+    return {
+      i,
+      text,
+      href,
+      cls: a.className || '',
+      parentTag: parent ? parent.tagName : '',
+      parentClass: parent ? (parent.className || '') : '',
+      html: (a.outerHTML || '').slice(0,700),
+      parentHtml: parent ? (parent.outerHTML || '').slice(0,1000) : ''
+    };
+  }).filter(x => x.text || /\.html|\/page\//i.test(x.href));
+  return JSON.stringify({
+    type: 'SERIES',
+    url: location.href,
+    title: document.title,
+    bodyClass: document.body ? document.body.className : '',
+    links: links.slice(0,120)
+  }, null, 2);
+})();
+""".trimIndent()
+
+private val bookDiagnosticJs = """
+(function() {
+  const abs = u => { try { return new URL(u, location.href).href; } catch(e) { return u || ''; } };
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+  const nodes = Array.from(document.querySelectorAll('a[href],button,[onclick],[data-href],[data-url]')).map((el,i) => {
+    const raw = el.getAttribute('href') || el.getAttribute('data-href') || el.getAttribute('data-url') || '';
+    const text = norm(el.textContent);
+    const onclick = el.getAttribute('onclick') || '';
+    const parent = el.parentElement;
+    return {
+      i,
+      tag: el.tagName,
+      text,
+      raw,
+      href: raw ? abs(raw) : '',
+      cls: el.className || '',
+      id: el.id || '',
+      onclick,
+      html: (el.outerHTML || '').slice(0,900),
+      parentHtml: parent ? (parent.outerHTML || '').slice(0,1500) : ''
+    };
+  }).filter(x => /скач|download|торрент|torrent|магнит|magnet|архив|zip|rar|7z/i.test(x.text + ' ' + x.raw + ' ' + x.href + ' ' + x.onclick));
+  return JSON.stringify({
+    type: 'BOOK',
+    url: location.href,
+    title: document.title,
+    candidates: nodes.slice(0,80)
+  }, null, 2);
 })();
 """.trimIndent()
 
@@ -590,21 +615,18 @@ private fun decodeJsString(raw: String): String = try {
 }
 
 private fun parseSeriesPage(raw: String): ParsedSeriesPage = try {
-    val text = decodeJsString(raw)
-    val obj = JSONObject(text)
+    val obj = JSONObject(decodeJsString(raw))
     val array = obj.optJSONArray("books") ?: JSONArray()
-
     val books = (0 until array.length()).mapNotNull { i ->
         val item = array.optJSONObject(i) ?: return@mapNotNull null
         val title = item.optString("title").trim()
         val url = item.optString("url").trim()
         if (title.isBlank() || url.isBlank()) null else Book(title, url)
     }
-
-    val nextUrl = obj.optString("nextUrl")
-        .takeIf { it.isNotBlank() && it != "null" }
-
-    ParsedSeriesPage(books = books, nextUrl = nextUrl)
+    ParsedSeriesPage(
+        books,
+        obj.optString("nextUrl").takeIf { it.isNotBlank() && it != "null" }
+    )
 } catch (_: Exception) {
     ParsedSeriesPage(emptyList(), null)
 }
@@ -612,33 +634,19 @@ private fun parseSeriesPage(raw: String): ParsedSeriesPage = try {
 private fun saveLibrary(context: Context, library: List<Series>) {
     val array = JSONArray()
     library.forEach { series ->
-        val obj = JSONObject()
-            .put("id", series.id)
-            .put("name", series.name)
-            .put("url", series.url)
+        val obj = JSONObject().put("id", series.id).put("name", series.name).put("url", series.url)
         val books = JSONArray()
         series.books.forEach { book ->
-            books.put(
-                JSONObject()
-                    .put("title", book.title)
-                    .put("url", book.url)
-                    .put("status", book.status.name)
-                    .put("archiveUrl", book.archiveUrl)
-            )
+            books.put(JSONObject().put("title", book.title).put("url", book.url).put("status", book.status.name).put("archiveUrl", book.archiveUrl))
         }
         obj.put("books", books)
         array.put(obj)
     }
-    context.getSharedPreferences("tracker", Context.MODE_PRIVATE)
-        .edit()
-        .putString("library", array.toString())
-        .apply()
+    context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", array.toString()).apply()
 }
 
 private fun loadLibrary(context: Context): List<Series> {
-    val raw = context.getSharedPreferences("tracker", Context.MODE_PRIVATE)
-        .getString("library", null) ?: return emptyList()
-
+    val raw = context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", null) ?: return emptyList()
     return try {
         val array = JSONArray(raw)
         (0 until array.length()).map { i ->
@@ -649,11 +657,8 @@ private fun loadLibrary(context: Context): List<Series> {
                 Book(
                     title = book.optString("title"),
                     url = book.optString("url"),
-                    status = runCatching {
-                        BookStatus.valueOf(book.optString("status", "NEW"))
-                    }.getOrDefault(BookStatus.NEW),
-                    archiveUrl = book.optString("archiveUrl")
-                        .takeIf { it.isNotBlank() && it != "null" }
+                    status = runCatching { BookStatus.valueOf(book.optString("status", "NEW")) }.getOrDefault(BookStatus.NEW),
+                    archiveUrl = book.optString("archiveUrl").takeIf { it.isNotBlank() && it != "null" }
                 )
             }
             Series(
@@ -673,26 +678,17 @@ private fun downloadArchive(context: Context, book: Book, url: String) {
         .setTitle(book.title)
         .setDescription("Audioboo Tracker")
         .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        .setDestinationInExternalPublicDir(
-            Environment.DIRECTORY_DOWNLOADS,
-            safeFileName(book.title) + archiveExtension(url)
-        )
+        .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeFileName(book.title) + archiveExtension(url))
 
-    CookieManager.getInstance().getCookie(url)?.let {
-        request.addRequestHeader("Cookie", it)
-    }
+    CookieManager.getInstance().getCookie(url)?.let { request.addRequestHeader("Cookie", it) }
     request.addRequestHeader("Referer", book.url)
 
     (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
     Toast.makeText(context, "Завантаження розпочато", Toast.LENGTH_SHORT).show()
 }
 
-private fun safeFileName(value: String): String =
-    value.replace(Regex("[\\/:*?\"<>|]"), "_").take(100)
+private fun safeFileName(value: String): String = value.replace(Regex("[\\/:*?\"<>|]"), "_").take(100)
 
 private fun archiveExtension(url: String): String =
     Regex("\\.(zip|rar|7z)(?:\\?|$)", RegexOption.IGNORE_CASE)
-        .find(url)
-        ?.value
-        ?.substringBefore('?')
-        ?: ".zip"
+        .find(url)?.value?.substringBefore('?') ?: ".zip"

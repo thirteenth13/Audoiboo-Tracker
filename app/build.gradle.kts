@@ -11,8 +11,27 @@ android {
         applicationId = "org.audoiboo.tracker"
         minSdk = 23
         targetSdk = 37
-        versionCode = 7
-        versionName = "0.3.3-dev"
+        versionCode = 100
+        versionName = "1.0.0"
+    }
+
+    signingConfigs {
+        create("stableRelease") {
+            storeFile = rootProject.file(".github/keys/audoiboo-release.jks")
+            storePassword = "Audoiboo2026"
+            keyAlias = "audoiboo"
+            keyPassword = "Audoiboo2026"
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("stableRelease")
+        }
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("stableRelease")
+        }
     }
 
     buildFeatures { compose = true }

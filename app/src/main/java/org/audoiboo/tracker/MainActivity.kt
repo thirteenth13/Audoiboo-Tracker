@@ -28,29 +28,10 @@ import org.json.JSONObject
 import java.util.UUID
 
 private enum class BookStatus { NEW, UNREAD, READING, READ }
-
-private data class Book(
-    val title: String,
-    val url: String,
-    val status: BookStatus = BookStatus.NEW,
-    val archiveUrl: String? = null
-)
-
-private data class Series(
-    val id: String = UUID.randomUUID().toString(),
-    val name: String,
-    val url: String,
-    val books: List<Book> = emptyList()
-)
-
+private data class Book(val title: String, val url: String, val status: BookStatus = BookStatus.NEW, val archiveUrl: String? = null)
+private data class Series(val id: String = UUID.randomUUID().toString(), val name: String, val url: String, val books: List<Book> = emptyList())
 private enum class SyncKind { SERIES, BOOK }
-
-private data class SyncTask(
-    val kind: SyncKind,
-    val seriesId: String,
-    val bookUrl: String? = null,
-    val url: String
-)
+private data class SyncTask(val kind: SyncKind, val seriesId: String, val bookUrl: String? = null, val url: String)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -59,6 +40,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TrackerScreen() {
     val context = LocalContext.current
@@ -67,488 +49,83 @@ private fun TrackerScreen() {
     var syncTask by remember { mutableStateOf<SyncTask?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
     var filter by remember { mutableStateOf<BookStatus?>(null) }
-
     val selectedSeries = library.firstOrNull { it.id == selectedSeriesId }
+    fun commit(newLibrary: List<Series>) { library = newLibrary; saveLibrary(context, newLibrary) }
 
-    fun commit(newLibrary: List<Series>) {
-        library = newLibrary
-        saveLibrary(context, newLibrary)
-    }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(selectedSeries?.name ?: "Audoiboo Tracker") },
-                navigationIcon = {
-                    if (selectedSeries != null) {
-                        TextButton(onClick = {
-                            selectedSeriesId = null
-                            filter = null
-                        }) { Text("←") }
-                    }
-                },
-                actions = {
-                    if (selectedSeries == null) {
-                        TextButton(onClick = { showAddDialog = true }) { Text("+ Серія") }
-                    } else {
-                        TextButton(onClick = {
-                            syncTask = SyncTask(
-                                kind = SyncKind.SERIES,
-                                seriesId = selectedSeries.id,
-                                url = selectedSeries.url
-                            )
-                        }) { Text("Оновити") }
-                    }
-                }
-            )
-        }
-    ) { padding ->
+    Scaffold(topBar = {
+        TopAppBar(title = { Text(selectedSeries?.name ?: "Audoiboo Tracker") }, navigationIcon = {
+            if (selectedSeries != null) TextButton(onClick = { selectedSeriesId = null; filter = null }) { Text("←") }
+        }, actions = {
+            if (selectedSeries == null) TextButton(onClick = { showAddDialog = true }) { Text("+ Серія") }
+            else TextButton(onClick = { syncTask = SyncTask(SyncKind.SERIES, selectedSeries.id, url = selectedSeries.url) }) { Text("Оновити") }
+        })
+    }) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when {
-                syncTask != null -> {
-                    BrowserSync(
-                        task = syncTask!!,
-                        onSeriesParsed = { seriesId, parsedBooks ->
-                            val currentSeries = library.firstOrNull { it.id == seriesId }
-                            if (currentSeries != null) {
-                                val oldByUrl = currentSeries.books.associateBy { it.url }
-                                val merged = parsedBooks.map { parsed ->
-                                    val old = oldByUrl[parsed.url]
-                                    if (old != null) parsed.copy(status = old.status, archiveUrl = old.archiveUrl)
-                                    else parsed
-                                }
-                                commit(library.map {
-                                    if (it.id == seriesId) it.copy(books = merged) else it
-                                })
-                                Toast.makeText(context, "Знайдено книг: ${merged.size}", Toast.LENGTH_SHORT).show()
-                            }
-                            syncTask = null
-                        },
-                        onArchiveFound = { seriesId, bookUrl, archiveUrl ->
-                            commit(library.map { series ->
-                                if (series.id != seriesId) series else series.copy(
-                                    books = series.books.map { book ->
-                                        if (book.url == bookUrl) book.copy(archiveUrl = archiveUrl) else book
-                                    }
-                                )
-                            })
-                            Toast.makeText(context, "Посилання на архів збережено", Toast.LENGTH_SHORT).show()
-                            syncTask = null
-                        },
-                        onCancel = { syncTask = null }
-                    )
-                }
-
-                selectedSeries == null -> {
-                    SeriesList(
-                        library = library,
-                        onOpen = { selectedSeriesId = it },
-                        onDelete = { id ->
-                            commit(library.filterNot { it.id == id })
-                        }
-                    )
-                }
-
-                else -> {
-                    SeriesDetail(
-                        series = selectedSeries,
-                        filter = filter,
-                        onFilter = { filter = it },
-                        onStatus = { book, status ->
-                            commit(library.map { series ->
-                                if (series.id != selectedSeries.id) series else series.copy(
-                                    books = series.books.map { current ->
-                                        if (current.url == book.url) current.copy(status = status) else current
-                                    }
-                                )
-                            })
-                        },
-                        onOpenPage = { url ->
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                        },
-                        onFindArchive = { book ->
-                            syncTask = SyncTask(
-                                kind = SyncKind.BOOK,
-                                seriesId = selectedSeries.id,
-                                bookUrl = book.url,
-                                url = book.url
-                            )
-                        },
-                        onDownload = { book ->
-                            book.archiveUrl?.let { downloadArchive(context, book, it) }
-                        }
-                    )
-                }
+                syncTask != null -> BrowserSync(syncTask!!, { seriesId, parsedBooks ->
+                    val current = library.firstOrNull { it.id == seriesId }
+                    if (current != null) {
+                        val old = current.books.associateBy { it.url }
+                        val merged = parsedBooks.map { p -> old[p.url]?.let { p.copy(status = it.status, archiveUrl = it.archiveUrl) } ?: p }
+                        commit(library.map { if (it.id == seriesId) it.copy(books = merged) else it })
+                        Toast.makeText(context, "Знайдено книг: ${merged.size}", Toast.LENGTH_SHORT).show()
+                    }
+                    syncTask = null
+                }, { seriesId, bookUrl, archiveUrl ->
+                    commit(library.map { s -> if (s.id != seriesId) s else s.copy(books = s.books.map { b -> if (b.url == bookUrl) b.copy(archiveUrl = archiveUrl) else b }) })
+                    Toast.makeText(context, "Посилання на архів збережено", Toast.LENGTH_SHORT).show(); syncTask = null
+                }, { syncTask = null })
+                selectedSeries == null -> SeriesList(library, { selectedSeriesId = it }, { id -> commit(library.filterNot { it.id == id }) })
+                else -> SeriesDetail(selectedSeries, filter, { filter = it }, { book, status ->
+                    commit(library.map { s -> if (s.id != selectedSeries.id) s else s.copy(books = s.books.map { b -> if (b.url == book.url) b.copy(status = status) else b }) })
+                }, { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) }, { book -> syncTask = SyncTask(SyncKind.BOOK, selectedSeries.id, book.url, book.url) }, { book -> book.archiveUrl?.let { downloadArchive(context, book, it) } })
             }
         }
     }
-
-    if (showAddDialog) {
-        AddSeriesDialog(
-            onDismiss = { showAddDialog = false },
-            onAdd = { name, url ->
-                commit(library + Series(name = name.trim(), url = url.trim()))
-                showAddDialog = false
-            }
-        )
-    }
+    if (showAddDialog) AddSeriesDialog({ showAddDialog = false }) { name, url -> commit(library + Series(name = name.trim(), url = url.trim())); showAddDialog = false }
 }
 
-@Composable
-private fun SeriesList(
-    library: List<Series>,
-    onOpen: (String) -> Unit,
-    onDelete: (String) -> Unit
-) {
-    if (library.isEmpty()) {
-        Box(Modifier.fillMaxSize().padding(24.dp)) {
-            Text("Додай першу серію кнопкою «+ Серія».")
-        }
-        return
-    }
-
-    LazyColumn(Modifier.fillMaxSize()) {
-        items(library, key = { it.id }) { series ->
-            val unread = series.books.count { it.status != BookStatus.READ }
-            val newCount = series.books.count { it.status == BookStatus.NEW }
-            ListItem(
-                headlineContent = { Text(series.name) },
-                supportingContent = {
-                    Text("${series.books.size} книг • $unread не прочитано • $newCount нових")
-                },
-                trailingContent = {
-                    TextButton(onClick = { onDelete(series.id) }) { Text("Видалити") }
-                },
-                modifier = Modifier.clickable { onOpen(series.id) }
-            )
-            HorizontalDivider()
-        }
-    }
+@Composable private fun SeriesList(library: List<Series>, onOpen: (String) -> Unit, onDelete: (String) -> Unit) {
+    if (library.isEmpty()) { Box(Modifier.fillMaxSize().padding(24.dp)) { Text("Додай першу серію кнопкою «+ Серія».") }; return }
+    LazyColumn(Modifier.fillMaxSize()) { items(library, key = { it.id }) { s ->
+        ListItem(headlineContent = { Text(s.name) }, supportingContent = { Text("${s.books.size} книг • ${s.books.count { it.status != BookStatus.READ }} не прочитано • ${s.books.count { it.status == BookStatus.NEW }} нових") }, trailingContent = { TextButton(onClick = { onDelete(s.id) }) { Text("Видалити") } }, modifier = Modifier.clickable { onOpen(s.id) }); HorizontalDivider()
+    } }
 }
 
-@Composable
-private fun SeriesDetail(
-    series: Series,
-    filter: BookStatus?,
-    onFilter: (BookStatus?) -> Unit,
-    onStatus: (Book, BookStatus) -> Unit,
-    onOpenPage: (String) -> Unit,
-    onFindArchive: (Book) -> Unit,
-    onDownload: (Book) -> Unit
-) {
-    val visibleBooks = if (filter == null) series.books else series.books.filter { it.status == filter }
-
+@Composable private fun SeriesDetail(series: Series, filter: BookStatus?, onFilter: (BookStatus?) -> Unit, onStatus: (Book, BookStatus) -> Unit, onOpenPage: (String) -> Unit, onFindArchive: (Book) -> Unit, onDownload: (Book) -> Unit) {
+    val books = if (filter == null) series.books else series.books.filter { it.status == filter }
     Column(Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            FilterChip(selected = filter == null, onClick = { onFilter(null) }, label = { Text("Всі") })
-            FilterChip(selected = filter == BookStatus.NEW, onClick = { onFilter(BookStatus.NEW) }, label = { Text("Нові") })
-            FilterChip(selected = filter == BookStatus.READING, onClick = { onFilter(BookStatus.READING) }, label = { Text("Читаю") })
-            FilterChip(selected = filter == BookStatus.READ, onClick = { onFilter(BookStatus.READ) }, label = { Text("Прочитані") })
+        Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(filter == null, { onFilter(null) }, label = { Text("Всі") }); FilterChip(filter == BookStatus.NEW, { onFilter(BookStatus.NEW) }, label = { Text("Нові") }); FilterChip(filter == BookStatus.READING, { onFilter(BookStatus.READING) }, label = { Text("Читаю") }); FilterChip(filter == BookStatus.READ, { onFilter(BookStatus.READ) }, label = { Text("Прочитані") })
         }
-
-        if (series.books.isEmpty()) {
-            Text(
-                "Натисни «Оновити», щоб отримати список книг із Audioboo.",
-                modifier = Modifier.padding(16.dp)
-            )
-        } else {
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(visibleBooks, key = { it.url }) { book ->
-                    BookRow(
-                        book = book,
-                        onStatus = { onStatus(book, it) },
-                        onOpenPage = { onOpenPage(book.url) },
-                        onFindArchive = { onFindArchive(book) },
-                        onDownload = { onDownload(book) }
-                    )
-                    HorizontalDivider()
-                }
-            }
-        }
+        if (series.books.isEmpty()) Text("Натисни «Оновити», щоб отримати список книг із Audioboo.", Modifier.padding(16.dp))
+        else LazyColumn(Modifier.fillMaxSize()) { items(books, key = { it.url }) { b -> BookRow(b, { onStatus(b, it) }, { onOpenPage(b.url) }, { onFindArchive(b) }, { onDownload(b) }); HorizontalDivider() } }
     }
 }
 
-@Composable
-private fun BookRow(
-    book: Book,
-    onStatus: (BookStatus) -> Unit,
-    onOpenPage: () -> Unit,
-    onFindArchive: () -> Unit,
-    onDownload: () -> Unit
-) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
-        Text(book.title, style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(4.dp))
-        Text(statusLabel(book.status), style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(8.dp))
+@Composable private fun BookRow(book: Book, onStatus: (BookStatus) -> Unit, onOpenPage: () -> Unit, onFindArchive: () -> Unit, onDownload: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(12.dp)) { Text(book.title, style = MaterialTheme.typography.titleMedium); Spacer(Modifier.height(4.dp)); Text(statusLabel(book.status), style = MaterialTheme.typography.bodySmall); Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { TextButton({ onStatus(nextStatus(book.status)) }) { Text("Статус → ${statusLabel(nextStatus(book.status))}") }; TextButton(onOpenPage) { Text("Сторінка") } }; if (book.archiveUrl == null) TextButton(onFindArchive) { Text("Знайти архів") } else Row { TextButton(onDownload) { Text("Завантажити архів") }; Text("Архів знайдено") } }
+}
+private fun statusLabel(s: BookStatus) = when(s){ BookStatus.NEW->"Нова"; BookStatus.UNREAD->"Не прочитано"; BookStatus.READING->"Читаю"; BookStatus.READ->"Прочитано" }
+private fun nextStatus(s: BookStatus) = when(s){ BookStatus.NEW->BookStatus.UNREAD; BookStatus.UNREAD->BookStatus.READING; BookStatus.READING->BookStatus.READ; BookStatus.READ->BookStatus.UNREAD }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            TextButton(onClick = { onStatus(nextStatus(book.status)) }) {
-                Text("Статус → ${statusLabel(nextStatus(book.status))}")
-            }
-            TextButton(onClick = onOpenPage) { Text("Сторінка") }
-        }
+@Composable private fun AddSeriesDialog(onDismiss: () -> Unit, onAdd: (String,String) -> Unit) {
+    var name by remember { mutableStateOf("Другая сторона") }; var url by remember { mutableStateOf("https://audioboo.org/xfsearch/cikl/%D0%94%D1%80%D1%83%D0%B3%D0%B0%D1%8F%20%D1%81%D1%82%D0%BE%D1%80%D0%BE%D0%BD%D0%B0/") }
+    AlertDialog(onDismissRequest=onDismiss, title={Text("Додати серію")}, text={Column { OutlinedTextField(name,{name=it},label={Text("Назва")}); OutlinedTextField(url,{url=it},label={Text("URL серії Audioboo")}) }}, confirmButton={TextButton({onAdd(name,url)}, enabled=name.isNotBlank()&&url.startsWith("http")){Text("Додати")}}, dismissButton={TextButton(onDismiss){Text("Скасувати")}})
+}
 
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            if (book.archiveUrl == null) {
-                TextButton(onClick = onFindArchive) { Text("Знайти архів") }
-            } else {
-                TextButton(onClick = onDownload) { Text("Завантажити архів") }
-                Text("Архів знайдено", style = MaterialTheme.typography.bodySmall)
-            }
-        }
+@SuppressLint("SetJavaScriptEnabled") @Composable private fun BrowserSync(task: SyncTask, onSeriesParsed:(String,List<Book>)->Unit, onArchiveFound:(String,String,String)->Unit, onCancel:()->Unit) {
+    Column(Modifier.fillMaxSize()) { Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement=Arrangement.SpaceBetween){Text(if(task.kind==SyncKind.SERIES)"Синхронізація серії…" else "Пошук архіву…");TextButton(onCancel){Text("Закрити")}}
+        AndroidView(Modifier.fillMaxSize(), factory={ context -> WebView(context).apply { settings.javaScriptEnabled=true; settings.domStorageEnabled=true; CookieManager.getInstance().setAcceptCookie(true); CookieManager.getInstance().setAcceptThirdPartyCookies(this,true); setDownloadListener{url,_,_,_,_->if(task.kind==SyncKind.BOOK&&task.bookUrl!=null&&url.isNotBlank())onArchiveFound(task.seriesId,task.bookUrl,url)}; webViewClient=object:WebViewClient(){override fun onPageFinished(view:WebView,url:String){view.postDelayed({if(task.kind==SyncKind.SERIES)view.evaluateJavascript(seriesParserJs){r->parseSeriesResult(r).takeIf{it.isNotEmpty()}?.let{onSeriesParsed(task.seriesId,it)}} else view.evaluateJavascript(archiveParserJs){r->decodeJsString(r).takeIf{it.startsWith("http")}?.let{a->task.bookUrl?.let{onArchiveFound(task.seriesId,it,a)}}}},1200)}}; loadUrl(task.url) } })
     }
 }
 
-private fun statusLabel(status: BookStatus): String = when (status) {
-    BookStatus.NEW -> "Нова"
-    BookStatus.UNREAD -> "Не прочитано"
-    BookStatus.READING -> "Читаю"
-    BookStatus.READ -> "Прочитано"
-}
-
-private fun nextStatus(status: BookStatus): BookStatus = when (status) {
-    BookStatus.NEW -> BookStatus.UNREAD
-    BookStatus.UNREAD -> BookStatus.READING
-    BookStatus.READING -> BookStatus.READ
-    BookStatus.READ -> BookStatus.UNREAD
-}
-
-@Composable
-private fun AddSeriesDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
-    var name by remember { mutableStateOf("Другая сторона") }
-    var url by remember {
-        mutableStateOf("https://audioboo.org/xfsearch/cikl/%D0%94%D1%80%D1%83%D0%B3%D0%B0%D1%8F%20%D1%81%D1%82%D0%BE%D1%80%D0%BE%D0%BD%D0%B0/")
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Додати серію") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Назва") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    label = { Text("URL серії Audioboo") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = name.isNotBlank() && url.startsWith("http"),
-                onClick = { onAdd(name, url) }
-            ) { Text("Додати") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Скасувати") } }
-    )
-}
-
-@SuppressLint("SetJavaScriptEnabled")
-@Composable
-private fun BrowserSync(
-    task: SyncTask,
-    onSeriesParsed: (String, List<Book>) -> Unit,
-    onArchiveFound: (String, String, String) -> Unit,
-    onCancel: () -> Unit
-) {
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(if (task.kind == SyncKind.SERIES) "Синхронізація серії…" else "Пошук архіву…")
-            TextButton(onClick = onCancel) { Text("Закрити") }
-        }
-
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { context ->
-                WebView(context).apply {
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.userAgentString = settings.userAgentString.replace("; wv", "")
-                    CookieManager.getInstance().setAcceptCookie(true)
-                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-
-                    setDownloadListener { url, _, _, _, _ ->
-                        if (task.kind == SyncKind.BOOK && task.bookUrl != null && url.isNotBlank()) {
-                            onArchiveFound(task.seriesId, task.bookUrl, url)
-                        }
-                    }
-
-                    webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView, url: String) {
-                            view.postDelayed({
-                                if (task.kind == SyncKind.SERIES) {
-                                    view.evaluateJavascript(seriesParserJs) { raw ->
-                                        val books = parseSeriesResult(raw)
-                                        if (books.isNotEmpty()) onSeriesParsed(task.seriesId, books)
-                                    }
-                                } else {
-                                    view.evaluateJavascript(archiveParserJs) { raw ->
-                                        val archive = decodeJsString(raw).takeIf { it.startsWith("http") }
-                                        if (archive != null && task.bookUrl != null) {
-                                            onArchiveFound(task.seriesId, task.bookUrl, archive)
-                                        }
-                                    }
-                                }
-                            }, 1200)
-                        }
-                    }
-                    loadUrl(task.url)
-                }
-            }
-        )
-    }
-}
-
-private val seriesParserJs = """
-(function() {
-  const absolute = (u) => { try { return new URL(u, location.href).href; } catch(e) { return null; } };
-  const seen = new Set();
-  const result = [];
-  const links = Array.from(document.querySelectorAll('a[href]'));
-  for (const a of links) {
-    const href = absolute(a.getAttribute('href'));
-    if (!href || seen.has(href)) continue;
-    const path = new URL(href).pathname;
-    if (!/\/[^\/]+\/\d{4,}[^\/]*\.html$/i.test(path)) continue;
-    const card = a.closest('article, .short, .shortstory, .story, .item, .news-item, li, div');
-    const heading = card && card.querySelector('h1,h2,h3,h4,.title,.name,.book-name,.book_name');
-    const title = ((heading && heading.textContent) || a.getAttribute('title') || a.textContent || '')
-      .replace(/\s+/g, ' ').trim();
-    if (!title || title.length < 3) continue;
-    seen.add(href);
-    result.push({ title: title, url: href });
-  }
-  return JSON.stringify(result);
-})();
-""".trimIndent()
-
-private val archiveParserJs = """
-(function() {
-  const absolute = (u) => { try { return new URL(u, location.href).href; } catch(e) { return null; } };
-  const els = Array.from(document.querySelectorAll('a[href], [data-href], [data-url], form[action]'));
-  let fallback = null;
-  for (const el of els) {
-    const raw = el.getAttribute('href') || el.getAttribute('data-href') || el.getAttribute('data-url') || el.getAttribute('action');
-    const href = raw ? absolute(raw) : null;
-    if (!href) continue;
-    const text = (el.textContent || el.getAttribute('title') || '').toLowerCase();
-    if (/\.(zip|rar|7z)(\?|$)/i.test(href)) return href;
-    if (!fallback && /(скачать|download|загрузить|архив)/i.test(text)) fallback = href;
-  }
-  return fallback || '';
-})();
-""".trimIndent()
-
-private fun parseSeriesResult(raw: String): List<Book> = runCatching {
-    val decoded = decodeJsString(raw)
-    val arr = JSONArray(decoded)
-    buildList {
-        for (i in 0 until arr.length()) {
-            val obj = arr.getJSONObject(i)
-            val title = obj.optString("title").trim()
-            val url = obj.optString("url").trim()
-            if (title.isNotBlank() && url.startsWith("http")) add(Book(title = title, url = url))
-        }
-    }
-}.getOrDefault(emptyList())
-
-private fun decodeJsString(raw: String): String {
-    if (raw == "null" || raw.isBlank()) return ""
-    return runCatching { JSONArray("[$raw]").getString(0) }
-        .getOrElse { raw.removeSurrounding("\"").replace("\\\"", "\"").replace("\\\\", "\\") }
-}
-
-private fun loadLibrary(context: Context): List<Series> {
-    val json = context.getSharedPreferences("tracker", Context.MODE_PRIVATE)
-        .getString("library", null) ?: return emptyList()
-    return runCatching {
-        val root = JSONArray(json)
-        buildList {
-            for (i in 0 until root.length()) {
-                val s = root.getJSONObject(i)
-                val booksJson = s.optJSONArray("books") ?: JSONArray()
-                val books = buildList {
-                    for (j in 0 until booksJson.length()) {
-                        val b = booksJson.getJSONObject(j)
-                        add(
-                            Book(
-                                title = b.optString("title"),
-                                url = b.optString("url"),
-                                status = runCatching { BookStatus.valueOf(b.optString("status", "UNREAD")) }
-                                    .getOrDefault(BookStatus.UNREAD),
-                                archiveUrl = b.optString("archiveUrl").takeIf { it.isNotBlank() }
-                            )
-                        )
-                    }
-                }
-                add(
-                    Series(
-                        id = s.optString("id").ifBlank { UUID.randomUUID().toString() },
-                        name = s.optString("name", "Серія"),
-                        url = s.optString("url"),
-                        books = books
-                    )
-                )
-            }
-        }
-    }.getOrDefault(emptyList())
-}
-
-private fun saveLibrary(context: Context, library: List<Series>) {
-    val root = JSONArray()
-    library.forEach { series ->
-        val books = JSONArray()
-        series.books.forEach { book ->
-            books.put(
-                JSONObject()
-                    .put("title", book.title)
-                    .put("url", book.url)
-                    .put("status", book.status.name)
-                    .put("archiveUrl", book.archiveUrl ?: "")
-            )
-        }
-        root.put(
-            JSONObject()
-                .put("id", series.id)
-                .put("name", series.name)
-                .put("url", series.url)
-                .put("books", books)
-        )
-    }
-    context.getSharedPreferences("tracker", Context.MODE_PRIVATE)
-        .edit().putString("library", root.toString()).apply()
-}
-
-private fun downloadArchive(context: Context, book: Book, url: String) {
-    val request = DownloadManager.Request(Uri.parse(url))
-        .setTitle(book.title)
-        .setDescription("Audioboo archive")
-        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        .setDestinationInExternalPublicDir(
-            Environment.DIRECTORY_DOWNLOADS,
-            sanitizeFileName(book.title) + ".zip"
-        )
-
-    CookieManager.getInstance().getCookie(url)?.let { request.addRequestHeader("Cookie", it) }
-    request.addRequestHeader("Referer", book.url)
-
-    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-    manager.enqueue(request)
-    Toast.makeText(context, "Завантаження додано", Toast.LENGTH_SHORT).show()
-}
-
-private fun sanitizeFileName(value: String): String =
-    value.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(120).ifBlank { "audioboo" }
+private val seriesParserJs="""(function(){const a=u=>{try{return new URL(u,location.href).href}catch(e){return null}},s=new Set(),r=[];for(const x of document.querySelectorAll('a[href]')){const h=a(x.getAttribute('href'));if(!h||s.has(h))continue;const p=new URL(h).pathname;if(!/\/[^\/]+\/\d{4,}[^\/]*\.html$/i.test(p))continue;const c=x.closest('article,.short,.shortstory,.story,.item,.news-item,li,div'),q=c&&c.querySelector('h1,h2,h3,h4,.title,.name,.book-name,.book_name'),t=((q&&q.textContent)||x.title||x.textContent||'').replace(/\s+/g,' ').trim();if(t.length<3)continue;s.add(h);r.push({title:t,url:h})}return JSON.stringify(r)})()"""
+private val archiveParserJs="""(function(){const a=u=>{try{return new URL(u,location.href).href}catch(e){return null}};for(const x of document.querySelectorAll('a[href]')){const h=a(x.getAttribute('href')),t=(x.textContent||'').toLowerCase();if(h&&(/\.(zip|rar|7z)(\?|$)/i.test(h)||/скач|download|архив/.test(t)))return h}return ''})()"""
+private fun decodeJsString(raw:String):String=try{JSONArray("[$raw]").getString(0)}catch(_:Exception){raw.trim('"')}
+private fun parseSeriesResult(raw:String):List<Book>=try{val text=decodeJsString(raw);val a=JSONArray(text);(0 until a.length()).mapNotNull{i->val o=a.optJSONObject(i)?:return@mapNotNull null;val t=o.optString("title").trim();val u=o.optString("url").trim();if(t.isBlank()||u.isBlank())null else Book(t,u)}}catch(_:Exception){emptyList()}
+private fun saveLibrary(context:Context,library:List<Series>){val a=JSONArray();library.forEach{s->val o=JSONObject().put("id",s.id).put("name",s.name).put("url",s.url);val b=JSONArray();s.books.forEach{x->b.put(JSONObject().put("title",x.title).put("url",x.url).put("status",x.status.name).put("archiveUrl",x.archiveUrl))};o.put("books",b);a.put(o)};context.getSharedPreferences("tracker",Context.MODE_PRIVATE).edit().putString("library",a.toString()).apply()}
+private fun loadLibrary(context:Context):List<Series>{val raw=context.getSharedPreferences("tracker",Context.MODE_PRIVATE).getString("library",null)?:return emptyList();return try{val a=JSONArray(raw);(0 until a.length()).map{i->val o=a.getJSONObject(i);val ba=o.optJSONArray("books")?:JSONArray();val books=(0 until ba.length()).map{j->val b=ba.getJSONObject(j);Book(b.optString("title"),b.optString("url"),runCatching{BookStatus.valueOf(b.optString("status","NEW"))}.getOrDefault(BookStatus.NEW),b.optString("archiveUrl").takeIf{it.isNotBlank()&&it!="null"})};Series(o.optString("id",UUID.randomUUID().toString()),o.optString("name"),o.optString("url"),books)}}catch(_:Exception){emptyList()}}
+private fun downloadArchive(context:Context,book:Book,url:String){val request=DownloadManager.Request(Uri.parse(url)).setTitle(book.title).setDescription("Audioboo Tracker").setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED).setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,safeFileName(book.title)+archiveExtension(url));CookieManager.getInstance().getCookie(url)?.let{request.addRequestHeader("Cookie",it)};request.addRequestHeader("Referer",book.url);(context.getSystemService(Context.DOWNLOAD_SERVICE)as DownloadManager).enqueue(request);Toast.makeText(context,"Завантаження розпочато",Toast.LENGTH_SHORT).show()}
+private fun safeFileName(v:String)=v.replace(Regex("[\\/:*?\"<>|]"),"_").take(100)
+private fun archiveExtension(url:String)=Regex("\\.(zip|rar|7z)(?:\\?|$)",RegexOption.IGNORE_CASE).find(url)?.value?.substringBefore('?')?:".zip"

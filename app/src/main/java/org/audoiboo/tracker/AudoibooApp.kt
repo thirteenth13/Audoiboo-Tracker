@@ -26,6 +26,9 @@ class AudoibooApp : Application() {
         if (key == null || key == "book_tags") {
             appScope.launch { runCatching { RoomTagSync.syncFromLegacy(this@AudoibooApp) } }
         }
+        if (key == null || key in setOf("history", "bookmarks_v2", "daily_listened", "listened_ms")) {
+            appScope.launch { runCatching { PlayerExtrasRoomSync.syncFromLegacy(this@AudoibooApp) } }
+        }
     }
     private val playerQueueListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null || key == "book_dirs") {
@@ -86,6 +89,7 @@ class AudoibooApp : Application() {
             runCatching { PreferenceDataStore.reconcile(this@AudoibooApp) }
             runCatching { PlaybackStateRepository.reconcile(this@AudoibooApp) }
             runCatching { RoomTagSync.syncFromLegacy(this@AudoibooApp) }
+            runCatching { PlayerExtrasRoomSync.syncFromLegacy(this@AudoibooApp) }
             runCatching { RoomCoverSync.enqueueAll(this@AudoibooApp) }
         }
     }

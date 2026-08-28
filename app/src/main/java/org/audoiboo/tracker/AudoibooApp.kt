@@ -10,11 +10,22 @@ import kotlinx.coroutines.launch
 
 class AudoibooApp : Application() {
     private lateinit var playerExtrasPrefs: SharedPreferences
+    private lateinit var playerQueuePrefs: SharedPreferences
     private lateinit var appSettingsPrefs: SharedPreferences
     private lateinit var trackerBridge: LegacyTrackerBridge
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val playerExtrasListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> ContinueListeningWidget.updateAll(this) }
+    private val playerExtrasListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        ContinueListeningWidget.updateAll(this)
+        if (key == null || key == "playback_snapshot") {
+            appScope.launch { runCatching { PlaybackStateRepository.syncFromLegacy(this@AudoibooApp) } }
+        }
+    }
+    private val playerQueueListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == null || key == "book_dirs") {
+            appScope.launch { runCatching { PlaybackStateRepository.syncFromLegacy(this@AudoibooApp) } }
+        }
+    }
     private val appSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null || key in setOf("wifi_only", "auto_find_archives", "dark_theme")) {
             appScope.launch { runCatching { PreferenceDataStore.syncFromLegacy(this@AudoibooApp) } }
@@ -30,6 +41,8 @@ class AudoibooApp : Application() {
 
         playerExtrasPrefs = getSharedPreferences("player_extras", Context.MODE_PRIVATE)
         playerExtrasPrefs.registerOnSharedPreferenceChangeListener(playerExtrasListener)
+        playerQueuePrefs = getSharedPreferences("player_queue", Context.MODE_PRIVATE)
+        playerQueuePrefs.registerOnSharedPreferenceChangeListener(playerQueueListener)
         appSettingsPrefs = getSharedPreferences("app_settings", Context.MODE_PRIVATE)
         appSettingsPrefs.registerOnSharedPreferenceChangeListener(appSettingsListener)
         trackerBridge = LegacyTrackerBridge(applicationContext).also { it.start() }
@@ -38,6 +51,7 @@ class AudoibooApp : Application() {
         appScope.launch {
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
             runCatching { PreferenceDataStore.importLegacyIfNeeded(this@AudoibooApp) }
+            runCatching { PlaybackStateRepository.syncFromLegacy(this@AudoibooApp) }
         }
     }
 }

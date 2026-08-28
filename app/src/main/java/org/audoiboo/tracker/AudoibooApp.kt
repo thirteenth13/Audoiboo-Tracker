@@ -39,8 +39,7 @@ class AudoibooApp : Application() {
         appScope.launch { runCatching { PreferenceDataStore.syncFromLegacy(this@AudoibooApp) } }
     }
 
-    private fun isLegacyTrackerConsumer(activity: Activity): Boolean =
-        activity is MainActivity || activity is PlayerActivity
+    private fun isLegacyTrackerConsumer(activity: Activity): Boolean = activity is MainActivity
 
     private val legacyLifecycle = object : ActivityLifecycleCallbacks {
         override fun onActivityStarted(activity: Activity) {

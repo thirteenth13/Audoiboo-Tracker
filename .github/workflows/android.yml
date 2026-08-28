@@ -34,17 +34,20 @@ jobs:
           base64 -d .github/keys/audoiboo-release.keystore.b64 > .github/keys/audoiboo-release.jks
           keytool -list -keystore .github/keys/audoiboo-release.jks -storepass Audoiboo2026 -alias audoiboo >/dev/null
 
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+
       - name: Build release APK
         run: gradle :app:assembleRelease --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.1.1-dev.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.1.3-dev.apk
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Audoiboo-Tracker-1.1.1-dev
-          path: Audoiboo-Tracker-1.1.1-dev.apk
+          name: Audoiboo-Tracker-1.1.3-dev
+          path: Audoiboo-Tracker-1.1.3-dev.apk
 
       - name: Publish dev prerelease
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -52,4 +55,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete dev-player --yes --cleanup-tag || true
-          gh release create dev-player Audoiboo-Tracker-1.1.1-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.1-dev" --prerelease --notes "Development player update: MediaStore library discovery, READ_MEDIA_AUDIO support, Media3 background playback service, media notification/lock-screen controls, Bluetooth/headset media keys, audio focus, automatic next-track playback, position restore, speed, sleep timer and bookmarks."
+          gh release create dev-player Audoiboo-Tracker-1.1.3-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.3-dev" --prerelease --notes "Reliability update: WorkManager scheduling over foreground downloader, reboot recovery, ZIP integrity checks, JSoup/WebView parser fallback, exact playback-state restore, broken-track skip, per-book speed, fade-out sleep timer, Material You, SAF library folder and WebDAV metadata sync."

@@ -46,6 +46,7 @@ internal data class ManagedDownloadRecord(
     val bookUrl: String,
     val archiveUrl: String,
     val relativeDir: String,
+    val bookDir: String,
     val fileName: String,
     val state: ManagedDownloadState,
     val downloaded: Long = 0L,
@@ -64,8 +65,9 @@ internal object ManagedDownloads {
         if (AppPrefs.useAuthorFolder(context) && !author.isNullOrBlank()) parts += cleanPath(author)
         parts += cleanPath(series)
         val relativeDir = parts.joinToString("/")
-        val fileName = cleanPath(title).take(120) + archiveExtension(archiveUrl)
-        val record = ManagedDownloadRecord(UUID.randomUUID().toString(), title, series, author, bookUrl, archiveUrl, relativeDir, fileName, ManagedDownloadState.QUEUED)
+        val bookDir = cleanPath(title).take(120)
+        val fileName = bookDir + archiveExtension(archiveUrl)
+        val record = ManagedDownloadRecord(UUID.randomUUID().toString(), title, series, author, bookUrl, archiveUrl, relativeDir, bookDir, fileName, ManagedDownloadState.QUEUED)
         saveOne(context, record)
         send(context, ManagedDownloadService.ACTION_START, record.id)
     }
@@ -111,17 +113,23 @@ internal object ManagedDownloads {
     private fun toJson(r: ManagedDownloadRecord) = JSONObject()
         .put("id", r.id).put("title", r.title).put("series", r.series).put("author", r.author)
         .put("bookUrl", r.bookUrl).put("archiveUrl", r.archiveUrl).put("relativeDir", r.relativeDir)
-        .put("fileName", r.fileName).put("state", r.state.name).put("downloaded", r.downloaded)
+        .put("bookDir", r.bookDir).put("fileName", r.fileName).put("state", r.state.name).put("downloaded", r.downloaded)
         .put("total", r.total).put("error", r.error).put("createdAt", r.createdAt)
 
-    private fun fromJson(o: JSONObject) = ManagedDownloadRecord(
-        o.optString("id"), o.optString("title"), o.optString("series"), o.optString("author").takeIf { it.isNotBlank() && it != "null" },
-        o.optString("bookUrl"), o.optString("archiveUrl"), o.optString("relativeDir"), o.optString("fileName"),
-        runCatching { ManagedDownloadState.valueOf(o.optString("state")) }.getOrDefault(ManagedDownloadState.FAILED),
-        o.optLong("downloaded"), o.optLong("total", -1L), o.optString("error").takeIf { it.isNotBlank() && it != "null" }, o.optLong("createdAt")
-    )
+    private fun fromJson(o: JSONObject): ManagedDownloadRecord {
+        val title = o.optString("title")
+        val fallbackBookDir = cleanPath(title).take(120)
+        return ManagedDownloadRecord(
+            o.optString("id"), title, o.optString("series"), o.optString("author").takeIf { it.isNotBlank() && it != "null" },
+            o.optString("bookUrl"), o.optString("archiveUrl"), o.optString("relativeDir"),
+            o.optString("bookDir").takeIf { it.isNotBlank() } ?: fallbackBookDir,
+            o.optString("fileName"),
+            runCatching { ManagedDownloadState.valueOf(o.optString("state")) }.getOrDefault(ManagedDownloadState.FAILED),
+            o.optLong("downloaded"), o.optLong("total", -1L), o.optString("error").takeIf { it.isNotBlank() && it != "null" }, o.optLong("createdAt")
+        )
+    }
 
-    private fun cleanPath(v: String) = v.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
+    internal fun cleanPath(v: String) = v.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
     private fun archiveExtension(url: String) = Regex("\\.(zip|rar|7z)(?:\\?|$)", RegexOption.IGNORE_CASE).find(url)?.value?.substringBefore('?') ?: ".zip"
 }
 
@@ -196,8 +204,8 @@ class ManagedDownloadService : Service() {
 
             if (AppPrefs.unpack(this) && record.fileName.endsWith(".zip", true)) {
                 update(record.copy(state = ManagedDownloadState.EXTRACTING))
-                val bookFolder = safeBookFolder(record.title)
-                extractZipToDownloads(part, "${record.relativeDir}/$bookFolder", record)
+                clearBookFolder(record)
+                extractZipToDownloads(part, "${record.relativeDir}/${record.bookDir}", record)
                 part.delete()
             } else {
                 publishFile(part, record.relativeDir, record.fileName, record)
@@ -209,7 +217,20 @@ class ManagedDownloadService : Service() {
         } finally { conn?.disconnect() }
     }
 
-    private fun safeBookFolder(title: String) = title.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Книга" }.take(120)
+    private fun clearBookFolder(record: ManagedDownloadRecord) {
+        val target = "Download/${record.relativeDir}/${record.bookDir}/"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
+                contentResolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, "${MediaStore.Downloads.RELATIVE_PATH} LIKE ?", arrayOf("$target%"))
+            }
+            runCatching {
+                contentResolver.delete(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ?", arrayOf("$target%"))
+            }
+        } else {
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "${record.relativeDir}/${record.bookDir}").deleteRecursively()
+        }
+    }
+
     private fun isAudio(name: String) = name.substringAfterLast('.', "").lowercase() in setOf("mp3","m4a","m4b","ogg","opus","wav","aac","flac")
     private fun mimeFor(name: String) = when (name.substringAfterLast('.', "").lowercase()) {
         "mp3" -> "audio/mpeg"; "m4a","m4b" -> "audio/mp4"; "ogg","opus" -> "audio/ogg"; "wav" -> "audio/wav"; "aac" -> "audio/aac"; "flac" -> "audio/flac"; "zip" -> "application/zip"; else -> "application/octet-stream"
@@ -301,8 +322,7 @@ internal fun ManagedDownloadsScreen(context: Context) {
                             ManagedDownloadState.DOWNLOADING, ManagedDownloadState.QUEUED -> IconButton(onClick = { ManagedDownloads.pause(context, r.id) }) { Icon(Icons.Filled.Pause, "Пауза") }
                             ManagedDownloadState.PAUSED, ManagedDownloadState.FAILED -> IconButton(onClick = { ManagedDownloads.resume(context, r.id) }) { Icon(Icons.Filled.PlayArrow, "Продовжити") }
                             ManagedDownloadState.COMPLETED -> IconButton(onClick = {
-                                val bookFolder = if (AppPrefs.unpack(context) && r.fileName.endsWith(".zip", true)) safeBookFolderUi(r.title) else ""
-                                val dir = listOf(r.relativeDir, bookFolder).filter { it.isNotBlank() }.joinToString("/")
+                                val dir = if (AppPrefs.unpack(context) && r.fileName.endsWith(".zip", true)) "${r.relativeDir}/${r.bookDir}" else r.relativeDir
                                 context.startActivity(Intent(context, PlayerActivity::class.java).putExtra("relativeDir", dir).putExtra("title", r.title))
                             }) { Icon(Icons.Filled.Headphones, "Відкрити в плеєрі") }
                             else -> Unit
@@ -314,7 +334,7 @@ internal fun ManagedDownloadsScreen(context: Context) {
                     if (r.state in listOf(ManagedDownloadState.DOWNLOADING, ManagedDownloadState.PAUSED, ManagedDownloadState.EXTRACTING)) { Spacer(Modifier.height(8.dp)); LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth()) }
                     Text(stateLabel(r), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     r.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-                    val displayPath = if (AppPrefs.unpack(context) && r.fileName.endsWith(".zip", true)) "Downloads/${r.relativeDir}/${safeBookFolderUi(r.title)}/" else "Downloads/${r.relativeDir}/${r.fileName}"
+                    val displayPath = if (AppPrefs.unpack(context) && r.fileName.endsWith(".zip", true)) "Downloads/${r.relativeDir}/${r.bookDir}/" else "Downloads/${r.relativeDir}/${r.fileName}"
                     Text(displayPath, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
@@ -322,7 +342,6 @@ internal fun ManagedDownloadsScreen(context: Context) {
     }
 }
 
-private fun safeBookFolderUi(title: String) = title.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Книга" }.take(120)
 private fun stateLabel(r: ManagedDownloadRecord): String {
     val pct = if (r.total > 0) " ${(r.downloaded * 100 / r.total)}%" else ""
     return when (r.state) {

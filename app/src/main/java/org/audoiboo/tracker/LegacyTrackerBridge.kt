@@ -4,13 +4,16 @@ import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
-/** Temporary bridge while MainActivity is being moved from its legacy JSON model to Room Flow. */
+/** Temporary two-way bridge while tracker screens are moved from legacy JSON to Room Flow. */
 internal class LegacyTrackerBridge(private val context: Context) {
     private val prefs = context.getSharedPreferences("tracker", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var roomJob: Job? = null
     @Volatile private var lastSeen: String? = null
 
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { p, key ->
@@ -24,7 +27,20 @@ internal class LegacyTrackerBridge(private val context: Context) {
     fun start() {
         lastSeen = prefs.getString("library", "[]") ?: "[]"
         prefs.registerOnSharedPreferenceChangeListener(listener)
+        roomJob?.cancel()
+        roomJob = scope.launch {
+            LibraryRepository.observe(context).collectLatest { library ->
+                runCatching {
+                    val raw = LibraryRepository.mirrorLegacy(context, library)
+                    lastSeen = raw
+                }
+            }
+        }
     }
 
-    fun stop() = prefs.unregisterOnSharedPreferenceChangeListener(listener)
+    fun stop() {
+        roomJob?.cancel()
+        roomJob = null
+        prefs.unregisterOnSharedPreferenceChangeListener(listener)
+    }
 }

@@ -74,6 +74,7 @@ class AudoibooApp : Application() {
         DownloadScheduler.recover(this)
         WebDavSync.schedule(this)
         SeriesAutomationPrefs.schedule(this)
+        RoomTrackerCatalog.start(this)
 
         playerExtrasPrefs = getSharedPreferences("player_extras", Context.MODE_PRIVATE)
         playerExtrasPrefs.registerOnSharedPreferenceChangeListener(playerExtrasListener)

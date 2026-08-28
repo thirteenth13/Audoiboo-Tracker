@@ -3,6 +3,7 @@ package org.audoiboo.tracker
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
@@ -39,21 +40,42 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
     var tab by remember { mutableStateOf(RoomLibraryTab.SERIES) }
     var query by remember { mutableStateOf("") }
     var selectedSeries by remember { mutableStateOf<String?>(null) }
+    var showAdd by remember { mutableStateOf(false) }
+    var addUrl by remember { mutableStateOf("") }
+    var syncing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val library by LibraryRepository.observe(activity).collectAsState(initial = emptyList())
     val pagingFlow = remember(query) { LibraryRepository.pagedBooks(activity, query) }
     val paged = pagingFlow.collectAsLazyPagingItems()
     val series = library.firstOrNull { it.series.id == selectedSeries }
 
+    fun syncUrl(url: String, fallbackToBrowser: Boolean) {
+        if (url.isBlank() || syncing) return
+        syncing = true
+        scope.launch {
+            val result = runCatching { RoomSeriesSync.sync(activity, url) }.getOrNull()
+            syncing = false
+            if (result != null) {
+                selectedSeries = result.seriesId
+                tab = RoomLibraryTab.SERIES
+                Toast.makeText(activity, "${result.name}: ${result.books} книг", Toast.LENGTH_SHORT).show()
+            } else if (fallbackToBrowser) {
+                Toast.makeText(activity, "HTTP parser не пройшов — відкриваю WebView fallback", Toast.LENGTH_LONG).show()
+                activity.startActivity(Intent(activity, MainActivity::class.java))
+            } else Toast.makeText(activity, "Не вдалося оновити серію", Toast.LENGTH_LONG).show()
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(if (series != null) series.series.name else when (tab) { RoomLibraryTab.DOWNLOADS -> "Завантаження"; else -> "Audoiboo Tracker" }) },
-                navigationIcon = {
-                    if (series != null) IconButton(onClick = { selectedSeries = null }) { Icon(Icons.Filled.ArrowBack, "Назад") }
-                },
+                navigationIcon = { if (series != null) IconButton(onClick = { selectedSeries = null }) { Icon(Icons.Filled.ArrowBack, "Назад") } },
                 actions = {
+                    if (series != null) IconButton(onClick = { syncUrl(series.series.url, false) }, enabled = !syncing) { Icon(Icons.Filled.Refresh, "Оновити") }
+                    else if (tab == RoomLibraryTab.SERIES) IconButton(onClick = { addUrl = ""; showAdd = true }) { Icon(Icons.Filled.Add, "Додати серію") }
                     IconButton(onClick = { activity.startActivity(Intent(activity, PlayerActivity::class.java)) }) { Icon(Icons.Filled.Headphones, "Плеєр") }
-                    IconButton(onClick = { activity.startActivity(Intent(activity, MainActivity::class.java)) }) { Icon(Icons.Filled.Public, "Audioboo браузер і керування") }
+                    IconButton(onClick = { activity.startActivity(Intent(activity, MainActivity::class.java)) }) { Icon(Icons.Filled.Public, "Audioboo браузер") }
                     IconButton(onClick = { activity.startActivity(Intent(activity, SettingsActivity::class.java)) }) { Icon(Icons.Filled.Settings, "Налаштування") }
                 }
             )
@@ -67,6 +89,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
         }
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
+            if (syncing) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (series == null && tab != RoomLibraryTab.DOWNLOADS) {
                 OutlinedTextField(
                     value = query,
@@ -91,6 +114,14 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
             }
         }
     }
+
+    if (showAdd) AlertDialog(
+        onDismissRequest = { showAdd = false },
+        title = { Text("Додати серію") },
+        text = { OutlinedTextField(addUrl, { addUrl = it }, label = { Text("URL серії або книги Audioboo") }, modifier = Modifier.fillMaxWidth(), singleLine = true) },
+        confirmButton = { TextButton(onClick = { val value = addUrl.trim(); showAdd = false; syncUrl(value, true) }, enabled = addUrl.startsWith("http")) { Text("Додати") } },
+        dismissButton = { TextButton(onClick = { showAdd = false }) { Text("Скасувати") } }
+    )
 }
 
 @Composable

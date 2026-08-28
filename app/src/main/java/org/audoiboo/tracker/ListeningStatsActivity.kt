@@ -7,8 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -26,8 +25,15 @@ class ListeningStatsActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ListeningStatsScreen(activity: ComponentActivity) {
-    val daily = remember { PlayerExtras.dailyListened(activity) }
-    val total = remember { PlayerExtras.totalListenedMs(activity) }
+    val dailyRows by PlayerExtrasRepository.observeDaily(activity).collectAsState(initial = emptyList())
+    val history by PlayerExtrasRepository.observeHistory(activity).collectAsState(initial = emptyList())
+    var total by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(dailyRows) {
+        total = PlayerExtrasRepository.stats(activity).totalMs
+    }
+
+    val daily = remember(dailyRows) { dailyRows.associate { it.day to it.listenedMs } }
     val todayKey = remember { dayKey(0) }
     val today = daily[todayKey] ?: 0L
     val week = (0..6).sumOf { daily[dayKey(it)] ?: 0L }
@@ -36,7 +42,6 @@ private fun ListeningStatsScreen(activity: ComponentActivity) {
     val activeDays30 = (0..29).count { (daily[dayKey(it)] ?: 0L) > 0L }
     val bestDay = daily.maxByOrNull { it.value }
     val average7 = week / 7L
-    val historyCount = remember { PlayerExtras.history(activity).size }
 
     Scaffold(
         topBar = {
@@ -65,7 +70,7 @@ private fun ListeningStatsScreen(activity: ComponentActivity) {
                     StatLine("Активних днів за 7 днів", "$activeDays7 / 7")
                     StatLine("Активних днів за 30 днів", "$activeDays30 / 30")
                     StatLine("Середнє за останні 7 днів", formatStatsMs(average7))
-                    StatLine("Книг в історії", historyCount.toString())
+                    StatLine("Книг в історії", history.size.toString())
                     if (bestDay != null) StatLine("Найдовший день", "${bestDay.key} • ${formatStatsMs(bestDay.value)}")
                 }
             }

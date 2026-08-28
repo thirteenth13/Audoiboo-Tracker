@@ -34,6 +34,8 @@ import java.net.URL
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.zip.CRC32
+import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
 
 internal enum class ManagedDownloadState { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED, CANCELLED, EXTRACTING }
@@ -69,15 +71,27 @@ internal object ManagedDownloads {
         val fileName = bookDir + archiveExtension(archiveUrl)
         val record = ManagedDownloadRecord(UUID.randomUUID().toString(), title, series, author, bookUrl, archiveUrl, relativeDir, bookDir, fileName, ManagedDownloadState.QUEUED)
         saveOne(context, record)
-        send(context, ManagedDownloadService.ACTION_START, record.id)
+        DownloadScheduler.enqueue(context, record.id)
     }
 
-    fun pause(context: Context, id: String) = send(context, ManagedDownloadService.ACTION_PAUSE, id)
-    fun resume(context: Context, id: String) = send(context, ManagedDownloadService.ACTION_RESUME, id)
-    fun cancel(context: Context, id: String) = send(context, ManagedDownloadService.ACTION_CANCEL, id)
+    fun pause(context: Context, id: String) {
+        DownloadScheduler.cancel(context, id)
+        send(context, ManagedDownloadService.ACTION_PAUSE, id)
+    }
+
+    fun resume(context: Context, id: String) {
+        get(context, id)?.let { saveOne(context, it.copy(state = ManagedDownloadState.QUEUED, error = null)) }
+        DownloadScheduler.enqueue(context, id)
+    }
+
+    fun cancel(context: Context, id: String) {
+        DownloadScheduler.cancel(context, id)
+        send(context, ManagedDownloadService.ACTION_CANCEL, id)
+    }
 
     @Synchronized
     fun remove(context: Context, id: String) {
+        DownloadScheduler.cancel(context, id)
         save(context, list(context).filterNot { it.id == id })
         File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "staging/$id.part").delete()
     }
@@ -155,16 +169,26 @@ class ManagedDownloadService : Service() {
         val id = intent?.getStringExtra(EXTRA_ID) ?: return START_NOT_STICKY
         when (intent.action) {
             ACTION_PAUSE -> pauses.getOrPut(id) { AtomicBoolean(false) }.set(true)
-            ACTION_CANCEL -> { cancels.getOrPut(id) { AtomicBoolean(false) }.set(true); ManagedDownloads.get(this, id)?.let { update(it.copy(state = ManagedDownloadState.CANCELLED)) } }
+            ACTION_CANCEL -> {
+                cancels.getOrPut(id) { AtomicBoolean(false) }.set(true)
+                ManagedDownloads.get(this, id)?.let { update(it.copy(state = ManagedDownloadState.CANCELLED)) }
+            }
             ACTION_START, ACTION_RESUME -> startDownload(id)
         }
-        return START_NOT_STICKY
+        return START_REDELIVER_INTENT
     }
 
     private fun startDownload(id: String) {
         if (running[id]?.isAlive == true) return
-        pauses.getOrPut(id) { AtomicBoolean(false) }.set(false); cancels.getOrPut(id) { AtomicBoolean(false) }.set(false)
-        val thread = Thread { try { performDownload(id) } finally { running.remove(id); if (running.isEmpty()) stopForeground(STOP_FOREGROUND_DETACH) } }.apply { name = "Audoiboo-$id"; start() }
+        pauses.getOrPut(id) { AtomicBoolean(false) }.set(false)
+        cancels.getOrPut(id) { AtomicBoolean(false) }.set(false)
+        val thread = Thread {
+            try { performDownload(id) }
+            finally {
+                running.remove(id)
+                if (running.isEmpty()) stopForeground(STOP_FOREGROUND_DETACH)
+            }
+        }.apply { name = "Audoiboo-$id"; start() }
         running[id] = thread
     }
 
@@ -176,34 +200,64 @@ class ManagedDownloadService : Service() {
         var conn: HttpURLConnection? = null
         try {
             conn = (URL(record.archiveUrl).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true; connectTimeout = 20_000; readTimeout = 30_000
+                instanceFollowRedirects = true
+                connectTimeout = 20_000
+                readTimeout = 30_000
                 setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 Chrome Mobile Safari/537.36")
                 setRequestProperty("Referer", record.bookUrl)
                 if (existing > 0) setRequestProperty("Range", "bytes=$existing-")
             }
-            conn.connect(); val code = conn.responseCode
+            conn.connect()
+            val code = conn.responseCode
             if (code !in 200..299) error("HTTP $code")
             val append = existing > 0 && code == HttpURLConnection.HTTP_PARTIAL
             if (existing > 0 && !append) part.delete()
             val startAt = if (append) existing else 0L
             val contentLength = conn.contentLengthLong
             val total = if (contentLength > 0) startAt + contentLength else -1L
-            record = record.copy(state = ManagedDownloadState.DOWNLOADING, downloaded = startAt, total = total, error = null); update(record)
+            record = record.copy(state = ManagedDownloadState.DOWNLOADING, downloaded = startAt, total = total, error = null)
+            update(record)
 
-            BufferedInputStream(conn.inputStream).use { input -> FileOutputStream(part, append).use { output ->
-                val buffer = ByteArray(128 * 1024); var downloaded = startAt; var lastSaved = downloaded
-                while (true) {
-                    if (cancels[id]?.get() == true) { part.delete(); update(record.copy(state = ManagedDownloadState.CANCELLED, downloaded = downloaded, total = total)); return }
-                    if (pauses[id]?.get() == true) { update(record.copy(state = ManagedDownloadState.PAUSED, downloaded = downloaded, total = total)); return }
-                    val read = input.read(buffer); if (read < 0) break
-                    output.write(buffer, 0, read); downloaded += read
-                    if (downloaded - lastSaved >= 512 * 1024) { lastSaved = downloaded; update(record.copy(state = ManagedDownloadState.DOWNLOADING, downloaded = downloaded, total = total)) }
+            BufferedInputStream(conn.inputStream).use { input ->
+                FileOutputStream(part, append).use { output ->
+                    val buffer = ByteArray(128 * 1024)
+                    var downloaded = startAt
+                    var lastSaved = downloaded
+                    while (true) {
+                        if (cancels[id]?.get() == true) {
+                            part.delete()
+                            update(record.copy(state = ManagedDownloadState.CANCELLED, downloaded = downloaded, total = total))
+                            return
+                        }
+                        if (pauses[id]?.get() == true) {
+                            update(record.copy(state = ManagedDownloadState.PAUSED, downloaded = downloaded, total = total))
+                            return
+                        }
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        downloaded += read
+                        if (downloaded - lastSaved >= 512 * 1024) {
+                            lastSaved = downloaded
+                            update(record.copy(state = ManagedDownloadState.DOWNLOADING, downloaded = downloaded, total = total))
+                        }
+                    }
+                    record = record.copy(downloaded = downloaded, total = total)
                 }
-                record = record.copy(downloaded = downloaded, total = total)
-            } }
+            }
+
+            if (record.total > 0 && part.length() != record.total) {
+                error("Неповне завантаження: ${part.length()} із ${record.total} байт")
+            }
 
             if (AppPrefs.unpack(this) && record.fileName.endsWith(".zip", true)) {
                 update(record.copy(state = ManagedDownloadState.EXTRACTING))
+                try {
+                    verifyZipIntegrity(part)
+                } catch (e: Exception) {
+                    part.delete()
+                    throw IOException("ZIP пошкоджений: ${e.message ?: "CRC/структура"}", e)
+                }
                 clearBookFolder(record)
                 extractZipToDownloads(part, "${record.relativeDir}/${record.bookDir}", record)
                 part.delete()
@@ -212,34 +266,67 @@ class ManagedDownloadService : Service() {
                 part.delete()
             }
             update(record.copy(state = ManagedDownloadState.COMPLETED, downloaded = if (record.total > 0) record.total else record.downloaded, error = null))
+            DownloadScheduler.cancel(this, id)
         } catch (e: Exception) {
-            if (cancels[id]?.get() != true && pauses[id]?.get() != true) update(record.copy(state = ManagedDownloadState.FAILED, error = e.message ?: e.javaClass.simpleName, downloaded = part.length()))
+            if (cancels[id]?.get() != true && pauses[id]?.get() != true) {
+                update(record.copy(state = ManagedDownloadState.FAILED, error = e.message ?: e.javaClass.simpleName, downloaded = part.length()))
+                DownloadScheduler.enqueue(this, id, delayedRetry = true)
+            }
         } finally { conn?.disconnect() }
+    }
+
+    private fun verifyZipIntegrity(file: File) {
+        var files = 0
+        ZipFile(file).use { zip ->
+            val entries = zip.entries()
+            val buffer = ByteArray(128 * 1024)
+            while (entries.hasMoreElements()) {
+                val entry = entries.nextElement()
+                if (entry.isDirectory) continue
+                files++
+                val crc = CRC32()
+                zip.getInputStream(entry).use { input ->
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        crc.update(buffer, 0, n)
+                    }
+                }
+                if (entry.crc >= 0 && crc.value != entry.crc) error("CRC не збігається: ${entry.name}")
+            }
+        }
+        if (files == 0) error("архів не містить файлів")
     }
 
     private fun clearBookFolder(record: ManagedDownloadRecord) {
         val target = "Download/${record.relativeDir}/${record.bookDir}/"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            runCatching {
-                contentResolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, "${MediaStore.Downloads.RELATIVE_PATH} LIKE ?", arrayOf("$target%"))
-            }
-            runCatching {
-                contentResolver.delete(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ?", arrayOf("$target%"))
-            }
+            runCatching { contentResolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, "${MediaStore.Downloads.RELATIVE_PATH} LIKE ?", arrayOf("$target%")) }
+            runCatching { contentResolver.delete(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ?", arrayOf("$target%")) }
         } else {
             File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "${record.relativeDir}/${record.bookDir}").deleteRecursively()
         }
     }
 
-    private fun isAudio(name: String) = name.substringAfterLast('.', "").lowercase() in setOf("mp3","m4a","m4b","ogg","opus","wav","aac","flac")
+    private fun isAudio(name: String) = name.substringAfterLast('.', "").lowercase() in setOf("mp3", "m4a", "m4b", "ogg", "opus", "wav", "aac", "flac")
     private fun mimeFor(name: String) = when (name.substringAfterLast('.', "").lowercase()) {
-        "mp3" -> "audio/mpeg"; "m4a","m4b" -> "audio/mp4"; "ogg","opus" -> "audio/ogg"; "wav" -> "audio/wav"; "aac" -> "audio/aac"; "flac" -> "audio/flac"; "zip" -> "application/zip"; else -> "application/octet-stream"
+        "mp3" -> "audio/mpeg"
+        "m4a", "m4b" -> "audio/mp4"
+        "ogg", "opus" -> "audio/ogg"
+        "wav" -> "audio/wav"
+        "aac" -> "audio/aac"
+        "flac" -> "audio/flac"
+        "zip" -> "application/zip"
+        else -> "application/octet-stream"
     }
 
     private fun publishFile(source: File, relativeDir: String, fileName: String, record: ManagedDownloadRecord) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, fileName); put(MediaStore.Downloads.MIME_TYPE, mimeFor(fileName)); put(MediaStore.Downloads.RELATIVE_PATH, "Download/$relativeDir"); put(MediaStore.Downloads.IS_PENDING, 1)
+                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(MediaStore.Downloads.MIME_TYPE, mimeFor(fileName))
+                put(MediaStore.Downloads.RELATIVE_PATH, "Download/$relativeDir")
+                put(MediaStore.Downloads.IS_PENDING, 1)
             }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Не вдалося створити файл")
             contentResolver.openOutputStream(uri)?.use { out -> FileInputStream(source).use { it.copyTo(out) } } ?: error("Не вдалося відкрити файл")
@@ -247,7 +334,8 @@ class ManagedDownloadService : Service() {
             if (isAudio(fileName)) PlayerLibrary.register(this, uri, fileName, "Download/$relativeDir", record.title, record.series, record.author)
         } else {
             val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), relativeDir).apply { mkdirs() }
-            val target = File(dir, fileName); source.copyTo(target, overwrite = true)
+            val target = File(dir, fileName)
+            source.copyTo(target, overwrite = true)
             if (isAudio(fileName)) PlayerLibrary.register(this, Uri.fromFile(target), fileName, target.parent.orEmpty(), record.title, record.series, record.author)
         }
     }
@@ -257,19 +345,25 @@ class ManagedDownloadService : Service() {
             var entry = zin.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory) {
-                    val safe = entry.name.replace('\\','/').split('/').filter { it.isNotBlank() && it != ".." }.joinToString("/")
+                    val safe = entry.name.replace('\\', '/').split('/').filter { it.isNotBlank() && it != ".." }.joinToString("/")
                     if (safe.isNotBlank()) publishStream(zin, relativeDir, safe, record)
                 }
-                zin.closeEntry(); entry = zin.nextEntry
+                zin.closeEntry()
+                entry = zin.nextEntry
             }
         }
     }
 
     private fun publishStream(input: InputStream, relativeDir: String, nestedName: String, record: ManagedDownloadRecord) {
-        val sub = nestedName.substringBeforeLast('/', ""); val file = nestedName.substringAfterLast('/'); val dir = listOf(relativeDir, sub).filter { it.isNotBlank() }.joinToString("/")
+        val sub = nestedName.substringBeforeLast('/', "")
+        val file = nestedName.substringAfterLast('/')
+        val dir = listOf(relativeDir, sub).filter { it.isNotBlank() }.joinToString("/")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, file); put(MediaStore.Downloads.MIME_TYPE, mimeFor(file)); put(MediaStore.Downloads.RELATIVE_PATH, "Download/$dir"); put(MediaStore.Downloads.IS_PENDING, 1)
+                put(MediaStore.Downloads.DISPLAY_NAME, file)
+                put(MediaStore.Downloads.MIME_TYPE, mimeFor(file))
+                put(MediaStore.Downloads.RELATIVE_PATH, "Download/$dir")
+                put(MediaStore.Downloads.IS_PENDING, 1)
             }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return
             contentResolver.openOutputStream(uri)?.use { out -> input.copyTo(out) }
@@ -277,7 +371,8 @@ class ManagedDownloadService : Service() {
             if (isAudio(file)) PlayerLibrary.register(this, uri, file, "Download/$dir", record.title, record.series, record.author)
         } else {
             val targetDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), dir).apply { mkdirs() }
-            val target = File(targetDir, file); FileOutputStream(target).use { input.copyTo(it) }
+            val target = File(targetDir, file)
+            FileOutputStream(target).use { input.copyTo(it) }
             if (isAudio(file)) PlayerLibrary.register(this, Uri.fromFile(target), file, target.parent.orEmpty(), record.title, record.series, record.author)
         }
     }
@@ -287,21 +382,31 @@ class ManagedDownloadService : Service() {
         val pct = if (record.total > 0) (record.downloaded * 100 / record.total).toInt() else -1
         val detail = when (record.state) {
             ManagedDownloadState.DOWNLOADING -> if (pct >= 0) "${record.title} — $pct%" else record.title
-            ManagedDownloadState.EXTRACTING -> "Розпакування: ${record.title}"
+            ManagedDownloadState.EXTRACTING -> "Перевірка/розпакування: ${record.title}"
             ManagedDownloadState.PAUSED -> "Призупинено: ${record.title}"
+            ManagedDownloadState.FAILED -> "Помилка: ${record.title}"
             else -> record.title
         }
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NOTIFICATION_ID, notification("Audoiboo Tracker", detail))
     }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(NotificationChannel(CHANNEL, "Завантаження аудіокниг", NotificationManager.IMPORTANCE_LOW))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .createNotificationChannel(NotificationChannel(CHANNEL, "Завантаження аудіокниг", NotificationManager.IMPORTANCE_LOW))
+        }
     }
 
     private fun notification(title: String, text: String): android.app.Notification {
         val launch = packageManager.getLaunchIntentForPackage(packageName)
         val pi = PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_download).setContentTitle(title).setContentText(text).setContentIntent(pi).setOngoing(true).build()
+        return NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setContentIntent(pi)
+            .setOngoing(true)
+            .build()
     }
 }
 
@@ -310,14 +415,21 @@ internal fun ManagedDownloadsScreen(context: Context) {
     var tick by remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) { while (true) { delay(1000); tick++ } }
     val records = remember(tick) { ManagedDownloads.list(context) }
-    if (records.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Тут з’являться завантаження аудіокниг.") }; return }
+    if (records.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Тут з’являться завантаження аудіокниг.") }
+        return
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         items(records, key = { it.id }) { r ->
             ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Download, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) { Text(r.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis); Text(listOfNotNull(r.author, r.series).joinToString(" • "), style = MaterialTheme.typography.bodySmall) }
+                        Icon(Icons.Filled.Download, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(r.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(listOfNotNull(r.author, r.series).joinToString(" • "), style = MaterialTheme.typography.bodySmall)
+                        }
                         when (r.state) {
                             ManagedDownloadState.DOWNLOADING, ManagedDownloadState.QUEUED -> IconButton(onClick = { ManagedDownloads.pause(context, r.id) }) { Icon(Icons.Filled.Pause, "Пауза") }
                             ManagedDownloadState.PAUSED, ManagedDownloadState.FAILED -> IconButton(onClick = { ManagedDownloads.resume(context, r.id) }) { Icon(Icons.Filled.PlayArrow, "Продовжити") }
@@ -331,7 +443,10 @@ internal fun ManagedDownloadsScreen(context: Context) {
                         if (r.state == ManagedDownloadState.CANCELLED) IconButton(onClick = { ManagedDownloads.remove(context, r.id); tick++ }) { Icon(Icons.Filled.Delete, "Видалити") }
                     }
                     val progress = if (r.total > 0) r.downloaded.toFloat() / r.total else 0f
-                    if (r.state in listOf(ManagedDownloadState.DOWNLOADING, ManagedDownloadState.PAUSED, ManagedDownloadState.EXTRACTING)) { Spacer(Modifier.height(8.dp)); LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth()) }
+                    if (r.state in listOf(ManagedDownloadState.DOWNLOADING, ManagedDownloadState.PAUSED, ManagedDownloadState.EXTRACTING)) {
+                        Spacer(Modifier.height(8.dp))
+                        LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                    }
                     Text(stateLabel(r), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     r.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                     val displayPath = if (AppPrefs.unpack(context) && r.fileName.endsWith(".zip", true)) "Downloads/${r.relativeDir}/${r.bookDir}/" else "Downloads/${r.relativeDir}/${r.fileName}"
@@ -345,6 +460,12 @@ internal fun ManagedDownloadsScreen(context: Context) {
 private fun stateLabel(r: ManagedDownloadRecord): String {
     val pct = if (r.total > 0) " ${(r.downloaded * 100 / r.total)}%" else ""
     return when (r.state) {
-        ManagedDownloadState.QUEUED -> "Очікує"; ManagedDownloadState.DOWNLOADING -> "Завантажується$pct"; ManagedDownloadState.PAUSED -> "Пауза$pct"; ManagedDownloadState.EXTRACTING -> "Розпаковується"; ManagedDownloadState.COMPLETED -> "Готово"; ManagedDownloadState.FAILED -> "Помилка"; ManagedDownloadState.CANCELLED -> "Скасовано"
+        ManagedDownloadState.QUEUED -> "Очікує умов мережі"
+        ManagedDownloadState.DOWNLOADING -> "Завантажується$pct"
+        ManagedDownloadState.PAUSED -> "Пауза$pct"
+        ManagedDownloadState.EXTRACTING -> "Перевіряється та розпаковується"
+        ManagedDownloadState.COMPLETED -> "Готово"
+        ManagedDownloadState.FAILED -> "Помилка — буде повторна спроба"
+        ManagedDownloadState.CANCELLED -> "Скасовано"
     }
 }

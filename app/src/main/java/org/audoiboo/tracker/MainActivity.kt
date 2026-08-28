@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         initialDark = AppPrefs.darkTheme(this)
+        BackupStore.maybeCreateDailyBackup(this)
         setContent { AudoibooTheme(this) { TrackerScreen() } }
     }
 
@@ -120,6 +121,7 @@ private fun TrackerScreen() {
                         IconButton(onClick = { browserUrl = "https://audioboo.org/" }) { Icon(Icons.Filled.Home, "Головна") }
                         IconButton(onClick = { addPrefillUrl = browserUrl; showAddDialog = true }) { Icon(Icons.Filled.Add, "Додати серію") }
                     } else if (tab == MainTab.SERIES) {
+                        IconButton(onClick = { context.startActivity(Intent(context, PlayerActivity::class.java)) }) { Icon(Icons.Filled.Headphones, "Плеєр") }
                         IconButton(onClick = { searchOpen = !searchOpen; if (!searchOpen) query = "" }) { Icon(Icons.Filled.Search, "Пошук") }
                         if (selectedSeries == null) TextButton(onClick = { addPrefillUrl = ""; showAddDialog = true }) { Text("+ Серія") }
                         else IconButton(onClick = { beginResolve(selectedSeries.id, selectedSeries.url) }) { Icon(Icons.Filled.Refresh, "Оновити") }

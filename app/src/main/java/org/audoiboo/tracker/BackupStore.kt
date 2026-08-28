@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -25,8 +26,31 @@ object BackupStore {
         val root = JSONObject()
         root.put("format", 4)
         root.put("createdAt", System.currentTimeMillis())
-        // During the transition this is a repository-maintained mirror of Room, preserving format-4 compatibility.
-        root.put("tracker", context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]"))
+        // Room is the source of truth. Keep the existing format-4 tracker payload for backwards compatibility.
+        val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.mirrorLegacy(context.applicationContext) } }
+            .getOrElse { context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]").orEmpty() }
+        root.put("tracker", tracker)
+        root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
+        root.put("playerLibrary", prefsToJson(context, "player_library"))
+        root.put("playerQueue", prefsToJson(context, "player_queue"))
+        if (includeSettings) {
+            root.put("settings", prefsToJson(context, "app_settings"))
+            root.put("playerSettings", prefsToJson(context, "player_settings"))
+            root.put("audioEnhancement", prefsToJson(context, "audio_enhancement"))
+            root.put("seriesAutomation", prefsToJson(context, "series_automation"))
+            root.put("storageAccess", prefsToJson(context, "storage_access"))
+        }
+        if (includeBookmarks || includeStatistics) root.put("playerExtras", prefsToJson(context, "player_extras"))
+        if (includeBookmarks) root.put("bookmarks", prefsToJson(context, "bookmarks"))
+        if (includeStatistics) root.put("playerPositions", prefsToJson(context, "player_positions"))
+        return root.toString(2)
+    }
+
+    suspend fun exportJsonFromRoom(context: Context, includeSettings: Boolean = true, includeBookmarks: Boolean = true, includeStatistics: Boolean = true): String {
+        val root = JSONObject()
+        root.put("format", 4)
+        root.put("createdAt", System.currentTimeMillis())
+        root.put("tracker", LibraryRepository.mirrorLegacy(context.applicationContext))
         root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
         root.put("playerLibrary", prefsToJson(context, "player_library"))
         root.put("playerQueue", prefsToJson(context, "player_queue"))
@@ -46,7 +70,6 @@ object BackupStore {
     fun importJson(context: Context, raw: String) {
         val root = JSONObject(raw)
         val tracker = root.optString("tracker", "[]")
-        // Write legacy immediately for compatibility, then atomically replace Room on IO.
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreScope.launch { runCatching { LibraryRepository.restoreLegacyJson(context.applicationContext, tracker) } }
         context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).edit().putString("items", root.optString("downloads", "[]")).apply()
@@ -80,14 +103,16 @@ object BackupStore {
         val now = System.currentTimeMillis()
         val last = p.getLong(LAST_AUTO, 0L)
         if (now - last < 24L * 60L * 60L * 1000L) return
-        runCatching {
-            val requested = automaticBackupPath(context)
-            val dir = File(requested).apply { mkdirs() }
-            val writableDir = if (dir.exists() && dir.canWrite()) dir else File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir, "AudoibooBackups").apply { mkdirs() }
-            val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US).format(Date(now))
-            File(writableDir, "Audoiboo-auto-$stamp.json").writeText(exportJson(context, settings, bookmarks, statistics))
-            writableDir.listFiles()?.filter { it.name.startsWith("Audoiboo-auto-") }?.sortedByDescending { it.lastModified() }?.drop(7)?.forEach { it.delete() }
-            p.edit().putLong(LAST_AUTO, now).apply()
+        restoreScope.launch {
+            runCatching {
+                val requested = automaticBackupPath(context)
+                val dir = File(requested).apply { mkdirs() }
+                val writableDir = if (dir.exists() && dir.canWrite()) dir else File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir, "AudoibooBackups").apply { mkdirs() }
+                val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US).format(Date(now))
+                File(writableDir, "Audoiboo-auto-$stamp.json").writeText(exportJsonFromRoom(context, settings, bookmarks, statistics))
+                writableDir.listFiles()?.filter { it.name.startsWith("Audoiboo-auto-") }?.sortedByDescending { it.lastModified() }?.drop(7)?.forEach { it.delete() }
+                p.edit().putLong(LAST_AUTO, now).apply()
+            }
         }
     }
 

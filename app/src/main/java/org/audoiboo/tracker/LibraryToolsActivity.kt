@@ -55,18 +55,20 @@ class LibraryToolsActivity : ComponentActivity() {
 @Composable
 private fun LibraryToolsScreen(activity: ComponentActivity) {
     val books = remember { toolBooks(activity) }
+    val roomHistory by PlayerExtrasRepository.observeHistory(activity).collectAsState(initial = emptyList())
+    val roomBookmarks by PlayerExtrasRepository.observeBookmarks(activity).collectAsState(initial = emptyList())
     var query by remember { mutableStateOf("") }
     var smartList by remember { mutableStateOf(SmartList.ALL) }
     var editBook by remember { mutableStateOf<ToolBook?>(null) }
     var tagText by remember { mutableStateOf("") }
     var tagRevision by remember { mutableIntStateOf(0) }
     var queueRevision by remember { mutableIntStateOf(0) }
-    val recentDirs = remember { PlayerExtras.history(activity).take(20).map { it.dir }.toSet() }
+    val recentDirs = remember(roomHistory) { roomHistory.take(20).map { it.dir }.toSet() }
     val queue = remember(queueRevision) { ToolQueue.load(activity) }
     val activeDir = PlayerExtras.resume(activity)?.dir
     val activeBook = books.firstOrNull { it.dir == activeDir }
     val currentSeriesDirs = activeBook?.series?.let { series -> books.filter { it.series == series }.map { it.dir } } ?: listOfNotNull(activeDir)
-    val visible = remember(books, query, smartList, tagRevision) {
+    val visible = remember(books, query, smartList, tagRevision, recentDirs) {
         books.filter { b ->
             val tags = PlayerExtras.tags(activity, b.dir)
             val started = b.tracks.any { PlayerPrefs.position(activity, android.net.Uri.parse(it.uri)) > 0L }
@@ -81,6 +83,7 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
             smart && (query.isBlank() || b.title.contains(query, true) || b.series?.contains(query, true) == true || tags.any { it.contains(query, true) })
         }
     }
+    val markdown = remember(roomBookmarks) { bookmarksMarkdown(activity, roomBookmarks) }
 
     fun saveQueue(value: List<String>, message: String) {
         ToolQueue.save(activity, value)
@@ -98,8 +101,8 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
             }
             Text("${visible.size} із ${books.size} книг • у черзі ${queue.size}", Modifier.padding(horizontal = 16.dp, vertical = 6.dp), style = MaterialTheme.typography.bodySmall)
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { shareBookmarks(activity) }, modifier = Modifier.weight(1f)) { Icon(Icons.Filled.Share, null); Spacer(Modifier.width(6.dp)); Text("Поділитися закладками") }
-                OutlinedButton(onClick = { copyBookmarks(activity) }, modifier = Modifier.weight(1f)) { Text("Копіювати Markdown") }
+                Button(onClick = { shareBookmarks(activity, markdown) }, modifier = Modifier.weight(1f)) { Icon(Icons.Filled.Share, null); Spacer(Modifier.width(6.dp)); Text("Поділитися закладками") }
+                OutlinedButton(onClick = { copyBookmarks(activity, markdown) }, modifier = Modifier.weight(1f)) { Text("Копіювати Markdown") }
             }
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(visible, key = { it.dir }) { b ->
@@ -188,9 +191,8 @@ private fun toolBooks(context: Context): List<ToolBook> = PlayerLibrary.all(cont
         )
     }.sortedWith(compareBy<ToolBook> { it.series ?: "~" }.thenBy { PlayerLogic.parseBookNumber(it.title) ?: Int.MAX_VALUE }.thenBy { it.title.lowercase() })
 
-private fun bookmarksMarkdown(context: Context): String {
+private fun bookmarksMarkdown(context: Context, bookmarks: List<PlayerBookmarkEntity>): String {
     val library = PlayerLibrary.all(context).associateBy { it.uri }
-    val bookmarks = PlayerExtras.bookmarks(context)
     if (bookmarks.isEmpty()) return "# Audoiboo Tracker — закладки\n\nЗакладок немає."
     return buildString {
         append("# Audoiboo Tracker — закладки\n\n")
@@ -200,25 +202,24 @@ private fun bookmarksMarkdown(context: Context): String {
             val series = item?.series?.takeIf { it.isNotBlank() }
             append("- **").append(book).append("**")
             if (series != null) append(" — ").append(series)
-            append(" — ").append(formatToolTime(b.position))
+            append(" — ").append(formatToolTime(b.positionMs))
             if (b.note.isNotBlank()) append(" — ").append(b.note.replace('\n', ' '))
             append('\n')
         }
     }
 }
 
-private fun copyBookmarks(context: Context) {
-    val text = bookmarksMarkdown(context)
+private fun copyBookmarks(context: Context, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     clipboard.setPrimaryClip(ClipData.newPlainText("Audoiboo bookmarks", text))
     Toast.makeText(context, "Markdown скопійовано", Toast.LENGTH_SHORT).show()
 }
 
-private fun shareBookmarks(context: Context) {
+private fun shareBookmarks(context: Context, text: String) {
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "text/markdown"
         putExtra(Intent.EXTRA_SUBJECT, "Audoiboo Tracker — закладки")
-        putExtra(Intent.EXTRA_TEXT, bookmarksMarkdown(context))
+        putExtra(Intent.EXTRA_TEXT, text)
     }
     context.startActivity(Intent.createChooser(intent, "Поділитися закладками"))
 }

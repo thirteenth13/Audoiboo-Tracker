@@ -1,8 +1,11 @@
 package org.audoiboo.tracker
 
 import android.content.Context
+import android.content.SharedPreferences
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import androidx.media3.common.AudioAttributes
+import androidx.media3.common.AudioListener
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -78,9 +81,15 @@ internal object PlayerLibrary {
 class PlaybackService : MediaLibraryService() {
     private var session: MediaLibrarySession? = null
     private lateinit var player: ExoPlayer
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var currentAudioSessionId: Int = C.AUDIO_SESSION_ID_UNSET
+    private lateinit var audioPrefs: SharedPreferences
+    private val audioPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> applyVoiceBoost() }
 
     override fun onCreate() {
         super.onCreate()
+        audioPrefs = getSharedPreferences("audio_enhancement", Context.MODE_PRIVATE)
+        audioPrefs.registerOnSharedPreferenceChangeListener(audioPrefsListener)
         player = ExoPlayer.Builder(this).build().apply {
             setAudioAttributes(
                 AudioAttributes.Builder()
@@ -91,13 +100,38 @@ class PlaybackService : MediaLibraryService() {
             )
             setHandleAudioBecomingNoisy(true)
             repeatMode = Player.REPEAT_MODE_OFF
+            addAudioListener(object : AudioListener {
+                override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                    currentAudioSessionId = audioSessionId
+                    attachVoiceBoost(audioSessionId)
+                }
+            })
         }
         session = MediaLibrarySession.Builder(this, player, LibraryCallback()).build()
+    }
+
+    private fun attachVoiceBoost(audioSessionId: Int) {
+        loudnessEnhancer?.runCatching { release() }
+        loudnessEnhancer = null
+        if (audioSessionId == C.AUDIO_SESSION_ID_UNSET) return
+        loudnessEnhancer = runCatching { LoudnessEnhancer(audioSessionId) }.getOrNull()
+        applyVoiceBoost()
+    }
+
+    private fun applyVoiceBoost() {
+        val enhancer = loudnessEnhancer ?: return
+        runCatching {
+            enhancer.setTargetGain(AudioEnhancementPrefs.gainMb(this))
+            enhancer.enabled = AudioEnhancementPrefs.voiceBoost(this)
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
 
     override fun onDestroy() {
+        audioPrefs.unregisterOnSharedPreferenceChangeListener(audioPrefsListener)
+        loudnessEnhancer?.runCatching { release() }
+        loudnessEnhancer = null
         session?.release()
         player.release()
         session = null

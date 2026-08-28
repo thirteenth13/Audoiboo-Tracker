@@ -1,6 +1,9 @@
 package org.audoiboo.tracker
 
 import android.content.Context
+import androidx.paging.Pager
+import androidx.paging.PagingConfig
+import androidx.paging.PagingData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -19,6 +22,13 @@ object LibraryRepository {
     fun observe(context: Context): Flow<List<SeriesWithBooks>> =
         AudoibooDatabase.get(context).libraryDao().observeLibrary()
 
+    fun pagedBooks(context: Context, query: String = ""): Flow<PagingData<BookEntity>> {
+        val dao = AudoibooDatabase.get(context).libraryDao()
+        return Pager(PagingConfig(pageSize = 30, prefetchDistance = 10, enablePlaceholders = false)) {
+            if (query.isBlank()) dao.pagedBooks() else dao.searchBooks(query.trim())
+        }.flow
+    }
+
     suspend fun snapshot(context: Context): List<SeriesWithBooks> = withContext(Dispatchers.IO) {
         LegacyLibraryImporter.importIfNeeded(context)
         AudoibooDatabase.get(context).libraryDao().library()
@@ -26,17 +36,8 @@ object LibraryRepository {
 
     suspend fun replaceAll(context: Context, library: List<SeriesWithBooks>) = withContext(Dispatchers.IO) {
         val dao = AudoibooDatabase.get(context).libraryDao()
-        val current = dao.library().map { it.series.id }.toSet()
-        val incoming = library.map { it.series.id }.toSet()
-        (current - incoming).forEach { dao.deleteSeries(it) }
-        library.forEach { item ->
-            dao.upsertSeries(item.series.copy(updatedAt = System.currentTimeMillis()))
-            dao.deleteBooksForSeries(item.series.id)
-            dao.upsertBooks(item.books.mapIndexed { index, book ->
-                book.copy(seriesId = item.series.id, sortIndex = index, updatedAt = System.currentTimeMillis())
-            })
-        }
-        writeLegacy(context, library)
+        dao.replaceLibrary(library)
+        writeLegacy(context, dao.library())
     }
 
     suspend fun deleteSeries(context: Context, id: String) = withContext(Dispatchers.IO) {

@@ -52,7 +52,7 @@ class AudoibooApp : Application() {
 
         appScope.launch {
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
-            runCatching { PreferenceDataStore.importLegacyIfNeeded(this@AudoibooApp) }
+            runCatching { PreferenceDataStore.reconcile(this@AudoibooApp) }
             runCatching { PlaybackStateRepository.reconcile(this@AudoibooApp) }
             runCatching { RoomTagSync.syncFromLegacy(this@AudoibooApp) }
             runCatching { RoomCoverSync.enqueueAll(this@AudoibooApp) }

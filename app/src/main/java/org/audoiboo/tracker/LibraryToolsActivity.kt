@@ -9,9 +9,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Label
@@ -23,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 private data class ToolBook(val dir: String, val title: String, val series: String?, val tracks: List<PlayerLibraryItem>)
+private enum class SmartList { ALL, STARTED, NOT_STARTED, RECENT, TAGGED, UNTAGGED }
 
 class LibraryToolsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,16 +39,40 @@ class LibraryToolsActivity : ComponentActivity() {
 private fun LibraryToolsScreen(activity: ComponentActivity) {
     val books = remember { toolBooks(activity) }
     var query by remember { mutableStateOf("") }
+    var smartList by remember { mutableStateOf(SmartList.ALL) }
     var editBook by remember { mutableStateOf<ToolBook?>(null) }
     var tagText by remember { mutableStateOf("") }
-    val visible = books.filter { b ->
-        query.isBlank() || b.title.contains(query, true) || b.series?.contains(query, true) == true ||
-            PlayerExtras.tags(activity, b.dir).any { it.contains(query, true) }
+    var tagRevision by remember { mutableIntStateOf(0) }
+    val recentDirs = remember { PlayerExtras.history(activity).take(20).map { it.dir }.toSet() }
+    val visible = remember(books, query, smartList, tagRevision) {
+        books.filter { b ->
+            val tags = PlayerExtras.tags(activity, b.dir)
+            val started = b.tracks.any { PlayerPrefs.position(activity, android.net.Uri.parse(it.uri)) > 0L }
+            val smart = when (smartList) {
+                SmartList.ALL -> true
+                SmartList.STARTED -> started
+                SmartList.NOT_STARTED -> !started
+                SmartList.RECENT -> b.dir in recentDirs
+                SmartList.TAGGED -> tags.isNotEmpty()
+                SmartList.UNTAGGED -> tags.isEmpty()
+            }
+            smart && (query.isBlank() || b.title.contains(query, true) || b.series?.contains(query, true) == true || tags.any { it.contains(query, true) })
+        }
     }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Інструменти бібліотеки") }, navigationIcon = { IconButton({ activity.finish() }) { Icon(Icons.Filled.ArrowBack, "Назад") } }) }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(12.dp), label = { Text("Пошук книги, серії або тегу") }, singleLine = true)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SmartList.entries.forEach { item ->
+                    FilterChip(
+                        selected = smartList == item,
+                        onClick = { smartList = item },
+                        label = { Text(smartListLabel(item)) }
+                    )
+                }
+            }
+            Text("${visible.size} із ${books.size} книг", Modifier.padding(horizontal = 16.dp, vertical = 6.dp), style = MaterialTheme.typography.bodySmall)
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { shareBookmarks(activity) }, modifier = Modifier.weight(1f)) { Icon(Icons.Filled.Share, null); Spacer(Modifier.width(6.dp)); Text("Поділитися закладками") }
                 OutlinedButton(onClick = { copyBookmarks(activity) }, modifier = Modifier.weight(1f)) { Text("Копіювати Markdown") }
@@ -76,12 +103,22 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
             text = { OutlinedTextField(tagText, { tagText = it }, label = { Text("Через кому") }, supportingText = { Text("Наприклад: улюблене, робота, LitRPG") }) },
             confirmButton = { TextButton(onClick = {
                 PlayerExtras.setTags(activity, b.dir, tagText.split(',').map { it.trim() }.filter { it.isNotBlank() })
+                tagRevision++
                 editBook = null
                 Toast.makeText(activity, "Теги збережено", Toast.LENGTH_SHORT).show()
             }) { Text("Зберегти") } },
             dismissButton = { TextButton(onClick = { editBook = null }) { Text("Скасувати") } }
         )
     }
+}
+
+private fun smartListLabel(value: SmartList): String = when (value) {
+    SmartList.ALL -> "Усі"
+    SmartList.STARTED -> "Розпочаті"
+    SmartList.NOT_STARTED -> "Не початі"
+    SmartList.RECENT -> "Нещодавні"
+    SmartList.TAGGED -> "З тегами"
+    SmartList.UNTAGGED -> "Без тегів"
 }
 
 private fun toolBooks(context: Context): List<ToolBook> = PlayerLibrary.all(context)

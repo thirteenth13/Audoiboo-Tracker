@@ -11,8 +11,6 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import org.json.JSONArray
-import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 internal object SeriesAutomationPrefs {
@@ -47,36 +45,45 @@ internal class SeriesWatchWorker(appContext: Context, params: WorkerParameters) 
     override suspend fun doWork(): Result {
         if (!SeriesAutomationPrefs.enabled(applicationContext)) return Result.success()
         return runCatching {
-            val prefs = applicationContext.getSharedPreferences("tracker", Context.MODE_PRIVATE)
-            val raw = prefs.getString("library", "[]") ?: "[]"
-            val root = JSONArray(raw)
+            val library = LibraryRepository.snapshot(applicationContext)
             var changed = false
             var addedCount = 0
             val newTitles = mutableListOf<String>()
-
-            for (i in 0 until root.length()) {
-                val series = root.optJSONObject(i) ?: continue
-                val seriesUrl = series.optString("url")
-                val seriesName = series.optString("name").ifBlank { "Серія" }
-                if (seriesUrl.isBlank()) continue
-                val remote = AudiobooFastParser.parseSeries(seriesUrl) ?: continue
-                val books = series.optJSONArray("books") ?: JSONArray().also { series.put("books", it) }
-                val known = (0 until books.length()).mapNotNull { books.optJSONObject(it)?.optString("url")?.takeIf(String::isNotBlank) }.toMutableSet()
+            val updated = library.map { item ->
+                val series = item.series
+                val seriesName = series.name.ifBlank { "Серія" }
+                if (series.url.isBlank()) return@map item
+                val remote = AudiobooFastParser.parseSeries(series.url) ?: return@map item
+                val known = item.books.mapTo(mutableSetOf()) { it.url }
+                val books = item.books.sortedBy { it.sortIndex }.toMutableList()
                 for (book in remote) {
                     CoverCache.enqueue(applicationContext, book.coverUrl)
                     if (!known.add(book.url)) continue
                     var archive: String? = null
-                    if (SeriesAutomationPrefs.autoDownload(applicationContext)) archive = AudiobooFastParser.findArchive(book.url)
-                    val obj = JSONObject()
-                        .put("title", book.title).put("url", book.url).put("author", book.author)
-                        .put("coverUrl", book.coverUrl).put("status", "NEW").put("archiveUrl", archive)
-                    books.put(obj); changed = true; addedCount++; newTitles += "$seriesName — ${book.title}"
+                    if (SeriesAutomationPrefs.autoDownload(applicationContext)) {
+                        archive = AudiobooFastParser.findArchive(book.url)
+                    }
+                    books += BookEntity(
+                        id = "${series.id}::${book.url}",
+                        seriesId = series.id,
+                        title = book.title,
+                        url = book.url,
+                        author = book.author,
+                        coverUrl = book.coverUrl,
+                        status = "NEW",
+                        archiveUrl = archive,
+                        sortIndex = books.size
+                    )
+                    changed = true
+                    addedCount++
+                    newTitles += "$seriesName — ${book.title}"
                     if (!archive.isNullOrBlank()) {
                         ManagedDownloads.enqueue(applicationContext, book.title, seriesName, book.author, book.url, archive)
                     }
                 }
+                item.copy(books = books)
             }
-            if (changed) prefs.edit().putString("library", root.toString()).apply()
+            if (changed) LibraryRepository.replaceAll(applicationContext, updated)
             if (addedCount > 0) notifyNewBooks(applicationContext, addedCount, newTitles.take(3))
             Result.success()
         }.getOrElse { Result.retry() }

@@ -23,8 +23,10 @@ internal object PlayerExtras {
     private const val BROKEN = "broken_uris"
     private const val DAILY = "daily_listened"
     private const val TAGS = "book_tags"
+    private const val SERIES_RESUME = "series_resume"
 
     data class Resume(val dir: String, val title: String, val uri: String, val at: Long)
+    data class SeriesResume(val series: String, val dir: String, val title: String, val uri: String, val at: Long)
     data class HistoryItem(val dir: String, val title: String, val at: Long)
     data class Bookmark(val uri: String, val position: Long, val note: String, val createdAt: Long)
     data class PlaybackSnapshot(
@@ -40,13 +42,20 @@ internal object PlayerExtras {
     fun rememberBook(context: Context, dir: String, title: String, uri: Uri?) {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
-        p.edit().putString(LAST_DIR, dir).putString(LAST_TITLE, title).putString(LAST_URI, uri?.toString().orEmpty()).putLong(LAST_AT, now).apply()
+        val uriText = uri?.toString().orEmpty()
+        p.edit().putString(LAST_DIR, dir).putString(LAST_TITLE, title).putString(LAST_URI, uriText).putLong(LAST_AT, now).apply()
         val history = history(context).toMutableList().apply {
             removeAll { it.dir == dir }
             add(0, HistoryItem(dir, title, now))
         }.take(50)
         val arr = JSONArray(); history.forEach { arr.put(JSONObject().put("dir", it.dir).put("title", it.title).put("at", it.at)) }
         p.edit().putString(HISTORY, arr.toString()).apply()
+
+        if (uriText.isNotBlank()) {
+            PlayerLibrary.all(context).firstOrNull { it.uri == uriText }?.series?.takeIf { it.isNotBlank() }?.let { series ->
+                saveSeriesResume(context, SeriesResume(series, dir, title, uriText, now))
+            }
+        }
     }
 
     fun resume(context: Context): Resume? {
@@ -54,6 +63,24 @@ internal object PlayerExtras {
         val dir = p.getString(LAST_DIR, null)?.takeIf { it.isNotBlank() } ?: return null
         return Resume(dir, p.getString(LAST_TITLE, dir).orEmpty(), p.getString(LAST_URI, "").orEmpty(), p.getLong(LAST_AT, 0L))
     }
+
+    private fun saveSeriesResume(context: Context, value: SeriesResume) {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val root = runCatching { JSONObject(p.getString(SERIES_RESUME, "{}")) }.getOrElse { JSONObject() }
+        root.put(value.series, JSONObject()
+            .put("dir", value.dir)
+            .put("title", value.title)
+            .put("uri", value.uri)
+            .put("at", value.at))
+        p.edit().putString(SERIES_RESUME, root.toString()).apply()
+    }
+
+    fun seriesResume(context: Context, series: String): SeriesResume? = runCatching {
+        val root = JSONObject(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(SERIES_RESUME, "{}"))
+        val o = root.optJSONObject(series) ?: return null
+        val dir = o.optString("dir").takeIf { it.isNotBlank() } ?: return null
+        SeriesResume(series, dir, o.optString("title", dir), o.optString("uri"), o.optLong("at"))
+    }.getOrNull()
 
     fun saveSnapshot(context: Context, dir: String, title: String, uri: Uri?, fileIndex: Int, positionMs: Long, queue: List<String>) {
         if (dir.isBlank()) return
@@ -169,6 +196,15 @@ internal object PlayerQueueActions {
         val base = current.filterNot { it == dir }.toMutableList()
         val index = activeDir?.let { base.indexOf(it) } ?: -1
         base.add(if (index >= 0) index + 1 else 0, dir)
+        return base
+    }
+
+    fun afterSeries(current: List<String>, activeDir: String?, currentSeriesDirs: List<String>, dir: String): List<String> {
+        val base = current.filterNot { it == dir }.toMutableList()
+        val seriesSet = currentSeriesDirs.toSet()
+        val activeIndex = activeDir?.let { base.indexOf(it) } ?: -1
+        val lastSeriesIndex = base.indices.lastOrNull { base[it] in seriesSet } ?: activeIndex
+        base.add((lastSeriesIndex + 1).coerceIn(0, base.size), dir)
         return base
     }
 

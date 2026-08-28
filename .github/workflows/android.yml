@@ -38,13 +38,13 @@ jobs:
         run: gradle :app:assembleRelease --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.1.0-dev.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.1.1-dev.apk
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Audoiboo-Tracker-1.1.0-dev
-          path: Audoiboo-Tracker-1.1.0-dev.apk
+          name: Audoiboo-Tracker-1.1.1-dev
+          path: Audoiboo-Tracker-1.1.1-dev.apk
 
       - name: Publish dev prerelease
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -52,4 +52,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete dev-player --yes --cleanup-tag || true
-          gh release create dev-player Audoiboo-Tracker-1.1.0-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.0-dev" --prerelease --notes "Development preview with built-in audiobook player: playback position memory, embedded cover art, speed control, sleep timer, seek controls, playlist and player settings."
+          gh release create dev-player Audoiboo-Tracker-1.1.1-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.1-dev" --prerelease --notes "Development player update: MediaStore library discovery, READ_MEDIA_AUDIO support, Media3 background playback service, media notification/lock-screen controls, Bluetooth/headset media keys, audio focus, automatic next-track playback, position restore, speed, sleep timer and bookmarks."

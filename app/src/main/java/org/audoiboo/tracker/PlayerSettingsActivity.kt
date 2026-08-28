@@ -58,9 +58,13 @@ private fun PlayerSettingsScreen(activity: ComponentActivity) {
             SettingSwitch("Кнопка закладок", "Дозволяє позначати цікаві моменти", bookmarks) { bookmarks=it;save() }
             HorizontalDivider()
             OutlinedButton(
+                onClick = { activity.startActivity(Intent(activity, SleepTimerActivity::class.java)) },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
+            ) { Text("Розширений таймер сну") }
+            OutlinedButton(
                 onClick = { activity.startActivity(Intent(activity, LibraryToolsActivity::class.java)) },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp)
-            ) { Text("Теги книг та експорт закладок") }
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
+            ) { Text("Теги, smart-lists та експорт закладок") }
         }
     }
 }

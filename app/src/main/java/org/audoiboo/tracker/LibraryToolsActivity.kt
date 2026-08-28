@@ -26,6 +26,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 
 private data class ToolBook(val dir: String, val title: String, val series: String?, val tracks: List<PlayerLibraryItem>)
@@ -55,22 +56,29 @@ class LibraryToolsActivity : ComponentActivity() {
 @Composable
 private fun LibraryToolsScreen(activity: ComponentActivity) {
     val books = remember { toolBooks(activity) }
+    val scope = rememberCoroutineScope()
     val roomHistory by PlayerExtrasRepository.observeHistory(activity).collectAsState(initial = emptyList())
     val roomBookmarks by PlayerExtrasRepository.observeBookmarks(activity).collectAsState(initial = emptyList())
+    var roomTags by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
     var query by remember { mutableStateOf("") }
     var smartList by remember { mutableStateOf(SmartList.ALL) }
     var editBook by remember { mutableStateOf<ToolBook?>(null) }
     var tagText by remember { mutableStateOf("") }
     var tagRevision by remember { mutableIntStateOf(0) }
     var queueRevision by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(books, tagRevision) {
+        roomTags = RoomTagSync.tagsForDirs(activity, books.map { it.dir })
+    }
+
     val recentDirs = remember(roomHistory) { roomHistory.take(20).map { it.dir }.toSet() }
     val queue = remember(queueRevision) { ToolQueue.load(activity) }
     val activeDir = PlayerExtras.resume(activity)?.dir
     val activeBook = books.firstOrNull { it.dir == activeDir }
     val currentSeriesDirs = activeBook?.series?.let { series -> books.filter { it.series == series }.map { it.dir } } ?: listOfNotNull(activeDir)
-    val visible = remember(books, query, smartList, tagRevision, recentDirs) {
+    val visible = remember(books, query, smartList, roomTags, recentDirs) {
         books.filter { b ->
-            val tags = PlayerExtras.tags(activity, b.dir)
+            val tags = roomTags[b.dir].orEmpty()
             val started = b.tracks.any { PlayerPrefs.position(activity, android.net.Uri.parse(it.uri)) > 0L }
             val smart = when (smartList) {
                 SmartList.ALL -> true
@@ -106,7 +114,7 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
             }
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(visible, key = { it.dir }) { b ->
-                    val tags = PlayerExtras.tags(activity, b.dir)
+                    val tags = roomTags[b.dir].orEmpty()
                     var menu by remember(b.dir) { mutableStateOf(false) }
                     ElevatedCard(Modifier.fillMaxWidth().clickable { editBook = b; tagText = tags.joinToString(", ") }) {
                         Row(Modifier.padding(14.dp).fillMaxWidth()) {
@@ -120,31 +128,9 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
                             Box {
                                 IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "Черга") }
                                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                                    DropdownMenuItem(
-                                        text = { Text("Відтворити наступною") },
-                                        onClick = {
-                                            menu = false
-                                            saveQueue(PlayerQueueActions.playNext(queue, activeDir, b.dir), "Додано наступною")
-                                        },
-                                        leadingIcon = { Icon(Icons.Filled.SkipNext, null) }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Після поточної серії") },
-                                        onClick = {
-                                            menu = false
-                                            saveQueue(PlayerQueueActions.afterSeries(queue, activeDir, currentSeriesDirs, b.dir), "Додано після поточної серії")
-                                        },
-                                        enabled = activeDir != null,
-                                        leadingIcon = { Icon(Icons.Filled.PlaylistAdd, null) }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Додати в кінець черги") },
-                                        onClick = {
-                                            menu = false
-                                            saveQueue(queue + b.dir, "Додано в чергу")
-                                        },
-                                        leadingIcon = { Icon(Icons.Filled.PlaylistAdd, null) }
-                                    )
+                                    DropdownMenuItem(text = { Text("Відтворити наступною") }, onClick = { menu = false; saveQueue(PlayerQueueActions.playNext(queue, activeDir, b.dir), "Додано наступною") }, leadingIcon = { Icon(Icons.Filled.SkipNext, null) })
+                                    DropdownMenuItem(text = { Text("Після поточної серії") }, onClick = { menu = false; saveQueue(PlayerQueueActions.afterSeries(queue, activeDir, currentSeriesDirs, b.dir), "Додано після поточної серії") }, enabled = activeDir != null, leadingIcon = { Icon(Icons.Filled.PlaylistAdd, null) })
+                                    DropdownMenuItem(text = { Text("Додати в кінець черги") }, onClick = { menu = false; saveQueue(queue + b.dir, "Додано в чергу") }, leadingIcon = { Icon(Icons.Filled.PlaylistAdd, null) })
                                 }
                             }
                         }
@@ -160,10 +146,19 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
             title = { Text("Теги: ${b.title}") },
             text = { OutlinedTextField(tagText, { tagText = it }, label = { Text("Через кому") }, supportingText = { Text("Наприклад: улюблене, робота, LitRPG") }) },
             confirmButton = { TextButton(onClick = {
-                PlayerExtras.setTags(activity, b.dir, tagText.split(',').map { it.trim() }.filter { it.isNotBlank() })
-                tagRevision++
-                editBook = null
-                Toast.makeText(activity, "Теги збережено", Toast.LENGTH_SHORT).show()
+                val values = tagText.split(',').map { it.trim() }.filter { it.isNotBlank() }
+                scope.launch {
+                    val saved = RoomTagSync.setTagsForDir(activity, b.dir, values)
+                    if (saved) {
+                        // Compatibility mirror until every legacy reader is retired.
+                        PlayerExtras.setTags(activity, b.dir, values)
+                        tagRevision++
+                        editBook = null
+                        Toast.makeText(activity, "Теги збережено", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(activity, "Не вдалося зіставити книгу з Room", Toast.LENGTH_LONG).show()
+                    }
+                }
             }) { Text("Зберегти") } },
             dismissButton = { TextButton(onClick = { editBook = null }) { Text("Скасувати") } }
         )

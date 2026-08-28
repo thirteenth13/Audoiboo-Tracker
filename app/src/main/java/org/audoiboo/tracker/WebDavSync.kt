@@ -9,6 +9,9 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.TimeUnit
@@ -46,26 +49,34 @@ internal object WebDavSync {
     }
 
     fun upload(context: Context) {
+        runBlocking(Dispatchers.IO) { uploadFromRoom(context.applicationContext) }
+    }
+
+    fun download(context: Context) {
+        runBlocking(Dispatchers.IO) { downloadIntoRoom(context.applicationContext) }
+    }
+
+    private suspend fun uploadFromRoom(context: Context) = withContext(Dispatchers.IO) {
         val base = url(context).trimEnd('/'); if (base.isBlank()) error("Не вказано WebDAV URL")
         val conn = connection(context, "$base/$FILE", "PUT")
         try {
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            // BackupStore now materializes the tracker payload from Room before serializing format 4.
-            conn.outputStream.bufferedWriter().use { it.write(BackupStore.exportJson(context.applicationContext)) }
+            val backup = BackupStore.exportJsonFromRoom(context)
+            conn.outputStream.bufferedWriter().use { it.write(backup) }
             val code = conn.responseCode
             if (code !in 200..299) error("WebDAV HTTP $code")
         } finally { conn.disconnect() }
     }
 
-    fun download(context: Context) {
+    private suspend fun downloadIntoRoom(context: Context) = withContext(Dispatchers.IO) {
         val base = url(context).trimEnd('/'); if (base.isBlank()) error("Не вказано WebDAV URL")
         val conn = connection(context, "$base/$FILE", "GET")
         try {
             val code = conn.responseCode
             if (code !in 200..299) error("WebDAV HTTP $code")
             val raw = conn.inputStream.bufferedReader().use { it.readText() }
-            BackupStore.importJson(context, raw)
+            BackupStore.importJsonToRoom(context, raw)
         } finally { conn.disconnect() }
     }
 

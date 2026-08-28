@@ -11,12 +11,10 @@ import kotlinx.coroutines.launch
 class AudoibooApp : Application() {
     private lateinit var playerExtrasPrefs: SharedPreferences
     private lateinit var appSettingsPrefs: SharedPreferences
+    private lateinit var trackerBridge: LegacyTrackerBridge
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val playerExtrasListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-        ContinueListeningWidget.updateAll(this)
-    }
-
+    private val playerExtrasListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> ContinueListeningWidget.updateAll(this) }
     private val appSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null || key in setOf("wifi_only", "auto_find_archives", "dark_theme")) {
             appScope.launch { runCatching { PreferenceDataStore.syncFromLegacy(this@AudoibooApp) } }
@@ -34,9 +32,9 @@ class AudoibooApp : Application() {
         playerExtrasPrefs.registerOnSharedPreferenceChangeListener(playerExtrasListener)
         appSettingsPrefs = getSharedPreferences("app_settings", Context.MODE_PRIVATE)
         appSettingsPrefs.registerOnSharedPreferenceChangeListener(appSettingsListener)
+        trackerBridge = LegacyTrackerBridge(applicationContext).also { it.start() }
         ContinueListeningWidget.updateAll(this)
 
-        // Migration stays non-destructive while old consumers are being moved one by one.
         appScope.launch {
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
             runCatching { PreferenceDataStore.importLegacyIfNeeded(this@AudoibooApp) }

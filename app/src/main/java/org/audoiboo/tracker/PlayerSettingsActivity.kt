@@ -1,5 +1,6 @@
 package org.audoiboo.tracker
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -55,6 +56,11 @@ private fun PlayerSettingsScreen(activity: ComponentActivity) {
             SettingSwitch("Кнопка швидкості відтворення", "Показувати керування швидкістю на екрані плеєра", speed) { speed=it;save() }
             SettingSwitch("Кнопка таймера сну", "Показувати таймер сну на екрані плеєра", sleep) { sleep=it;save() }
             SettingSwitch("Кнопка закладок", "Дозволяє позначати цікаві моменти", bookmarks) { bookmarks=it;save() }
+            HorizontalDivider()
+            OutlinedButton(
+                onClick = { activity.startActivity(Intent(activity, LibraryToolsActivity::class.java)) },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp)
+            ) { Text("Теги книг та експорт закладок") }
         }
     }
 }

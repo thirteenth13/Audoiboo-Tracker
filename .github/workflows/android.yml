@@ -38,18 +38,18 @@ jobs:
         run: gradle :app:assembleRelease --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.0.2.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.1.0-dev.apk
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Audoiboo-Tracker-1.0.2
-          path: Audoiboo-Tracker-1.0.2.apk
+          name: Audoiboo-Tracker-1.1.0-dev
+          path: Audoiboo-Tracker-1.1.0-dev.apk
 
-      - name: Publish stable release
+      - name: Publish dev prerelease
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete v1.0.2 --yes --cleanup-tag || true
-          gh release create v1.0.2 Audoiboo-Tracker-1.0.2.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.0.2" --notes "Bugfix release: automatic archive discovery now recreates the hidden WebView for every queued book, so each book URL is actually loaded and the queue completes instead of hanging."
+          gh release delete dev-player --yes --cleanup-tag || true
+          gh release create dev-player Audoiboo-Tracker-1.1.0-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.0-dev" --prerelease --notes "Development preview with built-in audiobook player: playback position memory, embedded cover art, speed control, sleep timer, seek controls, playlist and player settings."

@@ -37,6 +37,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLDecoder
@@ -79,6 +82,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         initialDark = AppPrefs.darkTheme(this)
         BackupStore.maybeCreateDailyBackup(this)
+        DownloadScheduler.recover(this)
         setContent { AudoibooTheme(this) { TrackerScreen() } }
     }
 
@@ -141,7 +145,7 @@ private fun TrackerScreen() {
                 tab == MainTab.DOWNLOADS -> ManagedDownloadsScreen(context)
                 tab == MainTab.BROWSER -> BrowserScreen(browserUrl, onUrlChanged = { browserUrl = it }, onAddSeries = { addPrefillUrl = it; showAddDialog = true })
                 selectedSeries == null -> SeriesList(library.filter { query.isBlank() || it.name.contains(query, true) }, onOpen = { selectedSeriesId = it }, onDelete = { id -> commit(library.filterNot { it.id == id }) })
-                else -> SeriesDetail(selectedSeries, filter, query, { filter = it }, { book, status -> commit(library.map { s -> if (s.id != selectedSeries.id) s else s.copy(books = s.books.map { b -> if (b.url == book.url) b.copy(status = status) else b }) }) }, { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) }, { book -> archiveQueue = emptyList(); syncTask = SyncTask(SyncKind.BOOK, selectedSeries.id, book.url, book.url) }, { book -> book.archiveUrl?.let { archive -> if (AppPrefs.wifiOnly(context) && !isOnWifi(context)) Toast.makeText(context, "Увімкнено завантаження лише по Wi‑Fi", Toast.LENGTH_LONG).show() else { ManagedDownloads.enqueue(context, book.title, selectedSeries.name, book.author, book.url, archive); Toast.makeText(context, "Додано до завантажень", Toast.LENGTH_SHORT).show() } } })
+                else -> SeriesDetail(selectedSeries, filter, query, { filter = it }, { book, status -> commit(library.map { s -> if (s.id != selectedSeries.id) s else s.copy(books = s.books.map { b -> if (b.url == book.url) b.copy(status = status) else b }) }) }, { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) }, { book -> archiveQueue = emptyList(); syncTask = SyncTask(SyncKind.BOOK, selectedSeries.id, book.url, book.url) }, { book -> book.archiveUrl?.let { archive -> ManagedDownloads.enqueue(context, book.title, selectedSeries.name, book.author, book.url, archive); Toast.makeText(context, if (AppPrefs.wifiOnly(context) && !isOnWifi(context)) "Додано в чергу — старт після підключення до Wi‑Fi" else "Додано до завантажень", Toast.LENGTH_SHORT).show() } })
             }
             syncTask?.let { task ->
                 HiddenBrowserSync(task,
@@ -216,9 +220,87 @@ private fun AddSeriesDialog(initialUrl: String, onDismiss: () -> Unit, onAdd: (S
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun HiddenBrowserSync(task: SyncTask, onSeriesResolved: (String, ResolvedSeries) -> Unit, onSeriesParsed: (String, List<Book>) -> Unit, onArchiveFound: (String, String, String) -> Unit, onArchiveMissing: () -> Unit, onFailure: (String) -> Unit) {
-    val collected = remember(task) { linkedMapOf<String, Book>() }; val visited = remember(task) { mutableSetOf<String>() }
-    key(task.kind, task.seriesId, task.bookUrl, task.url) { AndroidView(factory = { ctx -> WebView(ctx).apply { settings.javaScriptEnabled = true; settings.domStorageEnabled = true; CookieManager.getInstance().setAcceptCookie(true); CookieManager.getInstance().setAcceptThirdPartyCookies(this, true); webViewClient = object : WebViewClient() { private var completed = false; override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) { super.onPageStarted(view, url, favicon); if (task.kind != SyncKind.SERIES) completed = false }; override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) { super.onReceivedError(view, request, error); if (request?.isForMainFrame == true && !completed) { completed = true; onFailure("Помилка завантаження Audioboo: ${error?.description ?: "невідома"}") } }; override fun onPageFinished(view: WebView, url: String) { view.postDelayed({ when (task.kind) { SyncKind.RESOLVE -> { if (completed) return@postDelayed; completed = true; view.evaluateJavascript(resolveSeriesJs) { raw -> val resolved = parseResolvedSeries(raw); if (resolved != null) onSeriesResolved(task.seriesId, resolved) else onFailure("На цій сторінці не знайдено цикл Audioboo") } }; SyncKind.SERIES -> { if (!visited.add(url)) return@postDelayed; view.evaluateJavascript(seriesParserJs) { raw -> val result = parseSeriesPage(raw); result.books.forEach { collected[it.url] = it }; val next = result.nextUrl?.takeIf { it !in visited }; if (next != null) view.loadUrl(next) else onSeriesParsed(task.seriesId, collected.values.toList()) } }; SyncKind.BOOK -> { if (completed) return@postDelayed; completed = true; view.evaluateJavascript(archiveParserJs) { raw -> val archive = decodeJsString(raw).takeIf { it.startsWith("http") }; if (archive != null && task.bookUrl != null) onArchiveFound(task.seriesId, task.bookUrl, archive) else onArchiveMissing() } } } }, 900) } }; loadUrl(task.url) } }, modifier = Modifier.size(1.dp).alpha(0f)) }
-    LaunchedEffect(task) { kotlinx.coroutines.delay(if (task.kind == SyncKind.SERIES) 45_000 else 15_000); onFailure(when (task.kind) { SyncKind.RESOLVE -> "Не вдалося визначити серію: тайм-аут"; SyncKind.SERIES -> "Оновлення серії перевищило час очікування"; SyncKind.BOOK -> "Пошук архіву перевищив час очікування" }) }
+    val collected = remember(task) { linkedMapOf<String, Book>() }
+    val visited = remember(task) { mutableSetOf<String>() }
+    var useWebView by remember(task) { mutableStateOf(false) }
+    var finished by remember(task) { mutableStateOf(false) }
+
+    LaunchedEffect(task) {
+        when (task.kind) {
+            SyncKind.RESOLVE -> {
+                val fast = withContext(Dispatchers.IO) { AudiobooFastParser.resolveSeries(task.url) }
+                if (fast != null) { finished = true; onSeriesResolved(task.seriesId, ResolvedSeries(fast.name, fast.url)) }
+                else useWebView = true
+            }
+            SyncKind.SERIES -> {
+                val fast = withContext(Dispatchers.IO) { AudiobooFastParser.parseSeries(task.url) }
+                if (!fast.isNullOrEmpty()) {
+                    finished = true
+                    onSeriesParsed(task.seriesId, fast.map { Book(it.title, it.url, it.author, it.coverUrl) })
+                } else useWebView = true
+            }
+            SyncKind.BOOK -> {
+                val fast = withContext(Dispatchers.IO) { AudiobooFastParser.findArchive(task.url) }
+                if (!fast.isNullOrBlank() && task.bookUrl != null) { finished = true; onArchiveFound(task.seriesId, task.bookUrl, fast) }
+                else useWebView = true
+            }
+        }
+    }
+
+    if (useWebView && !finished) {
+        key(task.kind, task.seriesId, task.bookUrl, task.url) {
+            AndroidView(factory = { ctx -> WebView(ctx).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                CookieManager.getInstance().setAcceptCookie(true)
+                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                webViewClient = object : WebViewClient() {
+                    private var completed = false
+                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) { super.onPageStarted(view, url, favicon); if (task.kind != SyncKind.SERIES) completed = false }
+                    override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+                        super.onReceivedError(view, request, error)
+                        if (request?.isForMainFrame == true && !completed && !finished) { completed = true; finished = true; onFailure("Помилка завантаження Audioboo: ${error?.description ?: "невідома"}") }
+                    }
+                    override fun onPageFinished(view: WebView, url: String) {
+                        view.postDelayed({
+                            if (finished) return@postDelayed
+                            when (task.kind) {
+                                SyncKind.RESOLVE -> {
+                                    if (completed) return@postDelayed
+                                    completed = true
+                                    view.evaluateJavascript(resolveSeriesJs) { raw -> val resolved = parseResolvedSeries(raw); finished = true; if (resolved != null) onSeriesResolved(task.seriesId, resolved) else onFailure("На цій сторінці не знайдено цикл Audioboo") }
+                                }
+                                SyncKind.SERIES -> {
+                                    if (!visited.add(url)) return@postDelayed
+                                    view.evaluateJavascript(seriesParserJs) { raw ->
+                                        val result = parseSeriesPage(raw)
+                                        result.books.forEach { collected[it.url] = it }
+                                        val next = result.nextUrl?.takeIf { it !in visited }
+                                        if (next != null) view.loadUrl(next) else { finished = true; onSeriesParsed(task.seriesId, collected.values.toList()) }
+                                    }
+                                }
+                                SyncKind.BOOK -> {
+                                    if (completed) return@postDelayed
+                                    completed = true
+                                    view.evaluateJavascript(archiveParserJs) { raw -> val archive = decodeJsString(raw).takeIf { it.startsWith("http") }; finished = true; if (archive != null && task.bookUrl != null) onArchiveFound(task.seriesId, task.bookUrl, archive) else onArchiveMissing() }
+                                }
+                            }
+                        }, 900)
+                    }
+                }
+                loadUrl(task.url)
+            } }, modifier = Modifier.size(1.dp).alpha(0f))
+        }
+    }
+
+    LaunchedEffect(task, useWebView) {
+        if (!useWebView) return@LaunchedEffect
+        delay(if (task.kind == SyncKind.SERIES) 45_000 else 15_000)
+        if (!finished) {
+            finished = true
+            onFailure(when (task.kind) { SyncKind.RESOLVE -> "Не вдалося визначити серію: тайм-аут"; SyncKind.SERIES -> "Оновлення серії перевищило час очікування"; SyncKind.BOOK -> "Пошук архіву перевищив час очікування" })
+        }
+    }
 }
 
 private val resolveSeriesJs = """(function(){ const abs=u=>{try{return new URL(u,location.href).href}catch(e){return null}}; const norm=s=>(s||'').replace(/\s+/g,' ').trim(); const here=location.href; if(/\/xfsearch\/cikl\//i.test(location.pathname)){ const parts=location.pathname.split('/').filter(Boolean); const i=parts.indexOf('cikl'); let name=i>=0&&parts[i+1]?decodeURIComponent(parts[i+1]).replace(/\+/g,' '):''; const h=document.querySelector('h1'); if(!name&&h) name=norm(h.textContent); return JSON.stringify({name:name,url:here.replace(/\/page\/\d+\/?$/i,'/')}); } const links=Array.from(document.querySelectorAll('a[href*="/xfsearch/cikl/"]')); for(const a of links){ const href=abs(a.getAttribute('href')); const name=norm(a.textContent); if(href&&name) return JSON.stringify({name:name,url:href.replace(/\/page\/\d+\/?$/i,'/')}); } return ''; })();""".trimIndent()

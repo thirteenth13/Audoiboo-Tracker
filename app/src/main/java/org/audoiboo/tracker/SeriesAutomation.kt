@@ -63,6 +63,7 @@ internal class SeriesWatchWorker(appContext: Context, params: WorkerParameters) 
                 val books = series.optJSONArray("books") ?: JSONArray().also { series.put("books", it) }
                 val known = (0 until books.length()).mapNotNull { books.optJSONObject(it)?.optString("url")?.takeIf(String::isNotBlank) }.toMutableSet()
                 for (book in remote) {
+                    CoverCache.enqueue(applicationContext, book.coverUrl)
                     if (!known.add(book.url)) continue
                     var archive: String? = null
                     if (SeriesAutomationPrefs.autoDownload(applicationContext)) archive = AudiobooFastParser.findArchive(book.url)

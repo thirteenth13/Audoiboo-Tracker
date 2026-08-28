@@ -51,6 +51,7 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
     implementation("androidx.media3:media3-exoplayer:1.8.0")
@@ -58,5 +59,6 @@ dependencies {
     implementation("androidx.media3:media3-common:1.8.0")
     implementation("androidx.work:work-runtime-ktx:2.10.5")
     implementation("org.jsoup:jsoup:1.21.2")
+    testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

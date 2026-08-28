@@ -1,6 +1,7 @@
 package org.audoiboo.tracker
 
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
@@ -88,6 +89,7 @@ class PlaybackService : MediaLibraryService() {
         super.onCreate()
         audioPrefs = getSharedPreferences("audio_enhancement", Context.MODE_PRIVATE)
         audioPrefs.registerOnSharedPreferenceChangeListener(audioPrefsListener)
+        CoverCache.enqueueTrackerCovers(this)
         player = ExoPlayer.Builder(this).build().apply {
             setAudioAttributes(
                 AudioAttributes.Builder()
@@ -123,6 +125,48 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    private fun artworkFor(item: PlayerLibraryItem, packageName: String?): Uri? {
+        val remote = CoverCache.remoteUrlFor(this, item) ?: return null
+        CoverCache.enqueue(this, remote)
+        val cached = CoverCache.cachedUri(this, remote)
+        if (cached != null && !packageName.isNullOrBlank()) {
+            runCatching { grantUriPermission(packageName, cached, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        }
+        return cached ?: Uri.parse(remote)
+    }
+
+    private fun mediaItemFor(item: PlayerLibraryItem, packageName: String?): MediaItem = MediaItem.Builder()
+        .setUri(item.uri)
+        .setMediaId(item.uri)
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(item.name)
+                .setAlbumTitle(item.bookTitle ?: item.series)
+                .setArtist(item.author)
+                .setArtworkUri(artworkFor(item, packageName))
+                .setIsBrowsable(false)
+                .setIsPlayable(true)
+                .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK_CHAPTER)
+                .build()
+        ).build()
+
+    private fun bookFolder(series: String, title: String, items: List<PlayerLibraryItem>, packageName: String?): MediaItem {
+        val first = items.firstOrNull()
+        return MediaItem.Builder()
+            .setMediaId(bookId(series, title))
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(title)
+                    .setArtist(first?.author)
+                    .setAlbumTitle(series.takeUnless { it == NO_SERIES })
+                    .setArtworkUri(first?.let { artworkFor(it, packageName) })
+                    .setIsBrowsable(true)
+                    .setIsPlayable(true)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK)
+                    .build()
+            ).build()
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
 
     override fun onDestroy() {
@@ -153,17 +197,18 @@ class PlaybackService : MediaLibraryService() {
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
             val all = PlayerLibrary.all(this@PlaybackService)
+            val packageName = browser.packageName
             val children = when {
                 parentId == ROOT_ID -> all.map { it.series?.takeIf(String::isNotBlank) ?: NO_SERIES }
                     .distinct().sortedBy { it.lowercase() }.map { series -> folderItem(seriesId(series), series) }
                 parentId.startsWith(SERIES_PREFIX) -> {
                     val series = Uri.decode(parentId.removePrefix(SERIES_PREFIX))
-                    booksForSeries(all, series).map { (title, items) -> bookFolder(series, title, items) }
+                    booksForSeries(all, series).map { (title, items) -> bookFolder(series, title, items, packageName) }
                 }
                 parentId.startsWith(BOOK_PREFIX) -> {
                     val (series, title) = decodeBookId(parentId) ?: ("" to "")
                     all.filter { librarySeries(it) == series && libraryBookTitle(it) == title }
-                        .sortedBy { naturalAudioKey(it.name) }.map(::mediaItem)
+                        .sortedBy { naturalAudioKey(it.name) }.map { mediaItemFor(it, packageName) }
                 }
                 else -> emptyList()
             }
@@ -183,9 +228,9 @@ class PlaybackService : MediaLibraryService() {
                 mediaId.startsWith(SERIES_PREFIX) -> Uri.decode(mediaId.removePrefix(SERIES_PREFIX)).let { folderItem(mediaId, it) }
                 mediaId.startsWith(BOOK_PREFIX) -> decodeBookId(mediaId)?.let { (series, title) ->
                     val matches = all.filter { librarySeries(it) == series && libraryBookTitle(it) == title }
-                    if (matches.isNotEmpty()) bookFolder(series, title, matches) else null
+                    if (matches.isNotEmpty()) bookFolder(series, title, matches, browser.packageName) else null
                 }
-                else -> all.firstOrNull { it.uri == mediaId }?.let(::mediaItem)
+                else -> all.firstOrNull { it.uri == mediaId }?.let { mediaItemFor(it, browser.packageName) }
             }
             return if (item != null) Futures.immediateFuture(LibraryResult.ofItem(item, null))
             else Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
@@ -202,9 +247,9 @@ class PlaybackService : MediaLibraryService() {
                     requested.mediaId.startsWith(BOOK_PREFIX) -> {
                         val (series, title) = decodeBookId(requested.mediaId) ?: return@flatMap emptyList()
                         all.filter { librarySeries(it) == series && libraryBookTitle(it) == title }
-                            .sortedBy { naturalAudioKey(it.name) }.map(::mediaItem)
+                            .sortedBy { naturalAudioKey(it.name) }.map { mediaItemFor(it, controller.packageName) }
                     }
-                    else -> all.firstOrNull { it.uri == requested.mediaId }?.let { listOf(mediaItem(it)) }
+                    else -> all.firstOrNull { it.uri == requested.mediaId }?.let { listOf(mediaItemFor(it, controller.packageName)) }
                         ?: if (requested.localConfiguration != null) listOf(requested) else emptyList()
                 }
             }
@@ -218,6 +263,8 @@ class PlaybackService : MediaLibraryService() {
         private const val BOOK_PREFIX = "audoiboo:book:"
         private const val NO_SERIES = "Без серії"
 
+        // Used by the in-app PlayerActivity. Service/browser callbacks use mediaItemFor so cached artwork
+        // can be granted to the requesting controller package (for example Android Auto).
         internal fun mediaItem(item: PlayerLibraryItem): MediaItem = MediaItem.Builder()
             .setUri(item.uri)
             .setMediaId(item.uri)
@@ -253,18 +300,6 @@ class PlaybackService : MediaLibraryService() {
             all.filter { librarySeries(it) == series }.groupBy(::libraryBookTitle).entries
                 .sortedWith(compareBy<Map.Entry<String, List<PlayerLibraryItem>>> { PlayerLogic.parseBookNumber(it.key) ?: Int.MAX_VALUE }.thenBy { it.key.lowercase() })
                 .map { it.key to it.value }
-        private fun bookFolder(series: String, title: String, items: List<PlayerLibraryItem>): MediaItem = MediaItem.Builder()
-            .setMediaId(bookId(series, title))
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setArtist(items.firstOrNull()?.author)
-                    .setAlbumTitle(series.takeUnless { it == NO_SERIES })
-                    .setIsBrowsable(true)
-                    .setIsPlayable(true)
-                    .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK)
-                    .build()
-            ).build()
         private fun naturalAudioKey(name: String) = name.lowercase().replace(Regex("(\\d+)")) { it.value.padStart(12, '0') }
     }
 }

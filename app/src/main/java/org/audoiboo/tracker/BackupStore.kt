@@ -18,7 +18,7 @@ object BackupStore {
 
     fun exportJson(context: Context, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean): String {
         val root = JSONObject()
-        root.put("format", 3)
+        root.put("format", 4)
         root.put("createdAt", System.currentTimeMillis())
         root.put("tracker", context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]"))
         root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
@@ -27,6 +27,10 @@ object BackupStore {
         if (includeSettings) {
             root.put("settings", prefsToJson(context, "app_settings"))
             root.put("playerSettings", prefsToJson(context, "player_settings"))
+            root.put("audioEnhancement", prefsToJson(context, "audio_enhancement"))
+            root.put("seriesAutomation", prefsToJson(context, "series_automation"))
+            // storage_access contains a persisted SAF tree URI, but Android's URI permission grant cannot
+            // be recreated from JSON on another install/device. Preserve it only as diagnostic metadata.
             root.put("storageAccess", prefsToJson(context, "storage_access"))
         }
         if (includeBookmarks || includeStatistics) root.put("playerExtras", prefsToJson(context, "player_extras"))
@@ -41,13 +45,19 @@ object BackupStore {
         context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).edit().putString("items", root.optString("downloads", "[]")).apply()
         root.optJSONObject("settings")?.let { jsonToPrefs(context, "app_settings", it) }
         root.optJSONObject("playerSettings")?.let { jsonToPrefs(context, "player_settings", it) }
+        root.optJSONObject("audioEnhancement")?.let { jsonToPrefs(context, "audio_enhancement", it) }
+        root.optJSONObject("seriesAutomation")?.let { jsonToPrefs(context, "series_automation", it) }
         root.optJSONObject("bookmarks")?.let { jsonToPrefs(context, "bookmarks", it) }
         root.optJSONObject("playerPositions")?.let { jsonToPrefs(context, "player_positions", it) }
         root.optJSONObject("playerLibrary")?.let { jsonToPrefs(context, "player_library", it) }
         root.optJSONObject("playerQueue")?.let { jsonToPrefs(context, "player_queue", it) }
         root.optJSONObject("playerExtras")?.let { jsonToPrefs(context, "player_extras", it) }
-        // SAF tree permissions cannot be recreated from JSON alone. We intentionally do not restore storage_access.
+
+        // SAF permissions cannot be recreated from JSON alone, so storage_access is deliberately not restored.
+        // Live sleep-timer state is deliberately not part of a backup: restoring an old timer could unexpectedly
+        // pause a newly started playback session. WebDAV credentials are also excluded from this backup payload.
         DownloadScheduler.recover(context)
+        SeriesAutomationPrefs.schedule(context)
     }
 
     fun automaticBackupPath(context: Context): String = context.getSharedPreferences(AUTO_PREFS, Context.MODE_PRIVATE)

@@ -1,16 +1,20 @@
 package org.audoiboo.tracker
 
+import android.Manifest
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
-import android.media.AudioAttributes
 import android.media.MediaMetadataRetriever
-import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -30,9 +34,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
 import kotlinx.coroutines.delay
 import java.util.Locale
-import kotlin.math.max
 
 internal data class AudioTrack(val uri: Uri, val name: String, val relativePath: String)
 
@@ -64,10 +72,10 @@ class PlayerActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initialTitle: String?) {
-    var tracks by remember { mutableStateOf(scanAudioTracks(activity, initialDir)) }
+    var refresh by remember { mutableIntStateOf(0) }
+    var tracks by remember(refresh, initialDir) { mutableStateOf(loadPlayerTracks(activity, initialDir)) }
+    var controller by remember { mutableStateOf<MediaController?>(null) }
     var index by remember { mutableIntStateOf(0) }
-    var player by remember { mutableStateOf<MediaPlayer?>(null) }
-    var prepared by remember { mutableStateOf(false) }
     var playing by remember { mutableStateOf(false) }
     var position by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
@@ -77,34 +85,77 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
     var cover by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     val current = tracks.getOrNull(index)
 
-    fun releasePlayer() { player?.let { p -> current?.let { PlayerPrefs.savePosition(activity, it.uri, p.currentPosition.toLong()) }; runCatching { p.release() } }; player = null; prepared = false; playing = false }
-    fun load(i: Int, autoPlay: Boolean = false) {
-        if (tracks.isEmpty()) return
-        releasePlayer(); index = i.coerceIn(0, tracks.lastIndex); val track = tracks[index]
-        position = 0; duration = 0; cover = embeddedCover(activity, track.uri)
-        val p = MediaPlayer().apply {
-            setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-            setDataSource(activity, track.uri)
-            setOnPreparedListener { mp ->
-                prepared = true; duration = mp.duration.toLong(); val saved = PlayerPrefs.position(activity, track.uri); val rewind = PlayerPrefs.autoRewindSeconds(activity) * 1000L; val start = max(0L, saved - rewind); if (start in 1 until duration) mp.seekTo(start.toInt()); position = start
-                runCatching { mp.playbackParams = mp.playbackParams.setSpeed(speed) }
-                if (autoPlay) { mp.start(); playing = true }
+    val audioPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) { refresh++; tracks = loadPlayerTracks(activity, initialDir) } }
+
+    DisposableEffect(Unit) {
+        val token = SessionToken(activity, ComponentName(activity, PlaybackService::class.java))
+        val future = MediaController.Builder(activity, token).buildAsync()
+        future.addListener({
+            runCatching { future.get() }.onSuccess { c ->
+                controller = c
+                c.addListener(object : Player.Listener {
+                    override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
+                    override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                        index = c.currentMediaItemIndex.coerceAtLeast(0)
+                        cover = tracks.getOrNull(index)?.let { embeddedCover(activity, it.uri) }
+                    }
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        duration = c.duration.coerceAtLeast(0L)
+                    }
+                })
             }
-            setOnCompletionListener { PlayerPrefs.savePosition(activity, track.uri, 0); if (index < tracks.lastIndex) load(index + 1, true) else playing = false }
-            prepareAsync()
-        }; player = p
+        }, ContextCompat.getMainExecutor(activity))
+        onDispose { controller?.let { MediaController.releaseFuture(future) } }
     }
 
-    DisposableEffect(Unit) { onDispose { releasePlayer() } }
-    LaunchedEffect(tracks) { if (tracks.isNotEmpty() && player == null) load(0, false) }
-    LaunchedEffect(player, playing) { while (true) { delay(500); val p = player; if (p != null && prepared) { position = p.currentPosition.toLong(); if (current != null) PlayerPrefs.savePosition(activity, current.uri, position) }; if (sleepUntil > 0 && System.currentTimeMillis() >= sleepUntil) { p?.pause(); playing = false; sleepUntil = 0 } } }
+    fun loadPlaylist(startIndex: Int, autoPlay: Boolean) {
+        val c = controller ?: return
+        if (tracks.isEmpty()) return
+        index = startIndex.coerceIn(0, tracks.lastIndex)
+        val mediaItems = tracks.map { t -> PlaybackService.mediaItem(PlayerLibraryItem(t.uri.toString(), t.name, t.relativePath)) }
+        c.setMediaItems(mediaItems, index, 0L)
+        c.prepare()
+        val saved = PlayerPrefs.position(activity, tracks[index].uri)
+        val rewind = PlayerPrefs.autoRewindSeconds(activity) * 1000L
+        c.seekTo(index, (saved - rewind).coerceAtLeast(0L))
+        c.setPlaybackSpeed(speed)
+        if (autoPlay) c.play()
+        cover = embeddedCover(activity, tracks[index].uri)
+    }
+
+    LaunchedEffect(controller, tracks) { if (controller != null && tracks.isNotEmpty() && controller?.mediaItemCount == 0) loadPlaylist(0, false) }
+    LaunchedEffect(controller) {
+        while (true) {
+            delay(500)
+            controller?.let { c ->
+                position = c.currentPosition.coerceAtLeast(0L)
+                duration = c.duration.coerceAtLeast(0L)
+                playing = c.isPlaying
+                tracks.getOrNull(c.currentMediaItemIndex)?.let { PlayerPrefs.savePosition(activity, it.uri, position) }
+                if (sleepUntil > 0 && System.currentTimeMillis() >= sleepUntil) { c.pause(); sleepUntil = 0 }
+            }
+        }
+    }
 
     Scaffold(topBar = { TopAppBar(title = { Text(initialTitle ?: "Плеєр") }, navigationIcon = { IconButton(onClick = { activity.finish() }) { Icon(Icons.Filled.ArrowBack, "Назад") } }, actions = { IconButton(onClick = { activity.startActivity(Intent(activity, PlayerSettingsActivity::class.java)) }) { Icon(Icons.Filled.Settings, "Налаштування плеєра") } }) }) { padding ->
-        if (tracks.isEmpty()) Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Filled.Headphones, null, modifier = Modifier.size(64.dp)); Spacer(Modifier.height(12.dp)); Text("Аудіофайли не знайдені"); TextButton(onClick = { tracks = scanAudioTracks(activity, null) }) { Text("Показати всі завантажені аудіофайли") } } }
-        else Column(Modifier.padding(padding).fillMaxSize().padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        if (tracks.isEmpty()) {
+            Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Filled.Headphones, null, modifier = Modifier.size(64.dp)); Spacer(Modifier.height(12.dp))
+                    Text("Завантажені аудіокниги не знайдені")
+                    Text("Плеєр шукає аудіо в Downloads/Audoiboo", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = {
+                        if (ContextCompat.checkSelfPermission(activity, audioPermission) != PackageManager.PERMISSION_GRANTED) permissionLauncher.launch(audioPermission)
+                        else { refresh++; tracks = loadPlayerTracks(activity, initialDir) }
+                    }) { Text("Оновити бібліотеку") }
+                }
+            }
+        } else Column(Modifier.padding(padding).fillMaxSize().padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 if (PlayerPrefs.showSleep(activity)) TextButton(onClick = { sleepUntil = if (sleepUntil == 0L) System.currentTimeMillis() + 30*60_000L else 0L }) { Icon(Icons.Filled.Bedtime, null); Spacer(Modifier.width(4.dp)); Text(if (sleepUntil > 0) "30 хв" else "Сон") }
-                if (PlayerPrefs.showSpeed(activity)) TextButton(onClick = { speed = when { speed < 1.25f -> 1.25f; speed < 1.5f -> 1.5f; speed < 2f -> 2f; else -> 1f }; player?.let { runCatching { it.playbackParams = it.playbackParams.setSpeed(speed) } } }) { Text(String.format(Locale.US,"%.2gx",speed)) }
+                if (PlayerPrefs.showSpeed(activity)) TextButton(onClick = { speed = when { speed < 1.25f -> 1.25f; speed < 1.5f -> 1.5f; speed < 1.75f -> 1.75f; speed < 2f -> 2f; else -> 1f }; controller?.setPlaybackSpeed(speed) }) { Text(String.format(Locale.US,"%.2gx",speed)) }
                 if (PlayerPrefs.showBookmarks(activity)) IconButton(onClick = { current?.let { activity.getSharedPreferences("bookmarks", Context.MODE_PRIVATE).edit().putLong(it.uri.toString()+"@"+System.currentTimeMillis(), position).apply() } }) { Icon(Icons.Filled.BookmarkAdd, "Закладка") }
                 IconButton(onClick = { showList = !showList }) { Icon(Icons.Filled.PlaylistPlay, "Список файлів") }
             }
@@ -112,36 +163,60 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Прочитано ${formatMs(position)}"); Text("${if(duration>0)((position*100/duration).toInt()) else 0}%"); Text("Залишилось ${formatMs((duration-position).coerceAtLeast(0))}") }
             Spacer(Modifier.height(18.dp))
             if (showList) {
-                LazyColumn(Modifier.weight(1f).fillMaxWidth()) { itemsIndexed(tracks) { i, t -> ListItem(headlineContent = { Text(t.name, maxLines=1, overflow=TextOverflow.Ellipsis) }, supportingContent = { Text(t.relativePath, maxLines=1, overflow=TextOverflow.Ellipsis) }, leadingContent = { Icon(if(i==index) Icons.Filled.VolumeUp else Icons.Filled.AudioFile, null) }, modifier = Modifier.clickable { showList=false; load(i,true) }); HorizontalDivider() } }
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) { itemsIndexed(tracks) { i, t -> ListItem(headlineContent = { Text(t.name, maxLines=1, overflow=TextOverflow.Ellipsis) }, supportingContent = { Text(t.relativePath, maxLines=1, overflow=TextOverflow.Ellipsis) }, leadingContent = { Icon(if(i==index) Icons.Filled.VolumeUp else Icons.Filled.AudioFile, null) }, modifier = Modifier.clickable { showList=false; loadPlaylist(i,true) }); HorizontalDivider() } }
             } else {
                 val bitmap = cover
                 if (bitmap != null) Image(bitmap.asImageBitmap(), current?.name, Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Fit)
                 else Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) { Icon(Icons.Filled.MenuBook, null, modifier=Modifier.size(96.dp)) }
             }
             Spacer(Modifier.height(12.dp)); Text(current?.name.orEmpty(), style=MaterialTheme.typography.titleMedium, fontWeight=FontWeight.SemiBold, maxLines=2, overflow=TextOverflow.Ellipsis)
-            Slider(value = if(duration>0) position.toFloat()/duration else 0f, onValueChange = { f -> if(duration>0) { position=(duration*f).toLong(); player?.seekTo(position.toInt()) } }, modifier=Modifier.fillMaxWidth())
+            Slider(value = if(duration>0) position.toFloat()/duration else 0f, onValueChange = { f -> if(duration>0) controller?.seekTo((duration*f).toLong()) }, modifier=Modifier.fillMaxWidth())
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(formatMs(position)); Text(formatMs(duration)) }
-            val seek = PlayerPrefs.seekSeconds(activity)*1000
+            val seekMs = PlayerPrefs.seekSeconds(activity)*1000L
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { if(index>0) load(index-1,true) }) { Icon(Icons.Filled.SkipPrevious,"Попередній",modifier=Modifier.size(38.dp)) }
-                TextButton(onClick = { player?.let { val v=(it.currentPosition-seek).coerceAtLeast(0); it.seekTo(v) } }) { Text("−${seek/1000}с", style=MaterialTheme.typography.titleMedium) }
-                FilledIconButton(onClick = { player?.let { if(prepared) { if(it.isPlaying){it.pause();playing=false}else{it.start();playing=true} } } }, modifier=Modifier.size(64.dp)) { Icon(if(playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, if(playing)"Пауза" else "Відтворити",modifier=Modifier.size(38.dp)) }
-                TextButton(onClick = { player?.let { val v=(it.currentPosition+seek).coerceAtMost(it.duration); it.seekTo(v) } }) { Text("+${seek/1000}с", style=MaterialTheme.typography.titleMedium) }
-                IconButton(onClick = { if(index<tracks.lastIndex) load(index+1,true) }) { Icon(Icons.Filled.SkipNext,"Наступний",modifier=Modifier.size(38.dp)) }
+                IconButton(onClick = { controller?.seekToPreviousMediaItem() }) { Icon(Icons.Filled.SkipPrevious,"Попередній",modifier=Modifier.size(38.dp)) }
+                TextButton(onClick = { controller?.let { it.seekTo((it.currentPosition-seekMs).coerceAtLeast(0L)) } }) { Text("−${seekMs/1000}с", style=MaterialTheme.typography.titleMedium) }
+                FilledIconButton(onClick = { controller?.let { if(it.isPlaying) it.pause() else it.play() } }, modifier=Modifier.size(64.dp)) { Icon(if(playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, if(playing)"Пауза" else "Відтворити",modifier=Modifier.size(38.dp)) }
+                TextButton(onClick = { controller?.let { it.seekTo((it.currentPosition+seekMs).coerceAtMost(it.duration.coerceAtLeast(0L))) } }) { Text("+${seekMs/1000}с", style=MaterialTheme.typography.titleMedium) }
+                IconButton(onClick = { controller?.seekToNextMediaItem() }) { Icon(Icons.Filled.SkipNext,"Наступний",modifier=Modifier.size(38.dp)) }
             }
             Spacer(Modifier.height(16.dp))
         }
     }
 }
 
-private fun scanAudioTracks(context: Context, relativeDir: String?): List<AudioTrack> {
-    val result = mutableListOf<AudioTrack>(); val projection = arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME, MediaStore.Downloads.RELATIVE_PATH)
-    val selection = if (relativeDir.isNullOrBlank()) null else "${MediaStore.Downloads.RELATIVE_PATH} LIKE ?"
-    val args = if (relativeDir.isNullOrBlank()) null else arrayOf("%${relativeDir.replace("%","\\%")}%")
-    context.contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, projection, selection, args, MediaStore.Downloads.DISPLAY_NAME+" ASC")?.use { c ->
-        val idI=c.getColumnIndexOrThrow(MediaStore.Downloads._ID); val nameI=c.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME); val pathI=c.getColumnIndexOrThrow(MediaStore.Downloads.RELATIVE_PATH)
-        while(c.moveToNext()) { val name=c.getString(nameI)?:continue; if(name.substringAfterLast('.',"").lowercase() !in setOf("mp3","m4a","m4b","ogg","opus","wav","aac","flac")) continue; val id=c.getLong(idI); result += AudioTrack(Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI,id.toString()),name,c.getString(pathI).orEmpty()) }
-    }; return result
+private fun loadPlayerTracks(context: Context, relativeDir: String?): List<AudioTrack> {
+    val indexed = PlayerLibrary.forPath(context, relativeDir).map { AudioTrack(Uri.parse(it.uri), it.name, it.relativePath) }
+    val scanned = scanAudioTracks(context, relativeDir)
+    val merged = (indexed + scanned).distinctBy { it.uri.toString() }.sortedWith(compareBy<AudioTrack> { it.relativePath }.thenBy { naturalKey(it.name) })
+    if (merged.isNotEmpty()) PlayerLibrary.replaceAll(context, merged.map { PlayerLibraryItem(it.uri.toString(), it.name, it.relativePath) })
+    return merged
 }
+
+private fun scanAudioTracks(context: Context, relativeDir: String?): List<AudioTrack> {
+    val result = linkedMapOf<String, AudioTrack>()
+    fun query(collection: Uri, idColumn: String, nameColumn: String, pathColumn: String) {
+        val projection = arrayOf(idColumn, nameColumn, pathColumn)
+        val selection = if (relativeDir.isNullOrBlank()) null else "$pathColumn LIKE ?"
+        val args = if (relativeDir.isNullOrBlank()) null else arrayOf("%${relativeDir.replace("%","\\%")}%")
+        runCatching {
+            context.contentResolver.query(collection, projection, selection, args, "$nameColumn ASC")?.use { c ->
+                val idI=c.getColumnIndexOrThrow(idColumn); val nameI=c.getColumnIndexOrThrow(nameColumn); val pathI=c.getColumnIndexOrThrow(pathColumn)
+                while(c.moveToNext()) {
+                    val name=c.getString(nameI)?:continue
+                    if(name.substringAfterLast('.',"").lowercase() !in setOf("mp3","m4a","m4b","ogg","opus","wav","aac","flac")) continue
+                    val id=c.getLong(idI); val uri=Uri.withAppendedPath(collection,id.toString()); val path=c.getString(pathI).orEmpty()
+                    if (!path.contains("Audoiboo", true) && relativeDir.isNullOrBlank()) continue
+                    result[uri.toString()] = AudioTrack(uri,name,path)
+                }
+            }
+        }
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME, MediaStore.Downloads.RELATIVE_PATH)
+    query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, MediaStore.Audio.Media._ID, MediaStore.Audio.Media.DISPLAY_NAME, MediaStore.Audio.Media.RELATIVE_PATH)
+    return result.values.toList()
+}
+
+private fun naturalKey(name: String): String = name.lowercase().replace(Regex("(\\d+)")) { it.value.padStart(12,'0') }
 private fun embeddedCover(context: Context, uri: Uri): android.graphics.Bitmap? = runCatching { val mmr=MediaMetadataRetriever(); mmr.setDataSource(context,uri); val bytes=mmr.embeddedPicture; mmr.release(); bytes?.let{BitmapFactory.decodeByteArray(it,0,it.size)} }.getOrNull()
 private fun formatMs(ms: Long): String { val total=ms/1000; val h=total/3600; val m=(total%3600)/60; val s=total%60; return if(h>0) "%d:%02d:%02d".format(h,m,s) else "%d:%02d".format(m,s) }

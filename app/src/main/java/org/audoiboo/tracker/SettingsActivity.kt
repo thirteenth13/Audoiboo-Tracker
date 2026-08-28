@@ -55,10 +55,35 @@ class SettingsActivity : ComponentActivity() { override fun onCreate(savedInstan
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsScreen(activity: ComponentActivity) {
-    var base by remember { mutableStateOf(AppPrefs.baseFolder(activity)) }; var author by remember { mutableStateOf(AppPrefs.useAuthorFolder(activity)) }; var dev by remember { mutableStateOf(AppPrefs.devTools(activity)) }; var dark by remember { mutableStateOf(AppPrefs.darkTheme(activity)) }; var ask by remember { mutableStateOf(AppPrefs.askPath(activity)) }; var wifi by remember { mutableStateOf(AppPrefs.wifiOnly(activity)) }; var unpack by remember { mutableStateOf(AppPrefs.unpack(activity)) }; var updateWifi by remember { mutableStateOf(AppPrefs.updateWifiOnly(activity)) }; var showPage by remember { mutableStateOf(AppPrefs.showPageButton(activity)) }; var showFind by remember { mutableStateOf(AppPrefs.showFindArchiveButton(activity)) }; var autoArchives by remember { mutableStateOf(AppPrefs.autoFindArchives(activity)) }
+    var base by remember { mutableStateOf(AppPrefs.baseFolder(activity)) }
+    var author by remember { mutableStateOf(AppPrefs.useAuthorFolder(activity)) }
+    var dev by remember { mutableStateOf(AppPrefs.devTools(activity)) }
+    var dark by remember { mutableStateOf(AppPrefs.darkTheme(activity)) }
+    var ask by remember { mutableStateOf(AppPrefs.askPath(activity)) }
+    var wifi by remember { mutableStateOf(AppPrefs.wifiOnly(activity)) }
+    var unpack by remember { mutableStateOf(AppPrefs.unpack(activity)) }
+    var updateWifi by remember { mutableStateOf(AppPrefs.updateWifiOnly(activity)) }
+    var showPage by remember { mutableStateOf(AppPrefs.showPageButton(activity)) }
+    var showFind by remember { mutableStateOf(AppPrefs.showFindArchiveButton(activity)) }
+    var autoArchives by remember { mutableStateOf(AppPrefs.autoFindArchives(activity)) }
+    val automatic = remember { BackupStore.automaticSettings(activity) }
+    var autoSettings by remember { mutableStateOf(automatic.first) }
+    var autoBookmarks by remember { mutableStateOf(automatic.second) }
+    var autoStatistics by remember { mutableStateOf(automatic.third) }
+
     fun save() = AppPrefs.save(activity, base, author, dev, dark, ask, wifi, unpack, updateWifi, showPage, showFind, autoArchives)
-    val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri -> if (uri != null) runCatching { activity.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(BackupStore.exportJson(activity)) } }.onSuccess { Toast.makeText(activity, "Резервну копію створено", Toast.LENGTH_SHORT).show() }.onFailure { Toast.makeText(activity, "Помилка резервної копії: ${it.message}", Toast.LENGTH_LONG).show() } }
-    val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) runCatching { val raw = activity.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("Порожній файл"); BackupStore.importJson(activity, raw) }.onSuccess { Toast.makeText(activity, "Дані відновлено. Перезапусти додаток", Toast.LENGTH_LONG).show() }.onFailure { Toast.makeText(activity, "Помилка відновлення: ${it.message}", Toast.LENGTH_LONG).show() } }
+    fun saveAutomatic() { BackupStore.setAutomaticSettings(activity, autoSettings, autoBookmarks, autoStatistics); BackupStore.maybeCreateDailyBackup(activity) }
+
+    val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) runCatching { activity.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(BackupStore.exportJson(activity)) } }
+            .onSuccess { Toast.makeText(activity, "Резервну копію створено", Toast.LENGTH_SHORT).show() }
+            .onFailure { Toast.makeText(activity, "Помилка резервної копії: ${it.message}", Toast.LENGTH_LONG).show() }
+    }
+    val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) runCatching { val raw = activity.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("Порожній файл"); BackupStore.importJson(activity, raw) }
+            .onSuccess { Toast.makeText(activity, "Дані відновлено. Перезапусти додаток", Toast.LENGTH_LONG).show() }
+            .onFailure { Toast.makeText(activity, "Помилка відновлення: ${it.message}", Toast.LENGTH_LONG).show() }
+    }
 
     MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
         Scaffold(topBar = { TopAppBar(title = { Text("Налаштування") }, navigationIcon = { TextButton(onClick = { activity.finish() }) { Text("←") } }) }) { padding ->
@@ -68,9 +93,8 @@ private fun SettingsScreen(activity: ComponentActivity) {
 
                 SectionTitle("Плеєр")
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Вбудований плеєр аудіокниг", style = MaterialTheme.typography.titleMedium)
-                    Text("Відтворює MP3/M4A/M4B/OGG/Opus та запам’ятовує позицію.", style = MaterialTheme.typography.bodySmall)
-                    Button(onClick = { activity.startActivity(Intent(activity, PlayerActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) { Text("Відкрити плеєр") }
+                    Text("Налаштування вбудованого плеєра", style = MaterialTheme.typography.titleMedium)
+                    Text("Сам плеєр доступний з головного екрана; тут залишені лише його параметри.", style = MaterialTheme.typography.bodySmall)
                     OutlinedButton(onClick = { activity.startActivity(Intent(activity, PlayerSettingsActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) { Text("Налаштування плеєра") }
                 } }
 
@@ -82,17 +106,31 @@ private fun SettingsScreen(activity: ComponentActivity) {
                 SectionTitle("Завантаження")
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(value = base, onValueChange = { base = it }, label = { Text("Базова папка") }, supportingText = { Text("/storage/emulated/0/Download/${base.ifBlank { "Audoiboo" }}") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    Text("Структура папок", style = MaterialTheme.typography.titleSmall); Text(if (author) "Автор → Серія → Книга" else "Серія → Книга"); Text("${base.ifBlank { "Audoiboo" }}/${if (author) "Автор/" else ""}Серія/Назва книги/...", style = MaterialTheme.typography.bodySmall)
+                    Text("Структура папок", style = MaterialTheme.typography.titleSmall)
+                    Text(if (author) "Автор → Серія → Книга" else "Серія → Книга")
+                    Text("${base.ifBlank { "Audoiboo" }}/${if (author) "Автор/" else ""}Серія/Назва книги/...", style = MaterialTheme.typography.bodySmall)
                     SettingRow("Папка автора", "Автор першим рівнем") { Switch(checked = author, onCheckedChange = { author = it; save() }) }
                     SettingRow("Запитувати шлях завантаження", "Перед кожним завантаженням") { Switch(checked = ask, onCheckedChange = { ask = it; save() }) }
                     SettingRow("Завантажувати тільки по Wi‑Fi", "Економія мобільного трафіку") { Switch(checked = wifi, onCheckedChange = { wifi = it; save() }) }
-                    SettingRow("Розпаковувати ZIP", "Після розпакування архів видаляється") { Switch(checked = unpack, onCheckedChange = { unpack = it; save() }) }
+                    SettingRow("Розпаковувати ZIP", "Кожна книга — у власну папку; архів після розпакування видаляється") { Switch(checked = unpack, onCheckedChange = { unpack = it; save() }) }
                     Button(onClick = { save() }) { Text("Зберегти") }
                 } }
 
+                SectionTitle("Автоматичне резервне копіювання")
+                SettingCard("Автоматичне резервне копіювання налаштувань", "Щоденна локальна резервна копія налаштувань застосунку й плеєра") {
+                    Switch(checked = autoSettings, onCheckedChange = { autoSettings = it; saveAutomatic() })
+                }
+                SettingCard("Автоматичне резервне копіювання закладок", "Щоденна резервна копія закладок плеєра") {
+                    Switch(checked = autoBookmarks, onCheckedChange = { autoBookmarks = it; saveAutomatic() })
+                }
+                SettingCard("Автоматичне резервне копіювання статистики", "Щоденна резервна копія позицій і прогресу прослуховування") {
+                    Switch(checked = autoStatistics, onCheckedChange = { autoStatistics = it; saveAutomatic() })
+                }
+                Text("Зберігаються до 7 локальних автоматичних копій у службовій папці застосунку.", style = MaterialTheme.typography.bodySmall)
+
                 SectionTitle("Резервна копія")
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Зберігаються серії, книги, статуси, знайдені архіви, налаштування та історія завантажень.")
+                    Text("Повна ручна копія містить серії, книги, статуси, архіви, завантаження, налаштування плеєра, закладки та позиції відтворення.")
                     Button(onClick = { backupLauncher.launch("Audoiboo-Tracker-backup.json") }, modifier = Modifier.fillMaxWidth()) { Text("Створити резервну копію") }
                     OutlinedButton(onClick = { restoreLauncher.launch(arrayOf("application/json", "text/plain")) }, modifier = Modifier.fillMaxWidth()) { Text("Відновити з копії") }
                     Text("У системному вікні можна вибрати Google Drive, локальну пам’ять або інший файловий провайдер.", style = MaterialTheme.typography.bodySmall)
@@ -100,10 +138,13 @@ private fun SettingsScreen(activity: ComponentActivity) {
 
                 SectionTitle("Інше")
                 SettingCard("Перевіряти оновлення", if (updateWifi) "Лише по Wi‑Fi" else "Будь-яка мережа") { Switch(checked = updateWifi, onCheckedChange = { updateWifi = it; save() }) }
-                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("Про додаток"); Text("Audoiboo Tracker 1.1.0-dev", style = MaterialTheme.typography.bodySmall) } }
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("Про додаток"); Text("Audoiboo Tracker 1.1.2-dev", style = MaterialTheme.typography.bodySmall) } }
 
                 SectionTitle("Розробка")
-                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { SettingRow("Інструменти налагодження", "DOM-діагностика") { Switch(checked = dev, onCheckedChange = { dev = it; save() }) }; if (dev) OutlinedButton(onClick = { activity.startActivity(Intent(activity, DiagnosticActivity::class.java)) }) { Text("Відкрити DOM-діагностику") } } }
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
+                    SettingRow("Інструменти налагодження", "DOM-діагностика") { Switch(checked = dev, onCheckedChange = { dev = it; save() }) }
+                    if (dev) OutlinedButton(onClick = { activity.startActivity(Intent(activity, DiagnosticActivity::class.java)) }) { Text("Відкрити DOM-діагностику") }
+                } }
             }
         }
     }

@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -214,11 +215,11 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(formatMs(position)); Text(formatMs(duration)) }
             val seekMs = PlayerPrefs.seekSeconds(activity)*1000L
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { controller?.seekToPreviousMediaItem() }) { Icon(Icons.Filled.SkipPrevious,"Попередній",modifier=Modifier.size(38.dp)) }
+                IconButton(onClick = { controller?.seekToPreviousMediaItem() }, enabled = index > 0) { Icon(Icons.Filled.SkipPrevious,"Попередній файл",modifier=Modifier.size(38.dp)) }
                 TextButton(onClick = { controller?.let { it.seekTo((it.currentPosition-seekMs).coerceAtLeast(0L)) } }) { Text("−${seekMs/1000}с", style=MaterialTheme.typography.titleMedium) }
                 FilledIconButton(onClick = { controller?.let { if(it.isPlaying) it.pause() else it.play() } }, modifier=Modifier.size(64.dp)) { Icon(if(playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, if(playing)"Пауза" else "Відтворити",modifier=Modifier.size(38.dp)) }
                 TextButton(onClick = { controller?.let { it.seekTo((it.currentPosition+seekMs).coerceAtMost(it.duration.coerceAtLeast(0L))) } }) { Text("+${seekMs/1000}с", style=MaterialTheme.typography.titleMedium) }
-                IconButton(onClick = { controller?.seekToNextMediaItem() }) { Icon(Icons.Filled.SkipNext,"Наступний",modifier=Modifier.size(38.dp)) }
+                IconButton(onClick = { controller?.seekToNextMediaItem() }, enabled = index < tracks.lastIndex) { Icon(Icons.Filled.SkipNext,"Наступний файл",modifier=Modifier.size(38.dp)) }
             }
             Spacer(Modifier.height(16.dp))
         }
@@ -227,6 +228,7 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
 
 @Composable
 private fun BookChooser(modifier: Modifier, books: List<AudioBookGroup>, onRefresh: () -> Unit, onSelect: (AudioBookGroup) -> Unit) {
+    val context = LocalContext.current
     if (books.isEmpty()) {
         Box(modifier, contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -247,9 +249,16 @@ private fun BookChooser(modifier: Modifier, books: List<AudioBookGroup>, onRefre
         }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(books, key = { it.relativeDir }) { book ->
+                val bookCover = remember(book.relativeDir, book.tracks) { book.tracks.firstOrNull()?.let { embeddedCover(context, it.uri) } }
                 ElevatedCard(Modifier.fillMaxWidth().clickable { onSelect(book) }, shape = RoundedCornerShape(14.dp)) {
                     Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.MenuBook, null, modifier = Modifier.size(42.dp), tint = MaterialTheme.colorScheme.primary)
+                        if (bookCover != null) {
+                            Image(bookCover.asImageBitmap(), book.title, modifier = Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)), contentScale = ContentScale.Crop)
+                        } else {
+                            Box(Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Filled.MenuBook, null, modifier = Modifier.size(36.dp), tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text(book.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)

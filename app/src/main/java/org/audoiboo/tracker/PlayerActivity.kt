@@ -167,12 +167,20 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
         val c=controller?:return;if(tracks.isEmpty())return;index=start.coerceIn(0,tracks.lastIndex)
         c.setMediaItems(tracks.map{t->PlaybackService.mediaItem(PlayerLibraryItem(t.uri.toString(),t.name,t.relativePath,requestedTitle,activeBook?.seriesName))},index,0L);c.prepare()
         val snapshot=PlayerExtras.snapshot(activity)
-        val stored=if(snapshot?.dir==activeDir&&snapshot.uri==tracks[index].uri.toString())maxOf(snapshot.positionMs,PlayerPrefs.position(activity,tracks[index].uri))else PlayerPrefs.position(activity,tracks[index].uri)
+        val saved = PlayerPrefs.position(activity,tracks[index].uri)
+        val stored=snapshot?.takeIf{it.dir==activeDir&&it.uri==tracks[index].uri.toString()}?.let{maxOf(it.positionMs,saved)}?:saved
         val resume=PlayerExtras.resume(activity);val smart=if(resume?.uri==tracks[index].uri.toString())PlayerExtras.smartRewindMs(resume.at)else 0L
         c.seekTo(index,(stored-maxOf(PlayerPrefs.autoRewindSeconds(activity)*1000L,smart)).coerceAtLeast(0));c.setPlaybackSpeed(speed);if(autoPlay)c.play();embeddedCover=resolveBookCover(activity,tracks,tracks[index].uri)
     }
 
-    LaunchedEffect(activeDir,controller){if(!activeDir.isNullOrBlank()){tracks=loadPlayerTracks(activity,activeDir);speed=PlayerExtras.speedFor(activity,activeDir);val snap=PlayerExtras.snapshot(activity);val savedUri=if(snap?.dir==activeDir)snap.uri else PlayerExtras.resume(activity)?.uri;index=tracks.indexOfFirst{it.uri.toString()==savedUri}.takeIf{it>=0}?:snap?.fileIndex?.takeIf{snap.dir==activeDir&&it in tracks.indices}?:0;position=if(snap?.dir==activeDir)snap.positionMs else 0;duration=0;embeddedCover=resolveBookCover(activity,tracks,tracks.getOrNull(index)?.uri);if(controller!=null&&tracks.isNotEmpty())loadPlaylist(index,false)}}
+    LaunchedEffect(activeDir,controller){if(!activeDir.isNullOrBlank()){
+        tracks=loadPlayerTracks(activity,activeDir);speed=PlayerExtras.speedFor(activity,activeDir)
+        val snap=PlayerExtras.snapshot(activity);val matchingSnap=snap?.takeIf{it.dir==activeDir}
+        val savedUri=matchingSnap?.uri?:PlayerExtras.resume(activity)?.uri
+        index=tracks.indexOfFirst{it.uri.toString()==savedUri}.takeIf{it>=0}?:matchingSnap?.fileIndex?.takeIf{it in tracks.indices}?:0
+        position=matchingSnap?.positionMs?:0;duration=0;embeddedCover=resolveBookCover(activity,tracks,tracks.getOrNull(index)?.uri)
+        if(controller!=null&&tracks.isNotEmpty())loadPlaylist(index,false)
+    }}
     LaunchedEffect(controller){while(true){delay(1000);controller?.let{c->val now=System.currentTimeMillis();if(c.isPlaying)PlayerExtras.addListened(activity,(now-lastTick).coerceAtMost(2000));lastTick=now;position=c.currentPosition.coerceAtLeast(0);duration=c.duration.coerceAtLeast(0);playing=c.isPlaying;tracks.getOrNull(c.currentMediaItemIndex)?.let{t->PlayerPrefs.savePosition(activity,t.uri,position);if(!activeDir.isNullOrBlank()){PlayerExtras.rememberBook(activity,activeDir!!,requestedTitle?:activeDir!!,t.uri);PlayerExtras.saveSnapshot(activity,activeDir!!,requestedTitle?:activeDir!!,t.uri,c.currentMediaItemIndex.coerceAtLeast(0),position,queueDirs)}};if(sleepUntil>0){val remaining=sleepUntil-now;if(remaining<=0){c.pause();c.volume=1f;sleepUntil=0}else if(remaining<=60_000){c.volume=(remaining/60_000f).coerceIn(.05f,1f)}else c.volume=1f}else if(c.volume!=1f)c.volume=1f}}}
 
     Scaffold(topBar={TopAppBar(title={Text(when(page){PlayerPage.LIBRARY->"Бібліотека";PlayerPage.QUEUE->"Черга";PlayerPage.HISTORY->"Історія";PlayerPage.STATS->"Статистика";PlayerPage.SERIES->selectedSeries?:"Серія";PlayerPage.PLAYER->requestedTitle?:"Плеєр"})},navigationIcon={IconButton(onClick={persistSnapshot();if(page==PlayerPage.PLAYER&&initialDir!=null)activity.finish()else if(page==PlayerPage.LIBRARY)activity.finish()else page=PlayerPage.LIBRARY}){Icon(Icons.Filled.ArrowBack,"Назад")}},actions={

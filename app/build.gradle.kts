@@ -11,8 +11,8 @@ android {
         applicationId = "org.audoiboo.tracker"
         minSdk = 23
         targetSdk = 37
-        versionCode = 111
-        versionName = "1.1.1-dev"
+        versionCode = 112
+        versionName = "1.1.2-dev"
     }
 
     signingConfigs {

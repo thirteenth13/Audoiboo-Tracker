@@ -101,7 +101,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     companion object {
-        fun mediaItem(item: PlayerLibraryItem): MediaItem = MediaItem.Builder()
+        internal fun mediaItem(item: PlayerLibraryItem): MediaItem = MediaItem.Builder()
             .setUri(item.uri)
             .setMediaId(item.uri)
             .setMediaMetadata(

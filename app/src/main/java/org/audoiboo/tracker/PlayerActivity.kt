@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -90,16 +91,14 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
     var speed by remember { mutableFloatStateOf(1f) }
     var sleepUntil by remember { mutableLongStateOf(0L) }
     var showList by remember { mutableStateOf(false) }
-    var cover by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var cover by remember { mutableStateOf<Bitmap?>(null) }
     val current = tracks.getOrNull(index)
+
+    fun resolveCover(): Bitmap? = resolveBookCover(activity, tracks, current?.uri)
 
     val audioPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) {
-            refresh++
-            allTracks = loadPlayerTracks(activity, null)
-            if (!activeDir.isNullOrBlank()) tracks = loadPlayerTracks(activity, activeDir)
-        }
+        if (granted) { refresh++; allTracks = loadPlayerTracks(activity, null); if (!activeDir.isNullOrBlank()) tracks = loadPlayerTracks(activity, activeDir) }
     }
 
     DisposableEffect(Unit) {
@@ -110,10 +109,7 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
                 controller = c
                 c.addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
-                    override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                        index = c.currentMediaItemIndex.coerceAtLeast(0)
-                        cover = tracks.getOrNull(index)?.let { embeddedCover(activity, it.uri) }
-                    }
+                    override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { index = c.currentMediaItemIndex.coerceAtLeast(0); cover = resolveBookCover(activity, tracks, tracks.getOrNull(index)?.uri) }
                     override fun onPlaybackStateChanged(playbackState: Int) { duration = c.duration.coerceAtLeast(0L) }
                 })
             }
@@ -125,24 +121,19 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
         val c = controller ?: return
         if (tracks.isEmpty()) return
         index = startIndex.coerceIn(0, tracks.lastIndex)
-        val mediaItems = tracks.map { t -> PlaybackService.mediaItem(PlayerLibraryItem(t.uri.toString(), t.name, t.relativePath, requestedTitle)) }
-        c.setMediaItems(mediaItems, index, 0L)
+        c.setMediaItems(tracks.map { t -> PlaybackService.mediaItem(PlayerLibraryItem(t.uri.toString(), t.name, t.relativePath, requestedTitle)) }, index, 0L)
         c.prepare()
         val saved = PlayerPrefs.position(activity, tracks[index].uri)
-        val rewind = PlayerPrefs.autoRewindSeconds(activity) * 1000L
-        c.seekTo(index, (saved - rewind).coerceAtLeast(0L))
+        c.seekTo(index, (saved - PlayerPrefs.autoRewindSeconds(activity) * 1000L).coerceAtLeast(0L))
         c.setPlaybackSpeed(speed)
         if (autoPlay) c.play()
-        cover = embeddedCover(activity, tracks[index].uri)
+        cover = resolveBookCover(activity, tracks, tracks[index].uri)
     }
 
     LaunchedEffect(activeDir, controller) {
         if (!activeDir.isNullOrBlank()) {
-            tracks = loadPlayerTracks(activity, activeDir)
-            index = 0
-            position = 0
-            duration = 0
-            cover = tracks.firstOrNull()?.let { embeddedCover(activity, it.uri) }
+            tracks = loadPlayerTracks(activity, activeDir); index = 0; position = 0; duration = 0
+            cover = resolveBookCover(activity, tracks, tracks.firstOrNull()?.uri)
             if (controller != null && tracks.isNotEmpty()) loadPlaylist(0, false)
         }
     }
@@ -150,49 +141,18 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
         while (true) {
             delay(500)
             controller?.let { c ->
-                position = c.currentPosition.coerceAtLeast(0L)
-                duration = c.duration.coerceAtLeast(0L)
-                playing = c.isPlaying
+                position = c.currentPosition.coerceAtLeast(0L); duration = c.duration.coerceAtLeast(0L); playing = c.isPlaying
                 tracks.getOrNull(c.currentMediaItemIndex)?.let { PlayerPrefs.savePosition(activity, it.uri, position) }
                 if (sleepUntil > 0 && System.currentTimeMillis() >= sleepUntil) { c.pause(); sleepUntil = 0 }
             }
         }
     }
 
-    Scaffold(topBar = {
-        TopAppBar(
-            title = { Text(if (showBooks) "Вибір книги" else requestedTitle ?: activeDir?.substringAfterLast('/') ?: "Плеєр") },
-            navigationIcon = { IconButton(onClick = { if (showBooks && !activeDir.isNullOrBlank()) showBooks = false else activity.finish() }) { Icon(Icons.Filled.ArrowBack, "Назад") } },
-            actions = {
-                IconButton(onClick = { refresh++; allTracks = loadPlayerTracks(activity, null); showBooks = true }) { Icon(Icons.Filled.LibraryBooks, "Вибрати книгу") }
-                IconButton(onClick = { activity.startActivity(Intent(activity, PlayerSettingsActivity::class.java)) }) { Icon(Icons.Filled.Settings, "Налаштування плеєра") }
-            }
-        )
-    }) { padding ->
+    Scaffold(topBar = { TopAppBar(title = { Text(if (showBooks) "Вибір книги" else requestedTitle ?: activeDir?.substringAfterLast('/') ?: "Плеєр") }, navigationIcon = { IconButton(onClick = { if (showBooks && !activeDir.isNullOrBlank()) showBooks = false else activity.finish() }) { Icon(Icons.Filled.ArrowBack, "Назад") } }, actions = { IconButton(onClick = { refresh++; allTracks = loadPlayerTracks(activity, null); showBooks = true }) { Icon(Icons.Filled.LibraryBooks, "Вибрати книгу") }; IconButton(onClick = { activity.startActivity(Intent(activity, PlayerSettingsActivity::class.java)) }) { Icon(Icons.Filled.Settings, "Налаштування плеєра") } }) }) { padding ->
         if (showBooks) {
-            BookChooser(
-                modifier = Modifier.padding(padding).fillMaxSize(),
-                books = books,
-                onRefresh = {
-                    if (ContextCompat.checkSelfPermission(activity, audioPermission) != PackageManager.PERMISSION_GRANTED) permissionLauncher.launch(audioPermission)
-                    else { refresh++; allTracks = loadPlayerTracks(activity, null) }
-                },
-                onSelect = { book ->
-                    activeDir = book.relativeDir
-                    requestedTitle = book.title
-                    tracks = book.tracks
-                    showBooks = false
-                }
-            )
+            BookChooser(Modifier.padding(padding).fillMaxSize(), books, onRefresh = { if (ContextCompat.checkSelfPermission(activity, audioPermission) != PackageManager.PERMISSION_GRANTED) permissionLauncher.launch(audioPermission) else { refresh++; allTracks = loadPlayerTracks(activity, null) } }, onSelect = { book -> activeDir = book.relativeDir; requestedTitle = book.title; tracks = book.tracks; showBooks = false })
         } else if (tracks.isEmpty()) {
-            Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Filled.Headphones, null, modifier = Modifier.size(64.dp)); Spacer(Modifier.height(12.dp))
-                    Text("Аудіофайли цієї книги не знайдені")
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = { showBooks = true }) { Text("Вибрати іншу книгу") }
-                }
-            }
+            Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Filled.Headphones, null, Modifier.size(64.dp)); Spacer(Modifier.height(12.dp)); Text("Аудіофайли цієї книги не знайдені"); Spacer(Modifier.height(8.dp)); Button(onClick = { showBooks = true }) { Text("Вибрати іншу книгу") } } }
         } else Column(Modifier.padding(padding).fillMaxSize().padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 if (PlayerPrefs.showSleep(activity)) TextButton(onClick = { sleepUntil = if (sleepUntil == 0L) System.currentTimeMillis() + 30*60_000L else 0L }) { Icon(Icons.Filled.Bedtime, null); Spacer(Modifier.width(4.dp)); Text(if (sleepUntil > 0) "30 хв" else "Сон") }
@@ -203,23 +163,19 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
             LinearProgressIndicator(progress = { if (duration > 0) position.toFloat()/duration else 0f }, modifier = Modifier.fillMaxWidth())
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Прочитано ${formatMs(position)}"); Text("${if(duration>0)((position*100/duration).toInt()) else 0}%"); Text("Залишилось ${formatMs((duration-position).coerceAtLeast(0))}") }
             Spacer(Modifier.height(18.dp))
-            if (showList) {
-                LazyColumn(Modifier.weight(1f).fillMaxWidth()) { itemsIndexed(tracks) { i, t -> ListItem(headlineContent = { Text(t.name, maxLines=1, overflow=TextOverflow.Ellipsis) }, supportingContent = { Text(t.relativePath, maxLines=1, overflow=TextOverflow.Ellipsis) }, leadingContent = { Icon(if(i==index) Icons.Filled.VolumeUp else Icons.Filled.AudioFile, null) }, modifier = Modifier.clickable { showList=false; loadPlaylist(i,true) }); HorizontalDivider() } }
-            } else {
-                val bitmap = cover
-                if (bitmap != null) Image(bitmap.asImageBitmap(), current?.name, Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Fit)
-                else Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) { Icon(Icons.Filled.MenuBook, null, modifier=Modifier.size(96.dp)) }
-            }
+            if (showList) LazyColumn(Modifier.weight(1f).fillMaxWidth()) { itemsIndexed(tracks) { i, t -> ListItem(headlineContent = { Text(t.name, maxLines=1, overflow=TextOverflow.Ellipsis) }, supportingContent = { Text(t.relativePath, maxLines=1, overflow=TextOverflow.Ellipsis) }, leadingContent = { Icon(if(i==index) Icons.Filled.VolumeUp else Icons.Filled.AudioFile, null) }, modifier = Modifier.clickable { showList=false; loadPlaylist(i,true) }); HorizontalDivider() } }
+            else if (cover != null) Image(cover!!.asImageBitmap(), current?.name, Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Fit)
+            else Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) { Icon(Icons.Filled.MenuBook, null, Modifier.size(96.dp)) }
             Spacer(Modifier.height(12.dp)); Text(current?.name.orEmpty(), style=MaterialTheme.typography.titleMedium, fontWeight=FontWeight.SemiBold, maxLines=2, overflow=TextOverflow.Ellipsis)
             Slider(value = if(duration>0) position.toFloat()/duration else 0f, onValueChange = { f -> if(duration>0) controller?.seekTo((duration*f).toLong()) }, modifier=Modifier.fillMaxWidth())
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(formatMs(position)); Text(formatMs(duration)) }
             val seekMs = PlayerPrefs.seekSeconds(activity)*1000L
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { controller?.seekToPreviousMediaItem() }, enabled = index > 0) { Icon(Icons.Filled.SkipPrevious,"Попередній файл",modifier=Modifier.size(38.dp)) }
+                IconButton(onClick = { controller?.seekToPreviousMediaItem() }, enabled = index > 0) { Icon(Icons.Filled.SkipPrevious,"Попередній файл",Modifier.size(38.dp)) }
                 TextButton(onClick = { controller?.let { it.seekTo((it.currentPosition-seekMs).coerceAtLeast(0L)) } }) { Text("−${seekMs/1000}с", style=MaterialTheme.typography.titleMedium) }
-                FilledIconButton(onClick = { controller?.let { if(it.isPlaying) it.pause() else it.play() } }, modifier=Modifier.size(64.dp)) { Icon(if(playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, if(playing)"Пауза" else "Відтворити",modifier=Modifier.size(38.dp)) }
+                FilledIconButton(onClick = { controller?.let { if(it.isPlaying) it.pause() else it.play() } }, modifier=Modifier.size(64.dp)) { Icon(if(playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, if(playing)"Пауза" else "Відтворити",Modifier.size(38.dp)) }
                 TextButton(onClick = { controller?.let { it.seekTo((it.currentPosition+seekMs).coerceAtMost(it.duration.coerceAtLeast(0L))) } }) { Text("+${seekMs/1000}с", style=MaterialTheme.typography.titleMedium) }
-                IconButton(onClick = { controller?.seekToNextMediaItem() }, enabled = index < tracks.lastIndex) { Icon(Icons.Filled.SkipNext,"Наступний файл",modifier=Modifier.size(38.dp)) }
+                IconButton(onClick = { controller?.seekToNextMediaItem() }, enabled = index < tracks.lastIndex) { Icon(Icons.Filled.SkipNext,"Наступний файл",Modifier.size(38.dp)) }
             }
             Spacer(Modifier.height(16.dp))
         }
@@ -229,43 +185,17 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
 @Composable
 private fun BookChooser(modifier: Modifier, books: List<AudioBookGroup>, onRefresh: () -> Unit, onSelect: (AudioBookGroup) -> Unit) {
     val context = LocalContext.current
-    if (books.isEmpty()) {
-        Box(modifier, contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Filled.LibraryBooks, null, modifier = Modifier.size(72.dp))
-                Spacer(Modifier.height(12.dp))
-                Text("Завантажені книги не знайдені")
-                Text("Пошук виконується в Downloads/Audoiboo", style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(12.dp))
-                Button(onClick = onRefresh) { Text("Оновити бібліотеку") }
-            }
-        }
-        return
-    }
+    if (books.isEmpty()) { Box(modifier, contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Filled.LibraryBooks, null, Modifier.size(72.dp)); Spacer(Modifier.height(12.dp)); Text("Завантажені книги не знайдені"); Text("Пошук виконується в Downloads/Audoiboo", style=MaterialTheme.typography.bodySmall); Spacer(Modifier.height(12.dp)); Button(onClick=onRefresh){Text("Оновити бібліотеку")} } }; return }
     Column(modifier) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("${books.size} книг", style = MaterialTheme.typography.titleMedium)
-            TextButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, null); Spacer(Modifier.width(4.dp)); Text("Оновити") }
-        }
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(books, key = { it.relativeDir }) { book ->
-                val bookCover = remember(book.relativeDir, book.tracks) { book.tracks.firstOrNull()?.let { embeddedCover(context, it.uri) } }
-                ElevatedCard(Modifier.fillMaxWidth().clickable { onSelect(book) }, shape = RoundedCornerShape(14.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (bookCover != null) {
-                            Image(bookCover.asImageBitmap(), book.title, modifier = Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)), contentScale = ContentScale.Crop)
-                        } else {
-                            Box(Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
-                                Icon(Icons.Filled.MenuBook, null, modifier = Modifier.size(36.dp), tint = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(book.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text("${book.tracks.size} аудіофайлів", style = MaterialTheme.typography.bodySmall)
-                            Text(book.relativeDir, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        Icon(Icons.Filled.ChevronRight, null)
+        Row(Modifier.fillMaxWidth().padding(horizontal=16.dp, vertical=8.dp), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.CenterVertically) { Text("${books.size} книг", style=MaterialTheme.typography.titleMedium); TextButton(onClick=onRefresh){Icon(Icons.Filled.Refresh,null); Spacer(Modifier.width(4.dp)); Text("Оновити")} }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding=PaddingValues(12.dp), verticalArrangement=Arrangement.spacedBy(8.dp)) {
+            items(books, key={it.relativeDir}) { book ->
+                val bookCover = remember(book.relativeDir, book.tracks) { resolveBookCover(context, book.tracks) }
+                ElevatedCard(Modifier.fillMaxWidth().clickable { onSelect(book) }, shape=RoundedCornerShape(14.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment=Alignment.CenterVertically) {
+                        if(bookCover!=null) Image(bookCover.asImageBitmap(),book.title,Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)),contentScale=ContentScale.Crop)
+                        else Box(Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant),contentAlignment=Alignment.Center){Icon(Icons.Filled.MenuBook,null,Modifier.size(36.dp),tint=MaterialTheme.colorScheme.primary)}
+                        Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)){Text(book.title,style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.SemiBold,maxLines=2,overflow=TextOverflow.Ellipsis);Text("${book.tracks.size} аудіофайлів",style=MaterialTheme.typography.bodySmall);Text(book.relativeDir,style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=TextOverflow.Ellipsis)}; Icon(Icons.Filled.ChevronRight,null)
                     }
                 }
             }
@@ -273,44 +203,36 @@ private fun BookChooser(modifier: Modifier, books: List<AudioBookGroup>, onRefre
     }
 }
 
-private fun groupTracksIntoBooks(tracks: List<AudioTrack>): List<AudioBookGroup> {
-    return tracks.groupBy { normalizeBookDir(it.relativePath) }
-        .map { (dir, items) -> AudioBookGroup(dir.trimEnd('/').substringAfterLast('/').ifBlank { "Книга" }, dir, items.sortedBy { naturalKey(it.name) }) }
-        .sortedBy { it.title.lowercase() }
-}
+private fun groupTracksIntoBooks(tracks: List<AudioTrack>): List<AudioBookGroup> = tracks.groupBy { normalizeBookDir(it.relativePath) }.map { (dir,items) -> AudioBookGroup(dir.trimEnd('/').substringAfterLast('/').ifBlank{"Книга"},dir,items.sortedBy{naturalKey(it.name)}) }.sortedBy{it.title.lowercase()}
+private fun normalizeBookDir(path:String)=path.trimEnd('/')
+private fun loadPlayerTracks(context:Context,relativeDir:String?):List<AudioTrack>{val indexed=PlayerLibrary.forPath(context,relativeDir).map{AudioTrack(Uri.parse(it.uri),it.name,it.relativePath)};val scanned=scanAudioTracks(context,relativeDir);return(indexed+scanned).distinctBy{it.uri.toString()}.sortedWith(compareBy<AudioTrack>{it.relativePath}.thenBy{naturalKey(it.name)})}
+private fun scanAudioTracks(context:Context,relativeDir:String?):List<AudioTrack>{val result=linkedMapOf<String,AudioTrack>();fun query(collection:Uri,idColumn:String,nameColumn:String,pathColumn:String){val projection=arrayOf(idColumn,nameColumn,pathColumn);val selection=if(relativeDir.isNullOrBlank())null else "$pathColumn LIKE ?";val args=if(relativeDir.isNullOrBlank())null else arrayOf("%${relativeDir.replace("%","\\%")}%");runCatching{context.contentResolver.query(collection,projection,selection,args,"$nameColumn ASC")?.use{c->val idI=c.getColumnIndexOrThrow(idColumn);val nameI=c.getColumnIndexOrThrow(nameColumn);val pathI=c.getColumnIndexOrThrow(pathColumn);while(c.moveToNext()){val name=c.getString(nameI)?:continue;if(name.substringAfterLast('.',"").lowercase() !in setOf("mp3","m4a","m4b","ogg","opus","wav","aac","flac"))continue;val id=c.getLong(idI);val uri=Uri.withAppendedPath(collection,id.toString());val path=c.getString(pathI).orEmpty();if(!path.contains("Audoiboo",true)&&relativeDir.isNullOrBlank())continue;result[uri.toString()]=AudioTrack(uri,name,path)}}}};if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.Q)query(MediaStore.Downloads.EXTERNAL_CONTENT_URI,MediaStore.Downloads._ID,MediaStore.Downloads.DISPLAY_NAME,MediaStore.Downloads.RELATIVE_PATH);query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,MediaStore.Audio.Media._ID,MediaStore.Audio.Media.DISPLAY_NAME,MediaStore.Audio.Media.RELATIVE_PATH);return result.values.toList()}
+private fun naturalKey(name:String)=name.lowercase().replace(Regex("(\\d+)")){it.value.padStart(12,'0')}
 
-private fun normalizeBookDir(path: String): String = path.trimEnd('/')
+private fun embeddedCover(context:Context,uri:Uri):Bitmap?=runCatching{val mmr=MediaMetadataRetriever();try{mmr.setDataSource(context,uri);mmr.embeddedPicture?.let{BitmapFactory.decodeByteArray(it,0,it.size)}}finally{mmr.release()}}.getOrNull()
 
-private fun loadPlayerTracks(context: Context, relativeDir: String?): List<AudioTrack> {
-    val indexed = PlayerLibrary.forPath(context, relativeDir).map { AudioTrack(Uri.parse(it.uri), it.name, it.relativePath) }
-    val scanned = scanAudioTracks(context, relativeDir)
-    return (indexed + scanned).distinctBy { it.uri.toString() }.sortedWith(compareBy<AudioTrack> { it.relativePath }.thenBy { naturalKey(it.name) })
-}
-
-private fun scanAudioTracks(context: Context, relativeDir: String?): List<AudioTrack> {
-    val result = linkedMapOf<String, AudioTrack>()
-    fun query(collection: Uri, idColumn: String, nameColumn: String, pathColumn: String) {
-        val projection = arrayOf(idColumn, nameColumn, pathColumn)
-        val selection = if (relativeDir.isNullOrBlank()) null else "$pathColumn LIKE ?"
-        val args = if (relativeDir.isNullOrBlank()) null else arrayOf("%${relativeDir.replace("%","\\%")}%")
-        runCatching {
-            context.contentResolver.query(collection, projection, selection, args, "$nameColumn ASC")?.use { c ->
-                val idI=c.getColumnIndexOrThrow(idColumn); val nameI=c.getColumnIndexOrThrow(nameColumn); val pathI=c.getColumnIndexOrThrow(pathColumn)
-                while(c.moveToNext()) {
-                    val name=c.getString(nameI)?:continue
-                    if(name.substringAfterLast('.',"").lowercase() !in setOf("mp3","m4a","m4b","ogg","opus","wav","aac","flac")) continue
-                    val id=c.getLong(idI); val uri=Uri.withAppendedPath(collection,id.toString()); val path=c.getString(pathI).orEmpty()
-                    if (!path.contains("Audoiboo", true) && relativeDir.isNullOrBlank()) continue
-                    result[uri.toString()] = AudioTrack(uri,name,path)
-                }
-            }
-        }
+/** Resolve one stable cover for the whole book. Prefer current track, then every other track. */
+private fun resolveBookCover(context: Context, tracks: List<AudioTrack>, preferredUri: Uri? = null): Bitmap? {
+    if (preferredUri != null) embeddedCover(context, preferredUri)?.let { return it }
+    for (track in tracks) {
+        if (preferredUri != null && track.uri == preferredUri) continue
+        embeddedCover(context, track.uri)?.let { return it }
     }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME, MediaStore.Downloads.RELATIVE_PATH)
-    query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, MediaStore.Audio.Media._ID, MediaStore.Audio.Media.DISPLAY_NAME, MediaStore.Audio.Media.RELATIVE_PATH)
-    return result.values.toList()
+    return findFolderCover(context, tracks.firstOrNull()?.relativePath)
 }
 
-private fun naturalKey(name: String): String = name.lowercase().replace(Regex("(\\d+)")) { it.value.padStart(12,'0') }
-private fun embeddedCover(context: Context, uri: Uri): android.graphics.Bitmap? = runCatching { val mmr=MediaMetadataRetriever(); mmr.setDataSource(context,uri); val bytes=mmr.embeddedPicture; mmr.release(); bytes?.let{BitmapFactory.decodeByteArray(it,0,it.size)} }.getOrNull()
-private fun formatMs(ms: Long): String { val total=ms/1000; val h=total/3600; val m=(total%3600)/60; val s=total%60; return if(h>0) "%d:%02d:%02d".format(h,m,s) else "%d:%02d".format(m,s) }
+/** Also support archives that contain cover.jpg/folder.jpg/front.png beside the audio files. */
+private fun findFolderCover(context: Context, relativePath: String?): Bitmap? {
+    if (relativePath.isNullOrBlank() || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+    val names = listOf("cover.jpg","cover.jpeg","cover.png","folder.jpg","folder.jpeg","folder.png","front.jpg","front.jpeg","front.png")
+    val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.RELATIVE_PATH)
+    return runCatching {
+        context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, "${MediaStore.Images.Media.RELATIVE_PATH} = ?", arrayOf(relativePath), null)?.use { c ->
+            val idI=c.getColumnIndexOrThrow(MediaStore.Images.Media._ID);val nameI=c.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+            while(c.moveToNext()) { val name=c.getString(nameI)?.lowercase()?:continue; if(name in names){val uri=Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,c.getLong(idI).toString());context.contentResolver.openInputStream(uri)?.use{return@runCatching BitmapFactory.decodeStream(it)}} }
+            null
+        }
+    }.getOrNull()
+}
+
+private fun formatMs(ms:Long):String{val total=ms/1000;val h=total/3600;val m=(total%3600)/60;val s=total%60;return if(h>0)"%d:%02d:%02d".format(h,m,s)else"%d:%02d".format(m,s)}

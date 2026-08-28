@@ -18,15 +18,18 @@ object BackupStore {
 
     fun exportJson(context: Context, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean): String {
         val root = JSONObject()
-        root.put("format", 2)
+        root.put("format", 3)
         root.put("createdAt", System.currentTimeMillis())
         root.put("tracker", context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]"))
         root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
         root.put("playerLibrary", prefsToJson(context, "player_library"))
+        root.put("playerQueue", prefsToJson(context, "player_queue"))
         if (includeSettings) {
             root.put("settings", prefsToJson(context, "app_settings"))
             root.put("playerSettings", prefsToJson(context, "player_settings"))
+            root.put("storageAccess", prefsToJson(context, "storage_access"))
         }
+        if (includeBookmarks || includeStatistics) root.put("playerExtras", prefsToJson(context, "player_extras"))
         if (includeBookmarks) root.put("bookmarks", prefsToJson(context, "bookmarks"))
         if (includeStatistics) root.put("playerPositions", prefsToJson(context, "player_positions"))
         return root.toString(2)
@@ -41,6 +44,10 @@ object BackupStore {
         root.optJSONObject("bookmarks")?.let { jsonToPrefs(context, "bookmarks", it) }
         root.optJSONObject("playerPositions")?.let { jsonToPrefs(context, "player_positions", it) }
         root.optJSONObject("playerLibrary")?.let { jsonToPrefs(context, "player_library", it) }
+        root.optJSONObject("playerQueue")?.let { jsonToPrefs(context, "player_queue", it) }
+        root.optJSONObject("playerExtras")?.let { jsonToPrefs(context, "player_extras", it) }
+        // SAF tree permissions cannot be recreated from JSON alone. We intentionally do not restore storage_access.
+        DownloadScheduler.recover(context)
     }
 
     fun automaticBackupPath(context: Context): String = context.getSharedPreferences(AUTO_PREFS, Context.MODE_PRIVATE)

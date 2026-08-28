@@ -15,12 +15,21 @@ object LibraryRepository {
     private const val KEY = "library"
 
     fun observe(context: Context): Flow<List<SeriesWithBooks>> = AudoibooDatabase.get(context).libraryDao().observeLibrary()
+    fun observeTags(context: Context): Flow<List<TagEntity>> = AudoibooDatabase.get(context).libraryDao().observeTags()
 
     fun pagedBooks(context: Context, query: String = ""): Flow<PagingData<BookEntity>> {
         val dao = AudoibooDatabase.get(context).libraryDao()
         return Pager(PagingConfig(pageSize = 30, prefetchDistance = 10, enablePlaceholders = false)) {
-            if (query.isBlank()) dao.pagedBooks() else dao.searchBooks(query.trim())
+            if (query.isBlank()) dao.pagedBooks() else dao.searchBooksAndTags(query.trim())
         }.flow
+    }
+
+    suspend fun bookWithTags(context: Context, bookId: String): BookWithTags? = withContext(Dispatchers.IO) {
+        AudoibooDatabase.get(context).libraryDao().bookWithTags(bookId)
+    }
+
+    suspend fun setBookTags(context: Context, bookId: String, tags: List<String>) = withContext(Dispatchers.IO) {
+        AudoibooDatabase.get(context).libraryDao().setBookTags(bookId, tags)
     }
 
     suspend fun snapshot(context: Context): List<SeriesWithBooks> = withContext(Dispatchers.IO) {
@@ -48,9 +57,7 @@ object LibraryRepository {
                     id = "$id::$url", seriesId = id, title = b.optString("title"), url = url,
                     author = b.optString("author").takeIf { it.isNotBlank() && it != "null" },
                     coverUrl = b.optString("coverUrl").takeIf { it.isNotBlank() && it != "null" },
-                    status = b.optString("status", "NEW"),
-                    archiveUrl = b.optString("archiveUrl").takeIf { it.isNotBlank() && it != "null" },
-                    sortIndex = j
+                    status = b.optString("status", "NEW"), archiveUrl = b.optString("archiveUrl").takeIf { it.isNotBlank() && it != "null" }, sortIndex = j
                 )
             }
             SeriesWithBooks(series, books)
@@ -69,13 +76,12 @@ object LibraryRepository {
     private fun writeLegacy(context: Context, library: List<SeriesWithBooks>) {
         val root = JSONArray()
         library.forEach { item ->
-            val series = item.series
             val books = JSONArray()
             item.books.sortedBy { it.sortIndex }.forEach { book ->
                 books.put(JSONObject().put("title", book.title).put("url", book.url).put("author", book.author)
                     .put("coverUrl", book.coverUrl).put("status", book.status).put("archiveUrl", book.archiveUrl))
             }
-            root.put(JSONObject().put("id", series.id).put("name", series.name).put("url", series.url).put("books", books))
+            root.put(JSONObject().put("id", item.series.id).put("name", item.series.name).put("url", item.series.url).put("books", books))
         }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, root.toString()).apply()
     }

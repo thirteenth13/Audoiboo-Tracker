@@ -27,23 +27,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import org.json.JSONArray
 
 private data class ToolBook(val dir: String, val title: String, val series: String?, val tracks: List<PlayerLibraryItem>)
 private enum class SmartList { ALL, STARTED, NOT_STARTED, RECENT, TAGGED, UNTAGGED }
-
-private object ToolQueue {
-    private const val PREFS = "player_queue"
-    private const val KEY = "book_dirs"
-    fun load(context: Context): List<String> = runCatching {
-        val a = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, "[]"))
-        (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) }
-    }.getOrDefault(emptyList())
-    fun save(context: Context, dirs: List<String>) {
-        val a = JSONArray(); dirs.distinct().forEach(a::put)
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, a.toString()).apply()
-    }
-}
 
 class LibraryToolsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -59,20 +45,19 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
     val scope = rememberCoroutineScope()
     val roomHistory by PlayerExtrasRepository.observeHistory(activity).collectAsState(initial = emptyList())
     val roomBookmarks by PlayerExtrasRepository.observeBookmarks(activity).collectAsState(initial = emptyList())
+    val queue by PlaybackStateRepository.observeQueue(activity).collectAsState(initial = emptyList())
     var roomTags by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
     var query by remember { mutableStateOf("") }
     var smartList by remember { mutableStateOf(SmartList.ALL) }
     var editBook by remember { mutableStateOf<ToolBook?>(null) }
     var tagText by remember { mutableStateOf("") }
     var tagRevision by remember { mutableIntStateOf(0) }
-    var queueRevision by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(books, tagRevision) {
         roomTags = RoomTagSync.tagsForDirs(activity, books.map { it.dir })
     }
 
     val recentDirs = remember(roomHistory) { roomHistory.take(20).map { it.dir }.toSet() }
-    val queue = remember(queueRevision) { ToolQueue.load(activity) }
     val activeDir = PlayerExtras.resume(activity)?.dir
     val activeBook = books.firstOrNull { it.dir == activeDir }
     val currentSeriesDirs = activeBook?.series?.let { series -> books.filter { it.series == series }.map { it.dir } } ?: listOfNotNull(activeDir)
@@ -94,9 +79,10 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
     val markdown = remember(roomBookmarks) { bookmarksMarkdown(activity, roomBookmarks) }
 
     fun saveQueue(value: List<String>, message: String) {
-        ToolQueue.save(activity, value)
-        queueRevision++
-        Toast.makeText(activity, message, Toast.LENGTH_SHORT).show()
+        scope.launch {
+            PlaybackStateRepository.saveQueue(activity, value)
+            Toast.makeText(activity, message, Toast.LENGTH_SHORT).show()
+        }
     }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Інструменти бібліотеки") }, navigationIcon = { IconButton({ activity.finish() }) { Icon(Icons.Filled.ArrowBack, "Назад") } }) }) { padding ->
@@ -150,7 +136,6 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
                 scope.launch {
                     val saved = RoomTagSync.setTagsForDir(activity, b.dir, values)
                     if (saved) {
-                        // Compatibility mirror until every legacy reader is retired.
                         PlayerExtras.setTags(activity, b.dir, values)
                         tagRevision++
                         editBook = null

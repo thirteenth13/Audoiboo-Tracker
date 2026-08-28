@@ -58,6 +58,12 @@ object LibraryRepository {
         AudoibooDatabase.get(context).libraryDao().library()
     }
 
+    /** Serialize Room state in the legacy tracker JSON shape without mutating SharedPreferences. */
+    suspend fun exportCompatJson(context: Context): String = withContext(Dispatchers.IO) {
+        LegacyLibraryImporter.importIfNeeded(context)
+        legacyJson(AudoibooDatabase.get(context).libraryDao().library())
+    }
+
     suspend fun replaceAll(context: Context, library: List<SeriesWithBooks>) = withContext(Dispatchers.IO) {
         val dao = AudoibooDatabase.get(context).libraryDao()
         dao.replaceLibrary(library)

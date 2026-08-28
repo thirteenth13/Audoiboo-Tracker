@@ -57,6 +57,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-session:1.8.0")
     implementation("androidx.media3:media3-common:1.8.0")
+    implementation("com.google.guava:guava:33.4.8-android")
     implementation("androidx.work:work-runtime-ktx:2.10.5")
     implementation("org.jsoup:jsoup:1.21.2")
     testImplementation("junit:junit:4.13.2")

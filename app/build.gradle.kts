@@ -11,8 +11,8 @@ android {
         applicationId = "org.audoiboo.tracker"
         minSdk = 23
         targetSdk = 37
-        versionCode = 110
-        versionName = "1.1.0-dev"
+        versionCode = 111
+        versionName = "1.1.1-dev"
     }
 
     signingConfigs {
@@ -53,5 +53,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
+    implementation("androidx.media3:media3-exoplayer:1.8.0")
+    implementation("androidx.media3:media3-session:1.8.0")
+    implementation("androidx.media3:media3-common:1.8.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

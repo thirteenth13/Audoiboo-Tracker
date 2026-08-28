@@ -17,15 +17,32 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Label
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import org.json.JSONArray
 
 private data class ToolBook(val dir: String, val title: String, val series: String?, val tracks: List<PlayerLibraryItem>)
 private enum class SmartList { ALL, STARTED, NOT_STARTED, RECENT, TAGGED, UNTAGGED }
+
+private object ToolQueue {
+    private const val PREFS = "player_queue"
+    private const val KEY = "book_dirs"
+    fun load(context: Context): List<String> = runCatching {
+        val a = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, "[]"))
+        (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) }
+    }.getOrDefault(emptyList())
+    fun save(context: Context, dirs: List<String>) {
+        val a = JSONArray(); dirs.distinct().forEach(a::put)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, a.toString()).apply()
+    }
+}
 
 class LibraryToolsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,7 +60,12 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
     var editBook by remember { mutableStateOf<ToolBook?>(null) }
     var tagText by remember { mutableStateOf("") }
     var tagRevision by remember { mutableIntStateOf(0) }
+    var queueRevision by remember { mutableIntStateOf(0) }
     val recentDirs = remember { PlayerExtras.history(activity).take(20).map { it.dir }.toSet() }
+    val queue = remember(queueRevision) { ToolQueue.load(activity) }
+    val activeDir = PlayerExtras.resume(activity)?.dir
+    val activeBook = books.firstOrNull { it.dir == activeDir }
+    val currentSeriesDirs = activeBook?.series?.let { series -> books.filter { it.series == series }.map { it.dir } } ?: listOfNotNull(activeDir)
     val visible = remember(books, query, smartList, tagRevision) {
         books.filter { b ->
             val tags = PlayerExtras.tags(activity, b.dir)
@@ -60,19 +82,21 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
         }
     }
 
+    fun saveQueue(value: List<String>, message: String) {
+        ToolQueue.save(activity, value)
+        queueRevision++
+        Toast.makeText(activity, message, Toast.LENGTH_SHORT).show()
+    }
+
     Scaffold(topBar = { TopAppBar(title = { Text("Інструменти бібліотеки") }, navigationIcon = { IconButton({ activity.finish() }) { Icon(Icons.Filled.ArrowBack, "Назад") } }) }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(12.dp), label = { Text("Пошук книги, серії або тегу") }, singleLine = true)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SmartList.entries.forEach { item ->
-                    FilterChip(
-                        selected = smartList == item,
-                        onClick = { smartList = item },
-                        label = { Text(smartListLabel(item)) }
-                    )
+                    FilterChip(selected = smartList == item, onClick = { smartList = item }, label = { Text(smartListLabel(item)) })
                 }
             }
-            Text("${visible.size} із ${books.size} книг", Modifier.padding(horizontal = 16.dp, vertical = 6.dp), style = MaterialTheme.typography.bodySmall)
+            Text("${visible.size} із ${books.size} книг • у черзі ${queue.size}", Modifier.padding(horizontal = 16.dp, vertical = 6.dp), style = MaterialTheme.typography.bodySmall)
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { shareBookmarks(activity) }, modifier = Modifier.weight(1f)) { Icon(Icons.Filled.Share, null); Spacer(Modifier.width(6.dp)); Text("Поділитися закладками") }
                 OutlinedButton(onClick = { copyBookmarks(activity) }, modifier = Modifier.weight(1f)) { Text("Копіювати Markdown") }
@@ -80,6 +104,7 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(visible, key = { it.dir }) { b ->
                     val tags = PlayerExtras.tags(activity, b.dir)
+                    var menu by remember(b.dir) { mutableStateOf(false) }
                     ElevatedCard(Modifier.fillMaxWidth().clickable { editBook = b; tagText = tags.joinToString(", ") }) {
                         Row(Modifier.padding(14.dp).fillMaxWidth()) {
                             Icon(Icons.Filled.Label, null)
@@ -88,6 +113,36 @@ private fun LibraryToolsScreen(activity: ComponentActivity) {
                                 Text(b.title, fontWeight = FontWeight.SemiBold)
                                 if (!b.series.isNullOrBlank()) Text(b.series, style = MaterialTheme.typography.bodySmall)
                                 Text(if (tags.isEmpty()) "Без тегів" else tags.joinToString(" • "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Box {
+                                IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "Черга") }
+                                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text("Відтворити наступною") },
+                                        onClick = {
+                                            menu = false
+                                            saveQueue(PlayerQueueActions.playNext(queue, activeDir, b.dir), "Додано наступною")
+                                        },
+                                        leadingIcon = { Icon(Icons.Filled.SkipNext, null) }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Після поточної серії") },
+                                        onClick = {
+                                            menu = false
+                                            saveQueue(PlayerQueueActions.afterSeries(queue, activeDir, currentSeriesDirs, b.dir), "Додано після поточної серії")
+                                        },
+                                        enabled = activeDir != null,
+                                        leadingIcon = { Icon(Icons.Filled.PlaylistAdd, null) }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Додати в кінець черги") },
+                                        onClick = {
+                                            menu = false
+                                            saveQueue(queue + b.dir, "Додано в чергу")
+                                        },
+                                        leadingIcon = { Icon(Icons.Filled.PlaylistAdd, null) }
+                                    )
+                                }
                             }
                         }
                     }

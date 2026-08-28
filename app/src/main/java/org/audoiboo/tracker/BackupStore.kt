@@ -2,6 +2,10 @@ package org.audoiboo.tracker
 
 import android.content.Context
 import android.os.Environment
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -13,6 +17,7 @@ object BackupStore {
     private const val LAST_AUTO = "last_auto_backup"
     private const val AUTO_PATH = "auto_backup_path"
     const val DEFAULT_AUTO_PATH = "/storage/emulated/0/Download/Audoiboo/"
+    private val restoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun exportJson(context: Context): String = exportJson(context, true, true, true)
 
@@ -20,6 +25,7 @@ object BackupStore {
         val root = JSONObject()
         root.put("format", 4)
         root.put("createdAt", System.currentTimeMillis())
+        // During the transition this is a repository-maintained mirror of Room, preserving format-4 compatibility.
         root.put("tracker", context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]"))
         root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
         root.put("playerLibrary", prefsToJson(context, "player_library"))
@@ -29,8 +35,6 @@ object BackupStore {
             root.put("playerSettings", prefsToJson(context, "player_settings"))
             root.put("audioEnhancement", prefsToJson(context, "audio_enhancement"))
             root.put("seriesAutomation", prefsToJson(context, "series_automation"))
-            // storage_access contains a persisted SAF tree URI, but Android's URI permission grant cannot
-            // be recreated from JSON on another install/device. Preserve it only as diagnostic metadata.
             root.put("storageAccess", prefsToJson(context, "storage_access"))
         }
         if (includeBookmarks || includeStatistics) root.put("playerExtras", prefsToJson(context, "player_extras"))
@@ -41,7 +45,10 @@ object BackupStore {
 
     fun importJson(context: Context, raw: String) {
         val root = JSONObject(raw)
-        context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", root.optString("tracker", "[]")).apply()
+        val tracker = root.optString("tracker", "[]")
+        // Write legacy immediately for compatibility, then atomically replace Room on IO.
+        context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
+        restoreScope.launch { runCatching { LibraryRepository.restoreLegacyJson(context.applicationContext, tracker) } }
         context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).edit().putString("items", root.optString("downloads", "[]")).apply()
         root.optJSONObject("settings")?.let { jsonToPrefs(context, "app_settings", it) }
         root.optJSONObject("playerSettings")?.let { jsonToPrefs(context, "player_settings", it) }
@@ -52,10 +59,6 @@ object BackupStore {
         root.optJSONObject("playerLibrary")?.let { jsonToPrefs(context, "player_library", it) }
         root.optJSONObject("playerQueue")?.let { jsonToPrefs(context, "player_queue", it) }
         root.optJSONObject("playerExtras")?.let { jsonToPrefs(context, "player_extras", it) }
-
-        // SAF permissions cannot be recreated from JSON alone, so storage_access is deliberately not restored.
-        // Live sleep-timer state is deliberately not part of a backup: restoring an old timer could unexpectedly
-        // pause a newly started playback session. WebDAV credentials are also excluded from this backup payload.
         DownloadScheduler.recover(context)
         SeriesAutomationPrefs.schedule(context)
     }

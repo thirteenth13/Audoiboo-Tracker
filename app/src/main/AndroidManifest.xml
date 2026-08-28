@@ -59,6 +59,7 @@
         <activity android:name=".SleepTimerActivity" android:exported="false" android:label="Таймер сну" />
         <activity android:name=".ListeningStatsActivity" android:exported="false" android:label="Статистика прослуховування" />
         <activity android:name=".QueueEditorActivity" android:exported="false" android:label="Черга прослуховування" />
+        <activity android:name=".SeriesPlaybackSettingsActivity" android:exported="false" android:label="Швидкість за серіями" />
         <activity android:name=".PlayerActivity" android:exported="false" android:label="Плеєр" />
         <activity android:name=".ManualDownloadActivity" android:exported="false" android:label="Ручне додавання архіву" />
         <activity android:name=".LibraryToolsActivity" android:exported="false" android:label="Інструменти бібліотеки" />

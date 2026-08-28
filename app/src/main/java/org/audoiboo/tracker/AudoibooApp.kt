@@ -20,6 +20,9 @@ class AudoibooApp : Application() {
         if (key == null || key == "playback_snapshot") {
             appScope.launch { runCatching { PlaybackStateRepository.syncFromLegacy(this@AudoibooApp) } }
         }
+        if (key == null || key == "book_tags") {
+            appScope.launch { runCatching { RoomTagSync.syncFromLegacy(this@AudoibooApp) } }
+        }
     }
     private val playerQueueListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null || key == "book_dirs") {
@@ -51,6 +54,7 @@ class AudoibooApp : Application() {
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
             runCatching { PreferenceDataStore.importLegacyIfNeeded(this@AudoibooApp) }
             runCatching { PlaybackStateRepository.reconcile(this@AudoibooApp) }
+            runCatching { RoomTagSync.syncFromLegacy(this@AudoibooApp) }
             runCatching { RoomCoverSync.enqueueAll(this@AudoibooApp) }
         }
     }

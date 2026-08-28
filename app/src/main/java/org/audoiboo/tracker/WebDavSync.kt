@@ -9,6 +9,8 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.TimeUnit
@@ -45,24 +47,28 @@ internal object WebDavSync {
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(WORK, ExistingPeriodicWorkPolicy.UPDATE, request)
     }
 
-    fun upload(context: Context) {
+    suspend fun upload(context: Context) = withContext(Dispatchers.IO) {
         val base = url(context).trimEnd('/'); if (base.isBlank()) error("Не вказано WebDAV URL")
         val conn = connection(context, "$base/$FILE", "PUT")
-        conn.doOutput = true; conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-        conn.outputStream.bufferedWriter().use { it.write(BackupStore.exportJson(context)) }
-        val code = conn.responseCode
-        if (code !in 200..299) error("WebDAV HTTP $code")
-        conn.disconnect()
+        try {
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            val backup = BackupStore.exportJsonFromRoom(context.applicationContext)
+            conn.outputStream.bufferedWriter().use { it.write(backup) }
+            val code = conn.responseCode
+            if (code !in 200..299) error("WebDAV HTTP $code")
+        } finally { conn.disconnect() }
     }
 
-    fun download(context: Context) {
+    suspend fun download(context: Context) = withContext(Dispatchers.IO) {
         val base = url(context).trimEnd('/'); if (base.isBlank()) error("Не вказано WebDAV URL")
         val conn = connection(context, "$base/$FILE", "GET")
-        val code = conn.responseCode
-        if (code !in 200..299) error("WebDAV HTTP $code")
-        val raw = conn.inputStream.bufferedReader().use { it.readText() }
-        BackupStore.importJson(context, raw)
-        conn.disconnect()
+        try {
+            val code = conn.responseCode
+            if (code !in 200..299) error("WebDAV HTTP $code")
+            val raw = conn.inputStream.bufferedReader().use { it.readText() }
+            BackupStore.importJson(context, raw)
+        } finally { conn.disconnect() }
     }
 
     private fun connection(context: Context, target: String, method: String): HttpURLConnection {

@@ -1,6 +1,7 @@
 package org.audoiboo.tracker
 
 import android.content.Context
+import android.util.Base64
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -10,7 +11,6 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 internal object WebDavSync {
@@ -70,7 +70,7 @@ internal object WebDavSync {
             requestMethod = method; connectTimeout = 20_000; readTimeout = 30_000
             val u = user(context); val p = password(context)
             if (u.isNotBlank()) {
-                val token = Base64.getEncoder().encodeToString("$u:$p".toByteArray(Charsets.UTF_8))
+                val token = Base64.encodeToString("$u:$p".toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
                 setRequestProperty("Authorization", "Basic $token")
             }
         }

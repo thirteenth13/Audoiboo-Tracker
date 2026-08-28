@@ -16,6 +16,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.TimeUnit
 
+internal class WebDavConflictException(message: String) : IllegalStateException(message)
+
 internal object WebDavSync {
     private const val PREFS = "webdav_sync"
     private const val URL_KEY = "url"
@@ -72,7 +74,9 @@ internal object WebDavSync {
             val backup = BackupStore.exportJsonFromRoom(context)
             conn.outputStream.bufferedWriter().use { it.write(backup) }
             val code = conn.responseCode
-            if (code == HttpURLConnection.HTTP_PRECON_FAILED) error("WebDAV конфлікт: файл на сервері змінено іншим пристроєм. Спочатку віднови дані з WebDAV.")
+            if (code == HttpURLConnection.HTTP_PRECON_FAILED) {
+                throw WebDavConflictException("WebDAV конфлікт: файл на сервері змінено іншим пристроєм. Спочатку віднови дані з WebDAV.")
+            }
             if (code !in 200..299) error("WebDAV HTTP $code")
             val etag = conn.getHeaderField("ETag")?.trim()?.takeIf { it.isNotBlank() } ?: readRemoteEtag(context, target)
             if (!etag.isNullOrBlank()) prefs(context).edit().putString(ETAG_KEY, etag).apply()
@@ -123,9 +127,15 @@ internal object WebDavSync {
 }
 
 internal class WebDavWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
-    override suspend fun doWork(): Result = runCatching {
+    override suspend fun doWork(): Result {
         if (!WebDavSync.enabled(applicationContext)) return Result.success()
-        WebDavSync.upload(applicationContext)
-        Result.success()
-    }.getOrElse { Result.retry() }
+        return try {
+            WebDavSync.upload(applicationContext)
+            Result.success()
+        } catch (_: WebDavConflictException) {
+            Result.failure()
+        } catch (_: Throwable) {
+            Result.retry()
+        }
+    }
 }

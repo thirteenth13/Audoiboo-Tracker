@@ -24,40 +24,19 @@
             android:authorities="${applicationId}.files"
             android:exported="false"
             android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
 
-        <meta-data
-            android:name="com.google.android.gms.car.application"
-            android:resource="@xml/automotive_app_desc" />
+        <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />
 
-        <receiver
-            android:name=".ContinueListeningWidget"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/continue_listening_widget_info" />
+        <receiver android:name=".ContinueListeningWidget" android:exported="true">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/continue_listening_widget_info" />
         </receiver>
 
-        <service
-            android:name=".ManagedDownloadService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
-
-        <service
-            android:name=".SleepTimerService"
-            android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
-
-        <service
-            android:name=".PlaybackService"
-            android:exported="true"
-            android:foregroundServiceType="mediaPlayback">
+        <service android:name=".ManagedDownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name=".SleepTimerService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
+        <service android:name=".PlaybackService" android:exported="true" android:foregroundServiceType="mediaPlayback">
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaLibraryService" />
                 <action android:name="android.media.browse.MediaBrowserService" />
@@ -74,11 +53,9 @@
         <activity android:name=".PlayerActivity" android:exported="false" android:label="Плеєр" />
         <activity android:name=".ManualDownloadActivity" android:exported="false" android:label="Ручне додавання архіву" />
         <activity android:name=".LibraryToolsActivity" android:exported="false" android:label="Інструменти бібліотеки" />
-        <activity android:name=".RoomLibraryActivity" android:exported="false" android:label="Бібліотека Room" />
+        <activity android:name=".MainActivity" android:exported="false" android:label="Керування Audioboo" />
 
-        <activity
-            android:name=".MainActivity"
-            android:exported="true">
+        <activity android:name=".RoomLibraryActivity" android:exported="true" android:label="Audoiboo Tracker">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

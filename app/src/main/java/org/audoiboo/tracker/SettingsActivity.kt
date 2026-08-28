@@ -78,6 +78,9 @@ private fun SettingsScreen(activity: ComponentActivity) {
     var showFind by remember { mutableStateOf(AppPrefs.showFindArchiveButton(activity)) }
     var autoArchives by remember { mutableStateOf(AppPrefs.autoFindArchives(activity)) }
     var storageName by remember { mutableStateOf(StorageAccess.displayName(activity)) }
+    var watchSeries by remember { mutableStateOf(SeriesAutomationPrefs.enabled(activity)) }
+    var autoDownloadNew by remember { mutableStateOf(SeriesAutomationPrefs.autoDownload(activity)) }
+    var watchWifi by remember { mutableStateOf(SeriesAutomationPrefs.wifiOnly(activity)) }
 
     val automatic = remember { BackupStore.automaticSettings(activity) }
     var autoSettings by remember { mutableStateOf(automatic.first) }
@@ -91,6 +94,7 @@ private fun SettingsScreen(activity: ComponentActivity) {
     var webDavEnabled by remember { mutableStateOf(WebDavSync.enabled(activity)) }
 
     fun save() { AppPrefs.save(activity, base, author, dev, dark, ask, wifi, unpack, updateWifi, showPage, showFind, autoArchives) }
+    fun saveSeriesWatch() { SeriesAutomationPrefs.save(activity, watchSeries, autoDownloadNew, watchWifi) }
     fun saveAutomatic() { BackupStore.setAutomaticSettings(activity, autoSettings, autoBookmarks, autoStatistics); BackupStore.setAutomaticBackupPath(activity, autoPath); BackupStore.maybeCreateDailyBackup(activity) }
     fun toast(text: String) = Toast.makeText(activity, text, Toast.LENGTH_LONG).show()
 
@@ -125,6 +129,11 @@ private fun SettingsScreen(activity: ComponentActivity) {
                 SettingCard("Кнопка «Знайти архів»", "Ручний пошук посилання на архів") { Switch(checked = showFind, onCheckedChange = { showFind = it; save() }) }
                 SettingCard("Автоматично шукати архіви", "Після оновлення серії перевіряти книги без архіву") { Switch(checked = autoArchives, onCheckedChange = { autoArchives = it; save() }) }
 
+                SectionTitle("Нові книги")
+                SettingCard("Стежити за серіями", "Раз на 6 годин перевіряти додані серії й показувати сповіщення") { Switch(watchSeries, { watchSeries = it; saveSeriesWatch() }) }
+                SettingCard("Автозавантаження новинок", "Для нової книги знайти архів і поставити його у надійну чергу") { Switch(autoDownloadNew, { autoDownloadNew = it; saveSeriesWatch() }, enabled = watchSeries) }
+                SettingCard("Перевірка тільки по Wi‑Fi", "WorkManager чекатиме неметровану мережу") { Switch(watchWifi, { watchWifi = it; saveSeriesWatch() }, enabled = watchSeries) }
+
                 SectionTitle("Завантаження")
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(value = base, onValueChange = { base = it }, label = { Text("Базова папка") }, supportingText = { Text(if (storageName == null) "/storage/emulated/0/Download/${base.ifBlank { "Audoiboo" }}" else "У вибраній SAF-папці: ${base.ifBlank { "Audoiboo" }}") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -135,7 +144,7 @@ private fun SettingsScreen(activity: ComponentActivity) {
                     OutlinedButton(onClick = { folderLauncher.launch(StorageAccess.treeUri(activity)) }, modifier = Modifier.fillMaxWidth()) { Text(if (storageName == null) "Вибрати папку через SAF" else "Папка: $storageName") }
                     if (storageName != null) TextButton(onClick = { StorageAccess.setTree(activity, null); storageName = null }) { Text("Повернутися до Downloads/Audoiboo") }
                     OutlinedButton(onClick = { activity.startActivity(Intent(activity, ManualDownloadActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) { Text("Ручне додавання архіву") }
-                    Text("Використовуй ручний режим, якщо автоматичний JSoup → WebView парсер не знайшов посилання.", style = MaterialTheme.typography.bodySmall)
+                    Text("Fallback: якщо автоматичний JSoup → WebView парсер не знайшов посилання.", style = MaterialTheme.typography.bodySmall)
                     Button(onClick = { save() }) { Text("Зберегти") }
                 } }
 

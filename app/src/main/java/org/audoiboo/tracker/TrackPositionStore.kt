@@ -40,12 +40,16 @@ object TrackPositionStore {
             val dao = AudoibooDatabase.get(app).libraryDao()
             migrateLegacyIfNeeded(app, dao)
             val room = dao.trackPositions().associate { it.uri to it.positionMs.coerceAtLeast(0L) }
-            val merged = synchronized(pending) { room + pending }
-            positions.value = merged
-            synchronized(pending) {
-                if (pending.isNotEmpty()) {
-                    dao.upsertTrackPositions(pending.map { (uri, value) -> TrackPositionEntity(uri, value.coerceAtLeast(0L)) })
-                    pending.clear()
+            val pendingSnapshot = synchronized(pending) { pending.toMap() }
+            positions.value = room + pendingSnapshot
+            if (pendingSnapshot.isNotEmpty()) {
+                dao.upsertTrackPositions(pendingSnapshot.map { (uri, value) ->
+                    TrackPositionEntity(uri, value.coerceAtLeast(0L))
+                })
+                synchronized(pending) {
+                    pendingSnapshot.forEach { (uri, value) ->
+                        if (pending[uri] == value) pending.remove(uri)
+                    }
                 }
             }
         }

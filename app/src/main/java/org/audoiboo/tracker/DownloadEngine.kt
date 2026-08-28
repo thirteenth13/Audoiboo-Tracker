@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
@@ -16,11 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Cancel
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,10 +28,7 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedInputStream
-import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
+import java.io.*
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
@@ -71,17 +65,7 @@ internal object ManagedDownloads {
         parts += cleanPath(series)
         val relativeDir = parts.joinToString("/")
         val fileName = cleanPath(title).take(120) + archiveExtension(archiveUrl)
-        val record = ManagedDownloadRecord(
-            id = UUID.randomUUID().toString(),
-            title = title,
-            series = series,
-            author = author,
-            bookUrl = bookUrl,
-            archiveUrl = archiveUrl,
-            relativeDir = relativeDir,
-            fileName = fileName,
-            state = ManagedDownloadState.QUEUED
-        )
+        val record = ManagedDownloadRecord(UUID.randomUUID().toString(), title, series, author, bookUrl, archiveUrl, relativeDir, fileName, ManagedDownloadState.QUEUED)
         saveOne(context, record)
         send(context, ManagedDownloadService.ACTION_START, record.id)
     }
@@ -90,30 +74,32 @@ internal object ManagedDownloads {
     fun resume(context: Context, id: String) = send(context, ManagedDownloadService.ACTION_RESUME, id)
     fun cancel(context: Context, id: String) = send(context, ManagedDownloadService.ACTION_CANCEL, id)
 
-    @Synchronized fun remove(context: Context, id: String) {
-        val items = list(context).filterNot { it.id == id }
-        val arr = JSONArray()
-        items.take(200).forEach { arr.put(toJson(it)) }
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, arr.toString()).apply()
+    @Synchronized
+    fun remove(context: Context, id: String) {
+        save(context, list(context).filterNot { it.id == id })
         File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "staging/$id.part").delete()
     }
 
     fun list(context: Context): List<ManagedDownloadRecord> {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null) ?: return emptyList()
-        return try {
+        return runCatching {
             val arr = JSONArray(raw)
-            (0 until arr.length()).map { i -> fromJson(arr.getJSONObject(i)) }.sortedByDescending { it.createdAt }
-        } catch (_: Exception) { emptyList() }
+            (0 until arr.length()).map { fromJson(arr.getJSONObject(it)) }.sortedByDescending { it.createdAt }
+        }.getOrDefault(emptyList())
     }
 
-    fun get(context: Context, id: String): ManagedDownloadRecord? = list(context).firstOrNull { it.id == id }
+    fun get(context: Context, id: String) = list(context).firstOrNull { it.id == id }
 
-    @Synchronized fun saveOne(context: Context, record: ManagedDownloadRecord) {
+    @Synchronized
+    fun saveOne(context: Context, record: ManagedDownloadRecord) {
         val items = list(context).toMutableList()
-        val index = items.indexOfFirst { it.id == record.id }
-        if (index >= 0) items[index] = record else items.add(record)
-        val arr = JSONArray()
-        items.take(200).forEach { arr.put(toJson(it)) }
+        val i = items.indexOfFirst { it.id == record.id }
+        if (i >= 0) items[i] = record else items += record
+        save(context, items)
+    }
+
+    private fun save(context: Context, items: List<ManagedDownloadRecord>) {
+        val arr = JSONArray(); items.take(200).forEach { arr.put(toJson(it)) }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, arr.toString()).apply()
     }
 
@@ -129,16 +115,13 @@ internal object ManagedDownloads {
         .put("total", r.total).put("error", r.error).put("createdAt", r.createdAt)
 
     private fun fromJson(o: JSONObject) = ManagedDownloadRecord(
-        id = o.optString("id"), title = o.optString("title"), series = o.optString("series"),
-        author = o.optString("author").takeIf { it.isNotBlank() && it != "null" },
-        bookUrl = o.optString("bookUrl"), archiveUrl = o.optString("archiveUrl"),
-        relativeDir = o.optString("relativeDir"), fileName = o.optString("fileName"),
-        state = runCatching { ManagedDownloadState.valueOf(o.optString("state")) }.getOrDefault(ManagedDownloadState.FAILED),
-        downloaded = o.optLong("downloaded"), total = o.optLong("total", -1L),
-        error = o.optString("error").takeIf { it.isNotBlank() && it != "null" }, createdAt = o.optLong("createdAt")
+        o.optString("id"), o.optString("title"), o.optString("series"), o.optString("author").takeIf { it.isNotBlank() && it != "null" },
+        o.optString("bookUrl"), o.optString("archiveUrl"), o.optString("relativeDir"), o.optString("fileName"),
+        runCatching { ManagedDownloadState.valueOf(o.optString("state")) }.getOrDefault(ManagedDownloadState.FAILED),
+        o.optLong("downloaded"), o.optLong("total", -1L), o.optString("error").takeIf { it.isNotBlank() && it != "null" }, o.optLong("createdAt")
     )
 
-    private fun cleanPath(value: String) = value.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
+    private fun cleanPath(v: String) = v.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
     private fun archiveExtension(url: String) = Regex("\\.(zip|rar|7z)(?:\\?|$)", RegexOption.IGNORE_CASE).find(url)?.value?.substringBefore('?') ?: ".zip"
 }
 
@@ -156,38 +139,24 @@ class ManagedDownloadService : Service() {
         private val running = ConcurrentHashMap<String, Thread>()
     }
 
-    override fun onCreate() {
-        super.onCreate()
-        createChannel()
-    }
+    override fun onCreate() { super.onCreate(); createChannel() }
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, notification("Audoiboo Tracker", "Керування завантаженнями"))
         val id = intent?.getStringExtra(EXTRA_ID) ?: return START_NOT_STICKY
         when (intent.action) {
             ACTION_PAUSE -> pauses.getOrPut(id) { AtomicBoolean(false) }.set(true)
-            ACTION_CANCEL -> {
-                cancels.getOrPut(id) { AtomicBoolean(false) }.set(true)
-                ManagedDownloads.get(this, id)?.let { update(it.copy(state = ManagedDownloadState.CANCELLED)) }
-            }
+            ACTION_CANCEL -> { cancels.getOrPut(id) { AtomicBoolean(false) }.set(true); ManagedDownloads.get(this, id)?.let { update(it.copy(state = ManagedDownloadState.CANCELLED)) } }
             ACTION_START, ACTION_RESUME -> startDownload(id)
         }
         return START_NOT_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
-
     private fun startDownload(id: String) {
         if (running[id]?.isAlive == true) return
-        pauses.getOrPut(id) { AtomicBoolean(false) }.set(false)
-        cancels.getOrPut(id) { AtomicBoolean(false) }.set(false)
-        val thread = Thread {
-            try { performDownload(id) }
-            finally {
-                running.remove(id)
-                if (running.isEmpty()) stopForeground(STOP_FOREGROUND_DETACH)
-            }
-        }.apply { name = "Audoiboo-$id"; start() }
+        pauses.getOrPut(id) { AtomicBoolean(false) }.set(false); cancels.getOrPut(id) { AtomicBoolean(false) }.set(false)
+        val thread = Thread { try { performDownload(id) } finally { running.remove(id); if (running.isEmpty()) stopForeground(STOP_FOREGROUND_DETACH) } }.apply { name = "Audoiboo-$id"; start() }
         running[id] = thread
     }
 
@@ -196,128 +165,107 @@ class ManagedDownloadService : Service() {
         val stagingRoot = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "staging").apply { mkdirs() }
         val part = File(stagingRoot, "$id.part")
         val existing = part.length()
-        var connection: HttpURLConnection? = null
+        var conn: HttpURLConnection? = null
         try {
-            connection = (URL(record.archiveUrl).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true
-                connectTimeout = 20_000
-                readTimeout = 30_000
+            conn = (URL(record.archiveUrl).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = true; connectTimeout = 20_000; readTimeout = 30_000
                 setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 Chrome Mobile Safari/537.36")
                 setRequestProperty("Referer", record.bookUrl)
                 if (existing > 0) setRequestProperty("Range", "bytes=$existing-")
             }
-            connection.connect()
-            val code = connection.responseCode
-            if (code !in 200..299) throw IllegalStateException("HTTP $code")
+            conn.connect(); val code = conn.responseCode
+            if (code !in 200..299) error("HTTP $code")
             val append = existing > 0 && code == HttpURLConnection.HTTP_PARTIAL
             if (existing > 0 && !append) part.delete()
             val startAt = if (append) existing else 0L
-            val contentLength = connection.contentLengthLong
+            val contentLength = conn.contentLengthLong
             val total = if (contentLength > 0) startAt + contentLength else -1L
-            record = record.copy(state = ManagedDownloadState.DOWNLOADING, downloaded = startAt, total = total, error = null)
-            update(record)
+            record = record.copy(state = ManagedDownloadState.DOWNLOADING, downloaded = startAt, total = total, error = null); update(record)
 
-            BufferedInputStream(connection.inputStream).use { input ->
-                FileOutputStream(part, append).use { output ->
-                    val buffer = ByteArray(128 * 1024)
-                    var downloaded = startAt
-                    var lastSaved = 0L
-                    while (true) {
-                        if (cancels[id]?.get() == true) {
-                            part.delete()
-                            update(record.copy(state = ManagedDownloadState.CANCELLED, downloaded = downloaded, total = total))
-                            return
-                        }
-                        if (pauses[id]?.get() == true) {
-                            update(record.copy(state = ManagedDownloadState.PAUSED, downloaded = downloaded, total = total))
-                            return
-                        }
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        if (downloaded - lastSaved >= 512 * 1024) {
-                            lastSaved = downloaded
-                            update(record.copy(state = ManagedDownloadState.DOWNLOADING, downloaded = downloaded, total = total))
-                        }
-                    }
-                    record = record.copy(downloaded = downloaded, total = total)
+            BufferedInputStream(conn.inputStream).use { input -> FileOutputStream(part, append).use { output ->
+                val buffer = ByteArray(128 * 1024); var downloaded = startAt; var lastSaved = downloaded
+                while (true) {
+                    if (cancels[id]?.get() == true) { part.delete(); update(record.copy(state = ManagedDownloadState.CANCELLED, downloaded = downloaded, total = total)); return }
+                    if (pauses[id]?.get() == true) { update(record.copy(state = ManagedDownloadState.PAUSED, downloaded = downloaded, total = total)); return }
+                    val read = input.read(buffer); if (read < 0) break
+                    output.write(buffer, 0, read); downloaded += read
+                    if (downloaded - lastSaved >= 512 * 1024) { lastSaved = downloaded; update(record.copy(state = ManagedDownloadState.DOWNLOADING, downloaded = downloaded, total = total)) }
                 }
-            }
+                record = record.copy(downloaded = downloaded, total = total)
+            } }
 
             if (AppPrefs.unpack(this) && record.fileName.endsWith(".zip", true)) {
                 update(record.copy(state = ManagedDownloadState.EXTRACTING))
-                val bookFolder = record.title.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Книга" }.take(120)
-                extractZipToDownloads(part, "${record.relativeDir}/$bookFolder")
+                val bookFolder = safeBookFolder(record.title)
+                extractZipToDownloads(part, "${record.relativeDir}/$bookFolder", record)
                 part.delete()
             } else {
-                publishFile(part, record.relativeDir, record.fileName)
+                publishFile(part, record.relativeDir, record.fileName, record)
                 part.delete()
             }
-            update(record.copy(state = ManagedDownloadState.COMPLETED, downloaded = record.total.takeIf { it > 0 } ?: part.length(), error = null))
+            update(record.copy(state = ManagedDownloadState.COMPLETED, downloaded = if (record.total > 0) record.total else record.downloaded, error = null))
         } catch (e: Exception) {
-            if (cancels[id]?.get() != true && pauses[id]?.get() != true) {
-                update(record.copy(state = ManagedDownloadState.FAILED, error = e.message ?: e.javaClass.simpleName, downloaded = part.length()))
-            }
-        } finally { connection?.disconnect() }
+            if (cancels[id]?.get() != true && pauses[id]?.get() != true) update(record.copy(state = ManagedDownloadState.FAILED, error = e.message ?: e.javaClass.simpleName, downloaded = part.length()))
+        } finally { conn?.disconnect() }
     }
 
-    private fun publishFile(source: File, relativeDir: String, fileName: String) {
+    private fun safeBookFolder(title: String) = title.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Книга" }.take(120)
+    private fun isAudio(name: String) = name.substringAfterLast('.', "").lowercase() in setOf("mp3","m4a","m4b","ogg","opus","wav","aac","flac")
+    private fun mimeFor(name: String) = when (name.substringAfterLast('.', "").lowercase()) {
+        "mp3" -> "audio/mpeg"; "m4a","m4b" -> "audio/mp4"; "ogg","opus" -> "audio/ogg"; "wav" -> "audio/wav"; "aac" -> "audio/aac"; "flac" -> "audio/flac"; "zip" -> "application/zip"; else -> "application/octet-stream"
+    }
+
+    private fun publishFile(source: File, relativeDir: String, fileName: String, record: ManagedDownloadRecord) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-                put(MediaStore.Downloads.RELATIVE_PATH, "Download/$relativeDir")
-                put(MediaStore.Downloads.IS_PENDING, 1)
+                put(MediaStore.Downloads.DISPLAY_NAME, fileName); put(MediaStore.Downloads.MIME_TYPE, mimeFor(fileName)); put(MediaStore.Downloads.RELATIVE_PATH, "Download/$relativeDir"); put(MediaStore.Downloads.IS_PENDING, 1)
             }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Не вдалося створити файл")
             contentResolver.openOutputStream(uri)?.use { out -> FileInputStream(source).use { it.copyTo(out) } } ?: error("Не вдалося відкрити файл")
             values.clear(); values.put(MediaStore.Downloads.IS_PENDING, 0); contentResolver.update(uri, values, null, null)
+            if (isAudio(fileName)) PlayerLibrary.register(this, uri, fileName, "Download/$relativeDir", record.title, record.series, record.author)
         } else {
             val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), relativeDir).apply { mkdirs() }
-            source.copyTo(File(dir, fileName), overwrite = true)
+            val target = File(dir, fileName); source.copyTo(target, overwrite = true)
+            if (isAudio(fileName)) PlayerLibrary.register(this, Uri.fromFile(target), fileName, target.parent.orEmpty(), record.title, record.series, record.author)
         }
     }
 
-    private fun extractZipToDownloads(zipFile: File, relativeDir: String) {
+    private fun extractZipToDownloads(zipFile: File, relativeDir: String, record: ManagedDownloadRecord) {
         ZipInputStream(BufferedInputStream(FileInputStream(zipFile))).use { zin ->
             var entry = zin.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory) {
-                    val safeName = entry.name.replace('\\', '/').split('/').filter { it.isNotBlank() && it != ".." }.joinToString("/")
-                    if (safeName.isNotBlank()) publishStream(zin, relativeDir, safeName)
+                    val safe = entry.name.replace('\\','/').split('/').filter { it.isNotBlank() && it != ".." }.joinToString("/")
+                    if (safe.isNotBlank()) publishStream(zin, relativeDir, safe, record)
                 }
-                zin.closeEntry()
-                entry = zin.nextEntry
+                zin.closeEntry(); entry = zin.nextEntry
             }
         }
     }
 
-    private fun publishStream(input: java.io.InputStream, relativeDir: String, nestedName: String) {
-        val sub = nestedName.substringBeforeLast('/', "")
-        val file = nestedName.substringAfterLast('/')
-        val dir = listOf(relativeDir, sub).filter { it.isNotBlank() }.joinToString("/")
+    private fun publishStream(input: InputStream, relativeDir: String, nestedName: String, record: ManagedDownloadRecord) {
+        val sub = nestedName.substringBeforeLast('/', ""); val file = nestedName.substringAfterLast('/'); val dir = listOf(relativeDir, sub).filter { it.isNotBlank() }.joinToString("/")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, file)
-                put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-                put(MediaStore.Downloads.RELATIVE_PATH, "Download/$dir")
-                put(MediaStore.Downloads.IS_PENDING, 1)
+                put(MediaStore.Downloads.DISPLAY_NAME, file); put(MediaStore.Downloads.MIME_TYPE, mimeFor(file)); put(MediaStore.Downloads.RELATIVE_PATH, "Download/$dir"); put(MediaStore.Downloads.IS_PENDING, 1)
             }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return
             contentResolver.openOutputStream(uri)?.use { out -> input.copyTo(out) }
             values.clear(); values.put(MediaStore.Downloads.IS_PENDING, 0); contentResolver.update(uri, values, null, null)
+            if (isAudio(file)) PlayerLibrary.register(this, uri, file, "Download/$dir", record.title, record.series, record.author)
         } else {
             val targetDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), dir).apply { mkdirs() }
-            FileOutputStream(File(targetDir, file)).use { out -> input.copyTo(out) }
+            val target = File(targetDir, file); FileOutputStream(target).use { input.copyTo(it) }
+            if (isAudio(file)) PlayerLibrary.register(this, Uri.fromFile(target), file, target.parent.orEmpty(), record.title, record.series, record.author)
         }
     }
 
     private fun update(record: ManagedDownloadRecord) {
         ManagedDownloads.saveOne(this, record)
-        val percent = if (record.total > 0) (record.downloaded * 100 / record.total).toInt() else -1
+        val pct = if (record.total > 0) (record.downloaded * 100 / record.total).toInt() else -1
         val detail = when (record.state) {
-            ManagedDownloadState.DOWNLOADING -> if (percent >= 0) "${record.title} — $percent%" else record.title
+            ManagedDownloadState.DOWNLOADING -> if (pct >= 0) "${record.title} — $pct%" else record.title
             ManagedDownloadState.EXTRACTING -> "Розпакування: ${record.title}"
             ManagedDownloadState.PAUSED -> "Призупинено: ${record.title}"
             else -> record.title
@@ -326,18 +274,13 @@ class ManagedDownloadService : Service() {
     }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(NotificationChannel(CHANNEL, "Завантаження аудіокниг", NotificationManager.IMPORTANCE_LOW))
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(NotificationChannel(CHANNEL, "Завантаження аудіокниг", NotificationManager.IMPORTANCE_LOW))
     }
 
     private fun notification(title: String, text: String): android.app.Notification {
         val launch = packageManager.getLaunchIntentForPackage(packageName)
         val pi = PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        return NotificationCompat.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle(title).setContentText(text).setContentIntent(pi).setOngoing(true).build()
+        return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_download).setContentTitle(title).setContentText(text).setContentIntent(pi).setOngoing(true).build()
     }
 }
 
@@ -346,44 +289,32 @@ internal fun ManagedDownloadsScreen(context: Context) {
     var tick by remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) { while (true) { delay(1000); tick++ } }
     val records = remember(tick) { ManagedDownloads.list(context) }
-    if (records.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Тут з’являться завантаження аудіокниг.") }
-        return
-    }
+    if (records.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Тут з’являться завантаження аудіокниг.") }; return }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         items(records, key = { it.id }) { r ->
             ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Download, null, tint = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(r.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(listOfNotNull(r.author, r.series).joinToString(" • "), style = MaterialTheme.typography.bodySmall)
-                        }
+                        Icon(Icons.Filled.Download, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) { Text(r.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis); Text(listOfNotNull(r.author, r.series).joinToString(" • "), style = MaterialTheme.typography.bodySmall) }
                         when (r.state) {
                             ManagedDownloadState.DOWNLOADING, ManagedDownloadState.QUEUED -> IconButton(onClick = { ManagedDownloads.pause(context, r.id) }) { Icon(Icons.Filled.Pause, "Пауза") }
                             ManagedDownloadState.PAUSED, ManagedDownloadState.FAILED -> IconButton(onClick = { ManagedDownloads.resume(context, r.id) }) { Icon(Icons.Filled.PlayArrow, "Продовжити") }
+                            ManagedDownloadState.COMPLETED -> IconButton(onClick = {
+                                val bookFolder = if (AppPrefs.unpack(context) && r.fileName.endsWith(".zip", true)) safeBookFolderUi(r.title) else ""
+                                val dir = listOf(r.relativeDir, bookFolder).filter { it.isNotBlank() }.joinToString("/")
+                                context.startActivity(Intent(context, PlayerActivity::class.java).putExtra("relativeDir", dir).putExtra("title", r.title))
+                            }) { Icon(Icons.Filled.Headphones, "Відкрити в плеєрі") }
                             else -> Unit
                         }
-                        if (r.state !in listOf(ManagedDownloadState.COMPLETED, ManagedDownloadState.CANCELLED)) {
-                            IconButton(onClick = { ManagedDownloads.cancel(context, r.id) }) { Icon(Icons.Filled.Cancel, "Скасувати") }
-                        }
-                        if (r.state == ManagedDownloadState.CANCELLED) {
-                            IconButton(onClick = { ManagedDownloads.remove(context, r.id); tick++ }) { Icon(Icons.Filled.Delete, "Видалити") }
-                        }
+                        if (r.state !in listOf(ManagedDownloadState.COMPLETED, ManagedDownloadState.CANCELLED)) IconButton(onClick = { ManagedDownloads.cancel(context, r.id) }) { Icon(Icons.Filled.Cancel, "Скасувати") }
+                        if (r.state == ManagedDownloadState.CANCELLED) IconButton(onClick = { ManagedDownloads.remove(context, r.id); tick++ }) { Icon(Icons.Filled.Delete, "Видалити") }
                     }
-                    val progress = if (r.total > 0) r.downloaded.toFloat() / r.total.toFloat() else 0f
-                    if (r.state in listOf(ManagedDownloadState.DOWNLOADING, ManagedDownloadState.PAUSED, ManagedDownloadState.EXTRACTING)) {
-                        Spacer(Modifier.height(8.dp))
-                        LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
-                    }
+                    val progress = if (r.total > 0) r.downloaded.toFloat() / r.total else 0f
+                    if (r.state in listOf(ManagedDownloadState.DOWNLOADING, ManagedDownloadState.PAUSED, ManagedDownloadState.EXTRACTING)) { Spacer(Modifier.height(8.dp)); LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth()) }
                     Text(stateLabel(r), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     r.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-                    val displayPath = if (AppPrefs.unpack(context) && r.fileName.endsWith(".zip", true)) {
-                        val bookFolder = r.title.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Книга" }.take(120)
-                        "Downloads/${r.relativeDir}/$bookFolder/"
-                    } else "Downloads/${r.relativeDir}/${r.fileName}"
+                    val displayPath = if (AppPrefs.unpack(context) && r.fileName.endsWith(".zip", true)) "Downloads/${r.relativeDir}/${safeBookFolderUi(r.title)}/" else "Downloads/${r.relativeDir}/${r.fileName}"
                     Text(displayPath, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
@@ -391,15 +322,10 @@ internal fun ManagedDownloadsScreen(context: Context) {
     }
 }
 
+private fun safeBookFolderUi(title: String) = title.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Книга" }.take(120)
 private fun stateLabel(r: ManagedDownloadRecord): String {
     val pct = if (r.total > 0) " ${(r.downloaded * 100 / r.total)}%" else ""
     return when (r.state) {
-        ManagedDownloadState.QUEUED -> "Очікує"
-        ManagedDownloadState.DOWNLOADING -> "Завантажується$pct"
-        ManagedDownloadState.PAUSED -> "Пауза$pct"
-        ManagedDownloadState.EXTRACTING -> "Розпаковується"
-        ManagedDownloadState.COMPLETED -> if (r.fileName.endsWith(".zip", true)) "Готово" else "Завантажено"
-        ManagedDownloadState.FAILED -> "Помилка"
-        ManagedDownloadState.CANCELLED -> "Скасовано"
+        ManagedDownloadState.QUEUED -> "Очікує"; ManagedDownloadState.DOWNLOADING -> "Завантажується$pct"; ManagedDownloadState.PAUSED -> "Пауза$pct"; ManagedDownloadState.EXTRACTING -> "Розпаковується"; ManagedDownloadState.COMPLETED -> "Готово"; ManagedDownloadState.FAILED -> "Помилка"; ManagedDownloadState.CANCELLED -> "Скасовано"
     }
 }

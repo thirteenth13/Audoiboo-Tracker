@@ -1,7 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
-    id("org.jetbrains.kotlin.kapt")
+    id("com.google.devtools.ksp")
 }
 
 android {
@@ -65,7 +65,7 @@ dependencies {
     implementation("androidx.room:room-runtime:2.8.0")
     implementation("androidx.room:room-ktx:2.8.0")
     implementation("androidx.room:room-paging:2.8.0")
-    kapt("androidx.room:room-compiler:2.8.0")
+    ksp("androidx.room:room-compiler:2.8.0")
     implementation("androidx.datastore:datastore-preferences:1.1.7")
     implementation("androidx.paging:paging-runtime-ktx:3.3.6")
     implementation("androidx.paging:paging-compose:3.3.6")

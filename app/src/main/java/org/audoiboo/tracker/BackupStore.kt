@@ -24,20 +24,23 @@ object BackupStore {
 
     fun exportJson(context: Context, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean): String {
         val root = JSONObject()
-        root.put("format", 4)
+        root.put("format", 5)
         root.put("createdAt", System.currentTimeMillis())
         val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportCompatJson(context.applicationContext) } }
             .getOrElse { context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]").orEmpty() }
         root.put("tracker", tracker)
+        runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportTagsJson(context.applicationContext) } }
+            .getOrNull()?.let { root.put("roomTags", it) }
         addSharedState(context, root, includeSettings, includeBookmarks, includeStatistics)
         return root.toString(2)
     }
 
     suspend fun exportJsonFromRoom(context: Context, includeSettings: Boolean = true, includeBookmarks: Boolean = true, includeStatistics: Boolean = true): String {
         val root = JSONObject()
-        root.put("format", 4)
+        root.put("format", 5)
         root.put("createdAt", System.currentTimeMillis())
         root.put("tracker", LibraryRepository.exportCompatJson(context.applicationContext))
+        root.put("roomTags", LibraryRepository.exportTagsJson(context.applicationContext))
         addSharedState(context, root, includeSettings, includeBookmarks, includeStatistics)
         return root.toString(2)
     }
@@ -45,19 +48,30 @@ object BackupStore {
     fun importJson(context: Context, raw: String) {
         val root = JSONObject(raw)
         val tracker = root.optString("tracker", "[]")
+        val roomTags = root.optJSONObject("roomTags")
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreNonTrackerState(context, root)
-        restoreScope.launch { runCatching { LibraryRepository.restoreLegacyJson(context.applicationContext, tracker) } }
+        restoreScope.launch {
+            runCatching {
+                LibraryRepository.restoreLegacyJson(context.applicationContext, tracker)
+                LibraryRepository.restoreTagsJson(context.applicationContext, roomTags)
+                PlayerExtrasRoomSync.syncFromLegacy(context.applicationContext)
+                RoomCoverSync.enqueueAll(context.applicationContext)
+            }
+        }
         recoverAfterRestore(context)
     }
 
-    /** Used by network/cloud restores so success is returned only after Room is fully updated. */
     suspend fun importJsonToRoom(context: Context, raw: String) {
         val root = JSONObject(raw)
         val tracker = root.optString("tracker", "[]")
+        val roomTags = root.optJSONObject("roomTags")
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreNonTrackerState(context, root)
         LibraryRepository.restoreLegacyJson(context.applicationContext, tracker)
+        LibraryRepository.restoreTagsJson(context.applicationContext, roomTags)
+        PlayerExtrasRoomSync.syncFromLegacy(context.applicationContext)
+        RoomCoverSync.enqueueAll(context.applicationContext)
         recoverAfterRestore(context)
     }
 

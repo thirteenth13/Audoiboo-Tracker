@@ -41,6 +41,34 @@ object LibraryRepository {
         AudoibooDatabase.get(context).libraryDao().setBookTags(bookId, tags)
     }
 
+    suspend fun exportTagsJson(context: Context): JSONObject = withContext(Dispatchers.IO) {
+        val dao = AudoibooDatabase.get(context.applicationContext).libraryDao()
+        val out = JSONObject()
+        dao.library().flatMap { it.books }.forEach { book ->
+            val tags = dao.bookWithTags(book.id)?.tags.orEmpty()
+            if (tags.isNotEmpty()) {
+                val arr = JSONArray()
+                tags.map { it.name }.distinctBy { it.lowercase() }.forEach(arr::put)
+                out.put(book.id, arr)
+            }
+        }
+        out
+    }
+
+    suspend fun restoreTagsJson(context: Context, root: JSONObject?) = withContext(Dispatchers.IO) {
+        if (root == null) return@withContext
+        val dao = AudoibooDatabase.get(context.applicationContext).libraryDao()
+        val existing = dao.library().flatMap { it.books }.map { it.id }.toSet()
+        val keys = root.keys()
+        while (keys.hasNext()) {
+            val bookId = keys.next()
+            if (bookId !in existing) continue
+            val arr = root.optJSONArray(bookId) ?: JSONArray()
+            val tags = (0 until arr.length()).mapNotNull { arr.optString(it).takeIf(String::isNotBlank) }
+            dao.setBookTags(bookId, tags)
+        }
+    }
+
     suspend fun updateBookStatus(context: Context, bookId: String, status: String) = withContext(Dispatchers.IO) {
         val dao = AudoibooDatabase.get(context).libraryDao()
         dao.updateBookStatus(bookId, status)
@@ -58,7 +86,6 @@ object LibraryRepository {
         AudoibooDatabase.get(context).libraryDao().library()
     }
 
-    /** Serialize Room state in the legacy tracker JSON shape without mutating SharedPreferences. */
     suspend fun exportCompatJson(context: Context): String = withContext(Dispatchers.IO) {
         LegacyLibraryImporter.importIfNeeded(context)
         legacyJson(AudoibooDatabase.get(context).libraryDao().library())

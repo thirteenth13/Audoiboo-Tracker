@@ -39,23 +39,87 @@ internal object PlaybackStateRepository {
     suspend fun saveQueue(context: Context, dirs: List<String>) = withContext(Dispatchers.IO) {
         val clean = dirs.filter { it.isNotBlank() }.distinct()
         AudoibooDatabase.get(context).libraryDao().replacePlaybackQueue(clean)
-        val a = JSONArray(); clean.forEach(a::put)
-        context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE).edit().putString(QUEUE_KEY, a.toString()).apply()
+        writeLegacyQueue(context, clean)
     }
 
     suspend fun saveSnapshot(context: Context, value: Snapshot) = withContext(Dispatchers.IO) {
         if (value.dir.isBlank()) return@withContext
-        AudoibooDatabase.get(context).libraryDao().upsertPlaybackResume(
-            PlaybackResumeEntity(
-                dir = value.dir,
-                title = value.title,
-                uri = value.uri,
-                fileIndex = value.fileIndex.coerceAtLeast(0),
-                positionMs = value.positionMs.coerceAtLeast(0L),
-                updatedAt = value.updatedAt
+        AudoibooDatabase.get(context).libraryDao().upsertPlaybackResume(value.toEntity())
+        writeLegacySnapshot(context, value, queue(context))
+    }
+
+    /**
+     * Two-way transition reconciliation. Existing legacy values win during migration; when a
+     * legacy key is missing, Room repopulates it instead of treating the missing key as empty state.
+     */
+    suspend fun reconcile(context: Context) = withContext(Dispatchers.IO) {
+        val dao = AudoibooDatabase.get(context).libraryDao()
+        val queuePrefs = context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE)
+        val extrasPrefs = context.getSharedPreferences(EXTRAS_PREFS, Context.MODE_PRIVATE)
+
+        val resolvedQueue = if (queuePrefs.contains(QUEUE_KEY)) {
+            parseQueue(queuePrefs.getString(QUEUE_KEY, "[]").orEmpty()).also { dao.replacePlaybackQueue(it) }
+        } else {
+            dao.playbackQueue().map { it.dir }.also { if (it.isNotEmpty()) writeLegacyQueue(context, it) }
+        }
+
+        if (extrasPrefs.contains(SNAPSHOT_KEY)) {
+            parseSnapshot(extrasPrefs.getString(SNAPSHOT_KEY, null))?.let { dao.upsertPlaybackResume(it.toEntity()) }
+        } else {
+            dao.playbackResume()?.let {
+                writeLegacySnapshot(context, Snapshot(it.dir, it.title, it.uri, it.fileIndex, it.positionMs, it.updatedAt), resolvedQueue)
+            }
+        }
+    }
+
+    suspend fun syncFromLegacy(context: Context) = withContext(Dispatchers.IO) {
+        val dao = AudoibooDatabase.get(context).libraryDao()
+        val queuePrefs = context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE)
+        if (queuePrefs.contains(QUEUE_KEY)) {
+            dao.replacePlaybackQueue(parseQueue(queuePrefs.getString(QUEUE_KEY, "[]").orEmpty()))
+        }
+        val extrasPrefs = context.getSharedPreferences(EXTRAS_PREFS, Context.MODE_PRIVATE)
+        if (extrasPrefs.contains(SNAPSHOT_KEY)) {
+            parseSnapshot(extrasPrefs.getString(SNAPSHOT_KEY, null))?.let { dao.upsertPlaybackResume(it.toEntity()) }
+        }
+    }
+
+    private fun parseQueue(raw: String): List<String> = runCatching {
+        val a = JSONArray(raw.ifBlank { "[]" })
+        (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) }.distinct()
+    }.getOrDefault(emptyList())
+
+    private fun parseSnapshot(raw: String?): Snapshot? = raw?.let { text ->
+        runCatching {
+            val o = JSONObject(text)
+            val dir = o.optString("dir").takeIf { it.isNotBlank() } ?: return@runCatching null
+            Snapshot(
+                dir = dir,
+                title = o.optString("title", dir),
+                uri = o.optString("uri"),
+                fileIndex = o.optInt("fileIndex", 0).coerceAtLeast(0),
+                positionMs = o.optLong("positionMs", 0L).coerceAtLeast(0L),
+                updatedAt = o.optLong("updatedAt", System.currentTimeMillis())
             )
-        )
-        val q = JSONArray(); queue(context).forEach(q::put)
+        }.getOrNull()
+    }
+
+    private fun Snapshot.toEntity() = PlaybackResumeEntity(
+        dir = dir,
+        title = title,
+        uri = uri,
+        fileIndex = fileIndex.coerceAtLeast(0),
+        positionMs = positionMs.coerceAtLeast(0L),
+        updatedAt = updatedAt
+    )
+
+    private fun writeLegacyQueue(context: Context, dirs: List<String>) {
+        val a = JSONArray(); dirs.filter { it.isNotBlank() }.distinct().forEach(a::put)
+        context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE).edit().putString(QUEUE_KEY, a.toString()).apply()
+    }
+
+    private fun writeLegacySnapshot(context: Context, value: Snapshot, dirs: List<String>) {
+        val q = JSONArray(); dirs.filter { it.isNotBlank() }.distinct().forEach(q::put)
         val o = JSONObject()
             .put("dir", value.dir)
             .put("title", value.title)
@@ -65,30 +129,5 @@ internal object PlaybackStateRepository {
             .put("queue", q)
             .put("updatedAt", value.updatedAt)
         context.getSharedPreferences(EXTRAS_PREFS, Context.MODE_PRIVATE).edit().putString(SNAPSHOT_KEY, o.toString()).apply()
-    }
-
-    suspend fun syncFromLegacy(context: Context) = withContext(Dispatchers.IO) {
-        val queueRaw = context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE).getString(QUEUE_KEY, "[]") ?: "[]"
-        val queue = runCatching {
-            val a = JSONArray(queueRaw)
-            (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) }
-        }.getOrDefault(emptyList())
-        AudoibooDatabase.get(context).libraryDao().replacePlaybackQueue(queue.distinct())
-
-        val raw = context.getSharedPreferences(EXTRAS_PREFS, Context.MODE_PRIVATE).getString(SNAPSHOT_KEY, null)
-        val o = raw?.let { runCatching { JSONObject(it) }.getOrNull() }
-        val dir = o?.optString("dir").orEmpty()
-        if (dir.isNotBlank()) {
-            AudoibooDatabase.get(context).libraryDao().upsertPlaybackResume(
-                PlaybackResumeEntity(
-                    dir = dir,
-                    title = o?.optString("title", dir).orEmpty(),
-                    uri = o?.optString("uri").orEmpty(),
-                    fileIndex = o?.optInt("fileIndex", 0) ?: 0,
-                    positionMs = o?.optLong("positionMs", 0L) ?: 0L,
-                    updatedAt = o?.optLong("updatedAt", System.currentTimeMillis()) ?: System.currentTimeMillis()
-                )
-            )
-        }
     }
 }

@@ -11,7 +11,10 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
-import org.json.JSONArray
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -19,6 +22,7 @@ import java.security.MessageDigest
 
 internal object CoverCache {
     private const val WORK_PREFIX = "audoiboo-cover-"
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private fun dir(context: Context) = File(context.filesDir, "covers").apply { mkdirs() }
 
@@ -38,30 +42,7 @@ internal object CoverCache {
 
     fun remoteUrlFor(context: Context, item: PlayerLibraryItem): String? {
         val title = item.bookTitle ?: item.relativePath.replace('\\', '/').trimEnd('/').substringAfterLast('/')
-        RoomCoverSync.lookup(context, item.series, title)?.let { return it }
-
-        // Temporary compatibility fallback until the legacy tracker JSON is fully retired.
-        val raw = context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]") ?: return null
-        val wantedTitle = normalize(title)
-        val wantedSeries = normalize(item.series.orEmpty())
-        return runCatching {
-            val root = JSONArray(raw)
-            var fallback: String? = null
-            for (i in 0 until root.length()) {
-                val series = root.optJSONObject(i) ?: continue
-                val seriesName = normalize(series.optString("name"))
-                val books = series.optJSONArray("books") ?: continue
-                for (j in 0 until books.length()) {
-                    val book = books.optJSONObject(j) ?: continue
-                    val cover = book.optString("coverUrl").takeIf { it.startsWith("http", true) } ?: continue
-                    if (normalize(book.optString("title")) == wantedTitle) {
-                        if (wantedSeries.isBlank() || seriesName == wantedSeries) return@runCatching cover
-                        if (fallback == null) fallback = cover
-                    }
-                }
-            }
-            fallback
-        }.getOrNull()
+        return RoomCoverSync.lookup(context, item.series, title)
     }
 
     fun bestUri(context: Context, item: PlayerLibraryItem): Uri? {
@@ -79,15 +60,9 @@ internal object CoverCache {
         WorkManager.getInstance(context).enqueueUniqueWork(WORK_PREFIX + name(url), ExistingWorkPolicy.KEEP, request)
     }
 
+    /** Compatibility entry point retained for older callers; source data is now Room. */
     fun enqueueTrackerCovers(context: Context) {
-        val raw = context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]") ?: return
-        runCatching {
-            val root = JSONArray(raw)
-            for (i in 0 until root.length()) {
-                val books = root.optJSONObject(i)?.optJSONArray("books") ?: continue
-                for (j in 0 until books.length()) enqueue(context, books.optJSONObject(j)?.optString("coverUrl"))
-            }
-        }
+        scope.launch { runCatching { RoomCoverSync.enqueueAll(context.applicationContext) } }
     }
 
     fun prune(context: Context, maxFiles: Int = 500) {
@@ -122,9 +97,6 @@ internal object CoverCache {
             if (temp.exists()) temp.delete()
         }
     }
-
-    private fun normalize(value: String) = value.lowercase().replace('ё', 'е')
-        .replace(Regex("[^a-zа-яіїєґ0-9]+"), " ").trim()
 }
 
 internal class CoverCacheWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {

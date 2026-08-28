@@ -10,6 +10,15 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+enum class RoomBookFilter(val status: String = "", val tagMode: Int = 0) {
+    ALL,
+    NEW("NEW"),
+    READING("READING"),
+    READ("READ"),
+    TAGGED(tagMode = 1),
+    UNTAGGED(tagMode = 2)
+}
+
 object LibraryRepository {
     private const val PREFS = "tracker"
     private const val KEY = "library"
@@ -17,10 +26,10 @@ object LibraryRepository {
     fun observe(context: Context): Flow<List<SeriesWithBooks>> = AudoibooDatabase.get(context).libraryDao().observeLibrary()
     fun observeTags(context: Context): Flow<List<TagEntity>> = AudoibooDatabase.get(context).libraryDao().observeTags()
 
-    fun pagedBooks(context: Context, query: String = ""): Flow<PagingData<BookEntity>> {
+    fun pagedBooks(context: Context, query: String = "", filter: RoomBookFilter = RoomBookFilter.ALL): Flow<PagingData<BookEntity>> {
         val dao = AudoibooDatabase.get(context).libraryDao()
         return Pager(PagingConfig(pageSize = 30, prefetchDistance = 10, enablePlaceholders = false)) {
-            if (query.isBlank()) dao.pagedBooks() else dao.searchBooksAndTags(query.trim())
+            dao.pagedFilteredBooks(query.trim(), filter.status, filter.tagMode)
         }.flow
     }
 
@@ -29,8 +38,7 @@ object LibraryRepository {
     }
 
     suspend fun setBookTags(context: Context, bookId: String, tags: List<String>) = withContext(Dispatchers.IO) {
-        val dao = AudoibooDatabase.get(context).libraryDao()
-        dao.setBookTags(bookId, tags)
+        AudoibooDatabase.get(context).libraryDao().setBookTags(bookId, tags)
     }
 
     suspend fun updateBookStatus(context: Context, bookId: String, status: String) = withContext(Dispatchers.IO) {

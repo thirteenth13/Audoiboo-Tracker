@@ -21,13 +21,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 
-/**
- * Room-native library UI introduced during the staged migration away from tracker/library JSON.
- * It deliberately coexists with MainActivity until feature parity (parser/browser/add-series) is complete.
- */
+/** Room-native library UI used during the staged migration away from tracker/library JSON. */
 class RoomLibraryActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -130,7 +126,10 @@ private fun RoomSeriesDetail(item: SeriesWithBooks) {
 @Composable
 private fun RoomBookCard(book: BookEntity, seriesName: String?) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var tags by remember(book.id) { mutableStateOf<List<String>>(emptyList()) }
+    var editTags by remember(book.id) { mutableStateOf(false) }
+    var tagText by remember(book.id) { mutableStateOf("") }
     LaunchedEffect(book.id) { tags = LibraryRepository.bookWithTags(context, book.id)?.tags?.map { it.name }.orEmpty() }
 
     ElevatedCard(Modifier.fillMaxWidth()) {
@@ -143,8 +142,8 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
                 if (!seriesName.isNullOrBlank()) Text(seriesName, style = MaterialTheme.typography.bodySmall)
                 if (!book.author.isNullOrBlank()) Text(book.author, style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    AssistChip(onClick = {}, label = { Text(book.status) })
-                    if (tags.isNotEmpty()) AssistChip(onClick = {}, leadingIcon = { Icon(Icons.Filled.Label, null) }, label = { Text(tags.joinToString(" • "), maxLines = 1) })
+                    AssistChip(onClick = { scope.launch { LibraryRepository.updateBookStatus(context, book.id, nextRoomStatus(book.status)) } }, label = { Text(roomStatusLabel(book.status)) })
+                    AssistChip(onClick = { tagText = tags.joinToString(", "); editTags = true }, leadingIcon = { Icon(Icons.Filled.Label, null) }, label = { Text(if (tags.isEmpty()) "Теги" else tags.joinToString(" • "), maxLines = 1) })
                 }
             }
             Column {
@@ -155,4 +154,34 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
             }
         }
     }
+
+    if (editTags) AlertDialog(
+        onDismissRequest = { editTags = false },
+        title = { Text("Теги: ${book.title}") },
+        text = { OutlinedTextField(tagText, { tagText = it }, label = { Text("Через кому") }) },
+        confirmButton = { TextButton(onClick = {
+            val values = tagText.split(',').map { it.trim() }.filter { it.isNotBlank() }
+            scope.launch {
+                LibraryRepository.setBookTags(context, book.id, values)
+                tags = LibraryRepository.bookWithTags(context, book.id)?.tags?.map { it.name }.orEmpty()
+                editTags = false
+            }
+        }) { Text("Зберегти") } },
+        dismissButton = { TextButton(onClick = { editTags = false }) { Text("Скасувати") } }
+    )
+}
+
+private fun nextRoomStatus(status: String): String = when (status.uppercase()) {
+    "NEW" -> "UNREAD"
+    "UNREAD" -> "READING"
+    "READING" -> "READ"
+    else -> "UNREAD"
+}
+
+private fun roomStatusLabel(status: String): String = when (status.uppercase()) {
+    "NEW" -> "Нова"
+    "UNREAD" -> "Не прочитано"
+    "READING" -> "Читаю"
+    "READ" -> "Прочитано"
+    else -> status
 }

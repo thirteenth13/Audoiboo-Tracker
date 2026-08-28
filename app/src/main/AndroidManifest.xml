@@ -74,6 +74,7 @@
         <activity android:name=".PlayerActivity" android:exported="false" android:label="Плеєр" />
         <activity android:name=".ManualDownloadActivity" android:exported="false" android:label="Ручне додавання архіву" />
         <activity android:name=".LibraryToolsActivity" android:exported="false" android:label="Інструменти бібліотеки" />
+        <activity android:name=".RoomLibraryActivity" android:exported="false" android:label="Бібліотека Room" />
 
         <activity
             android:name=".MainActivity"

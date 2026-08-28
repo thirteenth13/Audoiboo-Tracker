@@ -29,19 +29,7 @@ object BackupStore {
         val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportCompatJson(context.applicationContext) } }
             .getOrElse { context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]").orEmpty() }
         root.put("tracker", tracker)
-        root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
-        root.put("playerLibrary", prefsToJson(context, "player_library"))
-        root.put("playerQueue", prefsToJson(context, "player_queue"))
-        if (includeSettings) {
-            root.put("settings", prefsToJson(context, "app_settings"))
-            root.put("playerSettings", prefsToJson(context, "player_settings"))
-            root.put("audioEnhancement", prefsToJson(context, "audio_enhancement"))
-            root.put("seriesAutomation", prefsToJson(context, "series_automation"))
-            root.put("storageAccess", prefsToJson(context, "storage_access"))
-        }
-        if (includeBookmarks || includeStatistics) root.put("playerExtras", prefsToJson(context, "player_extras"))
-        if (includeBookmarks) root.put("bookmarks", prefsToJson(context, "bookmarks"))
-        if (includeStatistics) root.put("playerPositions", prefsToJson(context, "player_positions"))
+        addSharedState(context, root, includeSettings, includeBookmarks, includeStatistics)
         return root.toString(2)
     }
 
@@ -50,6 +38,30 @@ object BackupStore {
         root.put("format", 4)
         root.put("createdAt", System.currentTimeMillis())
         root.put("tracker", LibraryRepository.exportCompatJson(context.applicationContext))
+        addSharedState(context, root, includeSettings, includeBookmarks, includeStatistics)
+        return root.toString(2)
+    }
+
+    fun importJson(context: Context, raw: String) {
+        val root = JSONObject(raw)
+        val tracker = root.optString("tracker", "[]")
+        context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
+        restoreNonTrackerState(context, root)
+        restoreScope.launch { runCatching { LibraryRepository.restoreLegacyJson(context.applicationContext, tracker) } }
+        recoverAfterRestore(context)
+    }
+
+    /** Used by network/cloud restores so success is returned only after Room is fully updated. */
+    suspend fun importJsonToRoom(context: Context, raw: String) {
+        val root = JSONObject(raw)
+        val tracker = root.optString("tracker", "[]")
+        context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
+        restoreNonTrackerState(context, root)
+        LibraryRepository.restoreLegacyJson(context.applicationContext, tracker)
+        recoverAfterRestore(context)
+    }
+
+    private fun addSharedState(context: Context, root: JSONObject, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean) {
         root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
         root.put("playerLibrary", prefsToJson(context, "player_library"))
         root.put("playerQueue", prefsToJson(context, "player_queue"))
@@ -63,14 +75,9 @@ object BackupStore {
         if (includeBookmarks || includeStatistics) root.put("playerExtras", prefsToJson(context, "player_extras"))
         if (includeBookmarks) root.put("bookmarks", prefsToJson(context, "bookmarks"))
         if (includeStatistics) root.put("playerPositions", prefsToJson(context, "player_positions"))
-        return root.toString(2)
     }
 
-    fun importJson(context: Context, raw: String) {
-        val root = JSONObject(raw)
-        val tracker = root.optString("tracker", "[]")
-        context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
-        restoreScope.launch { runCatching { LibraryRepository.restoreLegacyJson(context.applicationContext, tracker) } }
+    private fun restoreNonTrackerState(context: Context, root: JSONObject) {
         context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).edit().putString("items", root.optString("downloads", "[]")).apply()
         root.optJSONObject("settings")?.let { jsonToPrefs(context, "app_settings", it) }
         root.optJSONObject("playerSettings")?.let { jsonToPrefs(context, "player_settings", it) }
@@ -81,6 +88,9 @@ object BackupStore {
         root.optJSONObject("playerLibrary")?.let { jsonToPrefs(context, "player_library", it) }
         root.optJSONObject("playerQueue")?.let { jsonToPrefs(context, "player_queue", it) }
         root.optJSONObject("playerExtras")?.let { jsonToPrefs(context, "player_extras", it) }
+    }
+
+    private fun recoverAfterRestore(context: Context) {
         DownloadScheduler.recover(context)
         SeriesAutomationPrefs.schedule(context)
     }

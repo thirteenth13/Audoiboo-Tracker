@@ -11,6 +11,8 @@ import java.util.Locale
 object BackupStore {
     private const val AUTO_PREFS = "automatic_backups"
     private const val LAST_AUTO = "last_auto_backup"
+    private const val AUTO_PATH = "auto_backup_path"
+    const val DEFAULT_AUTO_PATH = "/storage/emulated/0/Download/Audoiboo/"
 
     fun exportJson(context: Context): String = exportJson(context, true, true, true)
 
@@ -32,15 +34,21 @@ object BackupStore {
 
     fun importJson(context: Context, raw: String) {
         val root = JSONObject(raw)
-        context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit()
-            .putString("library", root.optString("tracker", "[]")).apply()
-        context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).edit()
-            .putString("items", root.optString("downloads", "[]")).apply()
+        context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", root.optString("tracker", "[]")).apply()
+        context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).edit().putString("items", root.optString("downloads", "[]")).apply()
         root.optJSONObject("settings")?.let { jsonToPrefs(context, "app_settings", it) }
         root.optJSONObject("playerSettings")?.let { jsonToPrefs(context, "player_settings", it) }
         root.optJSONObject("bookmarks")?.let { jsonToPrefs(context, "bookmarks", it) }
         root.optJSONObject("playerPositions")?.let { jsonToPrefs(context, "player_positions", it) }
         root.optJSONObject("playerLibrary")?.let { jsonToPrefs(context, "player_library", it) }
+    }
+
+    fun automaticBackupPath(context: Context): String = context.getSharedPreferences(AUTO_PREFS, Context.MODE_PRIVATE)
+        .getString(AUTO_PATH, DEFAULT_AUTO_PATH)?.trim()?.ifBlank { DEFAULT_AUTO_PATH } ?: DEFAULT_AUTO_PATH
+
+    fun setAutomaticBackupPath(context: Context, path: String) {
+        val normalized = path.trim().ifBlank { DEFAULT_AUTO_PATH }.let { if (it.endsWith('/')) it else "$it/" }
+        context.getSharedPreferences(AUTO_PREFS, Context.MODE_PRIVATE).edit().putString(AUTO_PATH, normalized).apply()
     }
 
     fun maybeCreateDailyBackup(context: Context) {
@@ -53,11 +61,12 @@ object BackupStore {
         val last = p.getLong(LAST_AUTO, 0L)
         if (now - last < 24L * 60L * 60L * 1000L) return
         runCatching {
-            val root = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
-            val dir = File(root, "AudoibooBackups").apply { mkdirs() }
+            val requested = automaticBackupPath(context)
+            val dir = File(requested).apply { mkdirs() }
+            val writableDir = if (dir.exists() && dir.canWrite()) dir else File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir, "AudoibooBackups").apply { mkdirs() }
             val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US).format(Date(now))
-            File(dir, "Audoiboo-auto-$stamp.json").writeText(exportJson(context, settings, bookmarks, statistics))
-            dir.listFiles()?.filter { it.name.startsWith("Audoiboo-auto-") }?.sortedByDescending { it.lastModified() }?.drop(7)?.forEach { it.delete() }
+            File(writableDir, "Audoiboo-auto-$stamp.json").writeText(exportJson(context, settings, bookmarks, statistics))
+            writableDir.listFiles()?.filter { it.name.startsWith("Audoiboo-auto-") }?.sortedByDescending { it.lastModified() }?.drop(7)?.forEach { it.delete() }
             p.edit().putLong(LAST_AUTO, now).apply()
         }
     }
@@ -68,20 +77,12 @@ object BackupStore {
     }
 
     fun setAutomaticSettings(context: Context, settings: Boolean, bookmarks: Boolean, statistics: Boolean) {
-        context.getSharedPreferences(AUTO_PREFS, Context.MODE_PRIVATE).edit()
-            .putBoolean("settings", settings)
-            .putBoolean("bookmarks", bookmarks)
-            .putBoolean("statistics", statistics)
-            .apply()
+        context.getSharedPreferences(AUTO_PREFS, Context.MODE_PRIVATE).edit().putBoolean("settings", settings).putBoolean("bookmarks", bookmarks).putBoolean("statistics", statistics).apply()
     }
 
     private fun prefsToJson(context: Context, name: String): JSONObject {
         val out = JSONObject()
-        context.getSharedPreferences(name, Context.MODE_PRIVATE).all.forEach { (k, v) ->
-            when (v) {
-                is Boolean, is Int, is Long, is Float, is String -> out.put(k, v)
-            }
-        }
+        context.getSharedPreferences(name, Context.MODE_PRIVATE).all.forEach { (k, v) -> when (v) { is Boolean, is Int, is Long, is Float, is String -> out.put(k, v) } }
         return out
     }
 
@@ -90,13 +91,7 @@ object BackupStore {
         val keys = obj.keys()
         while (keys.hasNext()) {
             val k = keys.next()
-            when (val v = obj.get(k)) {
-                is Boolean -> e.putBoolean(k, v)
-                is Int -> e.putInt(k, v)
-                is Long -> e.putLong(k, v)
-                is Double -> e.putFloat(k, v.toFloat())
-                is String -> e.putString(k, v)
-            }
+            when (val v = obj.get(k)) { is Boolean -> e.putBoolean(k, v); is Int -> e.putInt(k, v); is Long -> e.putLong(k, v); is Double -> e.putFloat(k, v.toFloat()); is String -> e.putString(k, v) }
         }
         e.apply()
     }

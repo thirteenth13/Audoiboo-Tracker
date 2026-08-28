@@ -67,6 +67,15 @@ interface LibraryDao {
     @Query("SELECT * FROM books ORDER BY updatedAt DESC") fun pagedBooks(): PagingSource<Int, BookEntity>
     @Query("SELECT * FROM books WHERE title LIKE '%' || :query || '%' OR author LIKE '%' || :query || '%' ORDER BY title COLLATE NOCASE") fun searchBooks(query: String): PagingSource<Int, BookEntity>
     @Query("SELECT DISTINCT books.* FROM books LEFT JOIN book_tags ON books.id=book_tags.bookId LEFT JOIN tags ON tags.id=book_tags.tagId WHERE books.title LIKE '%' || :query || '%' OR books.author LIKE '%' || :query || '%' OR tags.name LIKE '%' || :query || '%' ORDER BY books.title COLLATE NOCASE") fun searchBooksAndTags(query: String): PagingSource<Int, BookEntity>
+    @Query("""
+        SELECT DISTINCT books.* FROM books
+        LEFT JOIN book_tags ON books.id = book_tags.bookId
+        LEFT JOIN tags ON tags.id = book_tags.tagId
+        WHERE (:status = '' OR books.status = :status)
+          AND (:tagMode = 0 OR (:tagMode = 1 AND book_tags.bookId IS NOT NULL) OR (:tagMode = 2 AND book_tags.bookId IS NULL))
+          AND (:query = '' OR books.title LIKE '%' || :query || '%' OR books.author LIKE '%' || :query || '%' OR tags.name LIKE '%' || :query || '%')
+        ORDER BY books.updatedAt DESC, books.title COLLATE NOCASE
+    """) fun pagedFilteredBooks(query: String, status: String, tagMode: Int): PagingSource<Int, BookEntity>
     @Upsert suspend fun upsertSeries(series: SeriesEntity)
     @Upsert suspend fun upsertBooks(books: List<BookEntity>)
     @Query("DELETE FROM books WHERE seriesId = :seriesId AND id NOT IN (:keepIds)") suspend fun deleteMissingBooks(seriesId: String, keepIds: List<String>)

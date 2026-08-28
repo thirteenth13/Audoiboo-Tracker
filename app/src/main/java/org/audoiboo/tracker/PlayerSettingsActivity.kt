@@ -58,6 +58,10 @@ private fun PlayerSettingsScreen(activity: ComponentActivity) {
             SettingSwitch("Кнопка закладок", "Дозволяє позначати цікаві моменти", bookmarks) { bookmarks=it;save() }
             HorizontalDivider()
             OutlinedButton(
+                onClick = { activity.startActivity(Intent(activity, SeriesPlaybackSettingsActivity::class.java)) },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
+            ) { Text("Швидкість за замовчуванням для серій") }
+            OutlinedButton(
                 onClick = { activity.startActivity(Intent(activity, SleepTimerActivity::class.java)) },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
             ) { Text("Розширений таймер сну") }

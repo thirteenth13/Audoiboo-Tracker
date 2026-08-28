@@ -31,7 +31,7 @@ class RoomLibraryActivity : ComponentActivity() {
     }
 }
 
-private enum class RoomLibraryTab { SERIES, BOOKS }
+private enum class RoomLibraryTab { SERIES, BOOKS, DOWNLOADS }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,14 +47,13 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (series != null) series.series.name else "Бібліотека Room") },
+                title = { Text(if (series != null) series.series.name else when (tab) { RoomLibraryTab.DOWNLOADS -> "Завантаження"; else -> "Audoiboo Tracker" }) },
                 navigationIcon = {
                     if (series != null) IconButton(onClick = { selectedSeries = null }) { Icon(Icons.Filled.ArrowBack, "Назад") }
-                    else IconButton(onClick = { activity.finish() }) { Icon(Icons.Filled.Close, "Закрити") }
                 },
                 actions = {
                     IconButton(onClick = { activity.startActivity(Intent(activity, PlayerActivity::class.java)) }) { Icon(Icons.Filled.Headphones, "Плеєр") }
-                    IconButton(onClick = { activity.startActivity(Intent(activity, MainActivity::class.java)) }) { Icon(Icons.Filled.Public, "Керування серіями та браузер") }
+                    IconButton(onClick = { activity.startActivity(Intent(activity, MainActivity::class.java)) }) { Icon(Icons.Filled.Public, "Audioboo браузер і керування") }
                     IconButton(onClick = { activity.startActivity(Intent(activity, SettingsActivity::class.java)) }) { Icon(Icons.Filled.Settings, "Налаштування") }
                 }
             )
@@ -62,12 +61,13 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
         bottomBar = {
             if (series == null) NavigationBar {
                 NavigationBarItem(tab == RoomLibraryTab.SERIES, { tab = RoomLibraryTab.SERIES }, { Icon(Icons.Filled.MenuBook, null) }, label = { Text("Серії") })
-                NavigationBarItem(tab == RoomLibraryTab.BOOKS, { tab = RoomLibraryTab.BOOKS }, { Icon(Icons.Filled.LibraryBooks, null) }, label = { Text("Усі книги") })
+                NavigationBarItem(tab == RoomLibraryTab.BOOKS, { tab = RoomLibraryTab.BOOKS }, { Icon(Icons.Filled.LibraryBooks, null) }, label = { Text("Книги") })
+                NavigationBarItem(tab == RoomLibraryTab.DOWNLOADS, { tab = RoomLibraryTab.DOWNLOADS }, { Icon(Icons.Filled.Download, null) }, label = { Text("Завантаження") })
             }
         }
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            if (series == null) {
+            if (series == null && tab != RoomLibraryTab.DOWNLOADS) {
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
@@ -80,6 +80,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
             when {
                 series != null -> RoomSeriesDetail(series)
                 tab == RoomLibraryTab.SERIES -> RoomSeriesList(library.filter { query.isBlank() || it.series.name.contains(query, true) }, onOpen = { selectedSeries = it })
+                tab == RoomLibraryTab.DOWNLOADS -> ManagedDownloadsScreen(activity)
                 else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(paged.itemCount) { index -> paged[index]?.let { RoomBookCard(it, seriesName = library.firstOrNull { s -> s.series.id == it.seriesId }?.series?.name) } }
                     if (paged.loadState.refresh is androidx.paging.LoadState.Loading) item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
@@ -95,7 +96,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
 @Composable
 private fun RoomSeriesList(library: List<SeriesWithBooks>, onOpen: (String) -> Unit) {
     if (library.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("У Room ще немає серій") }
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Ще немає доданих серій") }
         return
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -148,9 +149,7 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
             }
             Column {
                 IconButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(book.url))) }) { Icon(Icons.Filled.OpenInBrowser, "Сторінка") }
-                if (!book.archiveUrl.isNullOrBlank()) IconButton(onClick = {
-                    ManagedDownloads.enqueue(context, book.title, seriesName ?: "Без серії", book.author, book.url, book.archiveUrl)
-                }) { Icon(Icons.Filled.CloudDownload, "Завантажити") }
+                if (!book.archiveUrl.isNullOrBlank()) IconButton(onClick = { ManagedDownloads.enqueue(context, book.title, seriesName ?: "Без серії", book.author, book.url, book.archiveUrl) }) { Icon(Icons.Filled.CloudDownload, "Завантажити") }
             }
         }
     }

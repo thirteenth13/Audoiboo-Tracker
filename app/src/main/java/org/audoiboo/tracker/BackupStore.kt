@@ -26,8 +26,7 @@ object BackupStore {
         val root = JSONObject()
         root.put("format", 4)
         root.put("createdAt", System.currentTimeMillis())
-        // Room is the source of truth. Keep the existing format-4 tracker payload for backwards compatibility.
-        val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.mirrorLegacy(context.applicationContext) } }
+        val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportCompatJson(context.applicationContext) } }
             .getOrElse { context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]").orEmpty() }
         root.put("tracker", tracker)
         root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
@@ -50,7 +49,7 @@ object BackupStore {
         val root = JSONObject()
         root.put("format", 4)
         root.put("createdAt", System.currentTimeMillis())
-        root.put("tracker", LibraryRepository.mirrorLegacy(context.applicationContext))
+        root.put("tracker", LibraryRepository.exportCompatJson(context.applicationContext))
         root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
         root.put("playerLibrary", prefsToJson(context, "player_library"))
         root.put("playerQueue", prefsToJson(context, "player_queue"))

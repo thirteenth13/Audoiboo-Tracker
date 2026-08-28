@@ -29,7 +29,20 @@ object LibraryRepository {
     }
 
     suspend fun setBookTags(context: Context, bookId: String, tags: List<String>) = withContext(Dispatchers.IO) {
-        AudoibooDatabase.get(context).libraryDao().setBookTags(bookId, tags)
+        val dao = AudoibooDatabase.get(context).libraryDao()
+        dao.setBookTags(bookId, tags)
+    }
+
+    suspend fun updateBookStatus(context: Context, bookId: String, status: String) = withContext(Dispatchers.IO) {
+        val dao = AudoibooDatabase.get(context).libraryDao()
+        dao.updateBookStatus(bookId, status)
+        writeLegacy(context, dao.library())
+    }
+
+    suspend fun updateBookArchive(context: Context, bookId: String, archiveUrl: String?) = withContext(Dispatchers.IO) {
+        val dao = AudoibooDatabase.get(context).libraryDao()
+        dao.updateBookArchive(bookId, archiveUrl)
+        writeLegacy(context, dao.library())
     }
 
     suspend fun snapshot(context: Context): List<SeriesWithBooks> = withContext(Dispatchers.IO) {

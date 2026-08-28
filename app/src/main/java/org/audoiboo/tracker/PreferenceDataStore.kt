@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.audoibooDataStore by preferencesDataStore(name = "audoiboo_settings")
@@ -16,6 +17,7 @@ data class ModernSettings(
 )
 
 object PreferenceDataStore {
+    private const val LEGACY_FILE = "app_settings"
     private val WIFI_ONLY = booleanPreferencesKey("wifi_only")
     private val AUTO_ARCHIVES = booleanPreferencesKey("auto_find_archives")
     private val DARK_THEME = booleanPreferencesKey("dark_theme")
@@ -39,15 +41,30 @@ object PreferenceDataStore {
         }
     }
 
-    /**
-     * Transition bridge: while SettingsActivity still writes SharedPreferences, keep DataStore
-     * synchronized so new readers can be switched over independently without stale values.
-     */
     suspend fun syncFromLegacy(context: Context) {
         context.audoibooDataStore.edit { p ->
             copyLegacy(context, p)
             p[LEGACY_IMPORTED] = true
         }
+    }
+
+    /** Prefer existing legacy values during migration, but recover them from DataStore if the old file is gone. */
+    suspend fun reconcile(context: Context) {
+        val legacy = context.getSharedPreferences(LEGACY_FILE, Context.MODE_PRIVATE)
+        if (legacy.all.isNotEmpty()) {
+            syncFromLegacy(context)
+            return
+        }
+        val p = context.audoibooDataStore.data.first()
+        if (p[LEGACY_IMPORTED] != true) {
+            importLegacyIfNeeded(context)
+            return
+        }
+        legacy.edit()
+            .putBoolean("wifi_only", p[WIFI_ONLY] ?: false)
+            .putBoolean("auto_find_archives", p[AUTO_ARCHIVES] ?: true)
+            .putBoolean("dark_theme", p[DARK_THEME] ?: false)
+            .apply()
     }
 
     private fun copyLegacy(context: Context, p: MutablePreferences) {

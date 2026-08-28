@@ -20,6 +20,7 @@ internal object PlayerExtras {
     private const val BOOKMARKS = "bookmarks_v2"
     private const val SNAPSHOT = "playback_snapshot"
     private const val SPEEDS = "book_speeds"
+    private const val SERIES_SPEEDS = "series_speeds"
     private const val BROKEN = "broken_uris"
     private const val DAILY = "daily_listened"
     private const val TAGS = "book_tags"
@@ -136,8 +137,14 @@ internal object PlayerExtras {
 
     fun speedFor(context: Context, dir: String?): Float {
         if (dir.isNullOrBlank()) return 1f
-        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(SPEEDS, "{}")
-        return runCatching { JSONObject(raw).optDouble(dir, 1.0).toFloat().coerceIn(.5f, 3f) }.getOrDefault(1f)
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val bookSpeeds = runCatching { JSONObject(p.getString(SPEEDS, "{}")) }.getOrElse { JSONObject() }
+        if (bookSpeeds.has(dir)) return bookSpeeds.optDouble(dir, 1.0).toFloat().coerceIn(.5f, 3f)
+        val normalizedDir = dir.replace('\\', '/').trimEnd('/')
+        val series = PlayerLibrary.all(context).firstOrNull {
+            it.relativePath.replace('\\', '/').trimEnd('/') == normalizedDir
+        }?.series?.takeIf { it.isNotBlank() } ?: return 1f
+        return seriesSpeedFor(context, series)
     }
 
     fun setSpeed(context: Context, dir: String, speed: Float) {
@@ -145,6 +152,27 @@ internal object PlayerExtras {
         val o = runCatching { JSONObject(p.getString(SPEEDS, "{}")) }.getOrElse { JSONObject() }
         o.put(dir, speed.coerceIn(.5f, 3f).toDouble())
         p.edit().putString(SPEEDS, o.toString()).apply()
+    }
+
+    fun clearBookSpeed(context: Context, dir: String) {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val o = runCatching { JSONObject(p.getString(SPEEDS, "{}")) }.getOrElse { JSONObject() }
+        o.remove(dir)
+        p.edit().putString(SPEEDS, o.toString()).apply()
+    }
+
+    fun seriesSpeedFor(context: Context, series: String): Float {
+        if (series.isBlank()) return 1f
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(SERIES_SPEEDS, "{}")
+        return runCatching { JSONObject(raw).optDouble(series, 1.0).toFloat().coerceIn(.5f, 3f) }.getOrDefault(1f)
+    }
+
+    fun setSeriesSpeed(context: Context, series: String, speed: Float) {
+        if (series.isBlank()) return
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val o = runCatching { JSONObject(p.getString(SERIES_SPEEDS, "{}")) }.getOrElse { JSONObject() }
+        o.put(series, speed.coerceIn(.5f, 3f).toDouble())
+        p.edit().putString(SERIES_SPEEDS, o.toString()).apply()
     }
 
     fun markBroken(context: Context, uri: Uri) {

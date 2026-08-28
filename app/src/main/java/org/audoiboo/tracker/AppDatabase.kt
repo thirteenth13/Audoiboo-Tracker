@@ -67,6 +67,21 @@ interface LibraryDao {
 
     @Query("SELECT COUNT(*) FROM series")
     suspend fun seriesCount(): Int
+
+    @Transaction
+    suspend fun replaceLibrary(items: List<SeriesWithBooks>) {
+        val currentIds = library().map { it.series.id }.toSet()
+        val incomingIds = items.map { it.series.id }.toSet()
+        (currentIds - incomingIds).forEach { deleteSeries(it) }
+        val now = System.currentTimeMillis()
+        items.forEach { item ->
+            upsertSeries(item.series.copy(updatedAt = now))
+            deleteBooksForSeries(item.series.id)
+            upsertBooks(item.books.mapIndexed { index, book ->
+                book.copy(seriesId = item.series.id, sortIndex = index, updatedAt = now)
+            })
+        }
+    }
 }
 
 @Database(entities = [SeriesEntity::class, BookEntity::class], version = 1, exportSchema = false)

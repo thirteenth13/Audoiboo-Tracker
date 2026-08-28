@@ -68,6 +68,13 @@ data class DailyListeningEntity(@PrimaryKey val day: String, val listenedMs: Lon
 @Entity(tableName = "listening_totals")
 data class ListeningTotalEntity(@PrimaryKey val key: String = "total", val listenedMs: Long)
 
+@Entity(tableName = "track_positions", indices = [Index("updatedAt")])
+data class TrackPositionEntity(
+    @PrimaryKey val uri: String,
+    val positionMs: Long,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
 data class SeriesWithBooks(@Embedded val series: SeriesEntity, @Relation(parentColumn = "id", entityColumn = "seriesId") val books: List<BookEntity>)
 
 data class BookWithTags(
@@ -135,6 +142,12 @@ interface LibraryDao {
     @Query("SELECT * FROM listening_totals WHERE `key`='total' LIMIT 1") suspend fun listeningTotal(): ListeningTotalEntity?
     @Upsert suspend fun upsertListeningTotal(value: ListeningTotalEntity)
 
+    @Query("SELECT * FROM track_positions") fun observeTrackPositions(): Flow<List<TrackPositionEntity>>
+    @Query("SELECT * FROM track_positions WHERE uri=:uri LIMIT 1") suspend fun trackPosition(uri: String): TrackPositionEntity?
+    @Query("SELECT * FROM track_positions") suspend fun trackPositions(): List<TrackPositionEntity>
+    @Upsert suspend fun upsertTrackPosition(value: TrackPositionEntity)
+    @Upsert suspend fun upsertTrackPositions(values: List<TrackPositionEntity>)
+
     @Transaction
     suspend fun replacePlaybackQueue(dirs: List<String>) {
         clearPlaybackQueue()
@@ -190,9 +203,10 @@ interface LibraryDao {
     entities = [
         SeriesEntity::class, BookEntity::class, TagEntity::class, BookTagCrossRef::class,
         PlaybackQueueEntity::class, PlaybackResumeEntity::class, PlaybackHistoryEntity::class,
-        PlayerBookmarkEntity::class, DailyListeningEntity::class, ListeningTotalEntity::class
+        PlayerBookmarkEntity::class, DailyListeningEntity::class, ListeningTotalEntity::class,
+        TrackPositionEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AudoibooDatabase : RoomDatabase() {
@@ -225,10 +239,16 @@ abstract class AudoibooDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `listening_totals` (`key` TEXT NOT NULL, `listenedMs` INTEGER NOT NULL, PRIMARY KEY(`key`))")
             }
         }
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `track_positions` (`uri` TEXT NOT NULL, `positionMs` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`uri`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_track_positions_updatedAt` ON `track_positions` (`updatedAt`)")
+            }
+        }
         @Volatile private var instance: AudoibooDatabase? = null
         fun get(context: Context): AudoibooDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AudoibooDatabase::class.java, "audoiboo.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build().also { instance = it }
         }
     }

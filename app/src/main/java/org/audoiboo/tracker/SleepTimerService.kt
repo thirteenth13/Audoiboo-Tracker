@@ -172,15 +172,7 @@ class SleepTimerService : Service() {
     }
 
     private fun evaluateEnded() {
-        when (state.mode) {
-            SleepTimerMode.TRACK, SleepTimerMode.BOOK -> reachTarget()
-            SleepTimerMode.SERIES -> {
-                // Keep the guard alive briefly: PlayerActivity may load the next queued book after STATE_ENDED.
-                reachedAt = System.currentTimeMillis()
-                controller?.pause()
-            }
-            else -> Unit
-        }
+        if (state.mode in setOf(SleepTimerMode.TRACK, SleepTimerMode.BOOK, SleepTimerMode.SERIES)) reachTarget()
     }
 
     private fun tick() {
@@ -194,12 +186,13 @@ class SleepTimerService : Service() {
             }
             if (c != null) c.volume = if (remaining <= 30_000L) (remaining / 30_000f).coerceIn(0.05f, 1f) else 1f
         }
-        if (state.mode == SleepTimerMode.SERIES && reachedAt > 0L) {
+        if (state.mode in setOf(SleepTimerMode.TRACK, SleepTimerMode.BOOK, SleepTimerMode.SERIES) && reachedAt > 0L) {
+            // PlayerActivity can react to STATE_ENDED at nearly the same time and try to start the next queued item.
+            // Keep pausing for a short guard window so the sleep target wins that race.
             c?.pause()
             if (now - reachedAt >= 10_000L) finishTimer()
         }
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, notification())
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification())
     }
 
     private fun reachTarget() {
@@ -207,8 +200,7 @@ class SleepTimerService : Service() {
         reachedAt = System.currentTimeMillis()
         controller?.pause()
         controller?.volume = 1f
-        if (state.mode == SleepTimerMode.SERIES) return
-        finishTimer()
+        if (state.mode == SleepTimerMode.MINUTES) finishTimer()
     }
 
     private fun finishTimer() {
@@ -216,6 +208,7 @@ class SleepTimerService : Service() {
         controller?.volume = 1f
         SleepTimerStore.clear(this)
         state = SleepTimerStore.state(this)
+        reachedAt = 0L
         handler.removeCallbacks(ticker)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -225,6 +218,7 @@ class SleepTimerService : Service() {
         controller?.volume = 1f
         SleepTimerStore.clear(this)
         state = SleepTimerStore.state(this)
+        reachedAt = 0L
         handler.removeCallbacks(ticker)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

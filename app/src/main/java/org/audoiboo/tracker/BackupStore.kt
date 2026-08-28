@@ -53,13 +53,10 @@ object BackupStore {
         restoreNonTrackerState(context, root)
         restoreScope.launch {
             runCatching {
-                LibraryRepository.restoreLegacyJson(context.applicationContext, tracker)
-                LibraryRepository.restoreTagsJson(context.applicationContext, roomTags)
-                PlayerExtrasRoomSync.syncFromLegacy(context.applicationContext)
-                RoomCoverSync.enqueueAll(context.applicationContext)
+                reconcileRestoredState(context.applicationContext, tracker, roomTags)
+                recoverAfterRestore(context.applicationContext)
             }
         }
-        recoverAfterRestore(context)
     }
 
     suspend fun importJsonToRoom(context: Context, raw: String) {
@@ -68,11 +65,17 @@ object BackupStore {
         val roomTags = root.optJSONObject("roomTags")
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreNonTrackerState(context, root)
-        LibraryRepository.restoreLegacyJson(context.applicationContext, tracker)
-        LibraryRepository.restoreTagsJson(context.applicationContext, roomTags)
-        PlayerExtrasRoomSync.syncFromLegacy(context.applicationContext)
-        RoomCoverSync.enqueueAll(context.applicationContext)
+        reconcileRestoredState(context.applicationContext, tracker, roomTags)
         recoverAfterRestore(context)
+    }
+
+    private suspend fun reconcileRestoredState(context: Context, tracker: String, roomTags: JSONObject?) {
+        LibraryRepository.restoreLegacyJson(context, tracker)
+        LibraryRepository.restoreTagsJson(context, roomTags)
+        PlaybackStateRepository.syncFromLegacy(context)
+        PreferenceDataStore.syncFromLegacy(context)
+        PlayerExtrasRoomSync.syncFromLegacy(context)
+        RoomCoverSync.enqueueAll(context)
     }
 
     private fun addSharedState(context: Context, root: JSONObject, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean) {
@@ -107,6 +110,7 @@ object BackupStore {
     private fun recoverAfterRestore(context: Context) {
         DownloadScheduler.recover(context)
         SeriesAutomationPrefs.schedule(context)
+        WebDavSync.schedule(context)
     }
 
     fun automaticBackupPath(context: Context): String = context.getSharedPreferences(AUTO_PREFS, Context.MODE_PRIVATE)

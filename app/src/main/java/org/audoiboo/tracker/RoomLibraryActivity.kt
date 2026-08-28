@@ -7,9 +7,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -39,13 +41,14 @@ private enum class RoomLibraryTab { SERIES, BOOKS, DOWNLOADS }
 private fun RoomLibraryScreen(activity: ComponentActivity) {
     var tab by remember { mutableStateOf(RoomLibraryTab.SERIES) }
     var query by remember { mutableStateOf("") }
+    var bookFilter by remember { mutableStateOf(RoomBookFilter.ALL) }
     var selectedSeries by remember { mutableStateOf<String?>(null) }
     var showAdd by remember { mutableStateOf(false) }
     var addUrl by remember { mutableStateOf("") }
     var syncing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val library by LibraryRepository.observe(activity).collectAsState(initial = emptyList())
-    val pagingFlow = remember(query) { LibraryRepository.pagedBooks(activity, query) }
+    val pagingFlow = remember(query, bookFilter) { LibraryRepository.pagedBooks(activity, query, bookFilter) }
     val paged = pagingFlow.collectAsLazyPagingItems()
     val series = library.firstOrNull { it.series.id == selectedSeries }
 
@@ -99,6 +102,14 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
                     leadingIcon = { Icon(Icons.Filled.Search, null) },
                     label = { Text(if (tab == RoomLibraryTab.BOOKS) "Книга, автор або тег" else "Пошук серії") }
                 )
+                if (tab == RoomLibraryTab.BOOKS) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RoomBookFilter.entries.forEach { filter ->
+                            FilterChip(selected = bookFilter == filter, onClick = { bookFilter = filter }, label = { Text(roomFilterLabel(filter)) })
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
             }
             when {
                 series != null -> RoomSeriesDetail(series)
@@ -199,6 +210,15 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
         }) { Text("Зберегти") } },
         dismissButton = { TextButton(onClick = { editTags = false }) { Text("Скасувати") } }
     )
+}
+
+private fun roomFilterLabel(filter: RoomBookFilter): String = when (filter) {
+    RoomBookFilter.ALL -> "Усі"
+    RoomBookFilter.NEW -> "Нові"
+    RoomBookFilter.READING -> "Читаю"
+    RoomBookFilter.READ -> "Прочитані"
+    RoomBookFilter.TAGGED -> "З тегами"
+    RoomBookFilter.UNTAGGED -> "Без тегів"
 }
 
 private fun nextRoomStatus(status: String): String = when (status.uppercase()) {

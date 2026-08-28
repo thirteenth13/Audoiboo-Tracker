@@ -22,6 +22,8 @@
 
         <activity android:name=".DiagnosticActivity" android:exported="false" android:label="Audoiboo DOM" />
         <activity android:name=".SettingsActivity" android:exported="false" android:label="Налаштування" />
+        <activity android:name=".PlayerSettingsActivity" android:exported="false" android:label="Налаштування плеєра" />
+        <activity android:name=".PlayerActivity" android:exported="false" android:label="Плеєр" />
 
         <activity
             android:name=".MainActivity"

@@ -43,6 +43,14 @@ object LibraryRepository {
         writeLegacy(context, dao.library())
     }
 
+    suspend fun mirrorLegacy(context: Context, library: List<SeriesWithBooks>? = null): String = withContext(Dispatchers.IO) {
+        val items = library ?: AudoibooDatabase.get(context).libraryDao().library()
+        legacyJson(items).also { raw ->
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            if (prefs.getString(KEY, null) != raw) prefs.edit().putString(KEY, raw).apply()
+        }
+    }
+
     suspend fun restoreLegacyJson(context: Context, raw: String) = withContext(Dispatchers.IO) {
         val root = runCatching { JSONArray(raw) }.getOrElse { JSONArray() }
         val library = (0 until root.length()).mapNotNull { i ->
@@ -74,6 +82,12 @@ object LibraryRepository {
     }
 
     private fun writeLegacy(context: Context, library: List<SeriesWithBooks>) {
+        val raw = legacyJson(library)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getString(KEY, null) != raw) prefs.edit().putString(KEY, raw).apply()
+    }
+
+    private fun legacyJson(library: List<SeriesWithBooks>): String {
         val root = JSONArray()
         library.forEach { item ->
             val books = JSONArray()
@@ -83,6 +97,6 @@ object LibraryRepository {
             }
             root.put(JSONObject().put("id", item.series.id).put("name", item.series.name).put("url", item.series.url).put("books", books))
         }
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, root.toString()).apply()
+        return root.toString()
     }
 }

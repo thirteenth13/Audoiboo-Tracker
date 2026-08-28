@@ -15,7 +15,7 @@ class AudoibooApp : Application() {
     private lateinit var playerQueuePrefs: SharedPreferences
     private lateinit var appSettingsPrefs: SharedPreferences
     private var trackerBridge: LegacyTrackerBridge? = null
-    private var legacyActivityCount = 0
+    private var legacyConsumerCount = 0
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val playerExtrasListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -38,19 +38,22 @@ class AudoibooApp : Application() {
         }
     }
 
+    private fun isLegacyTrackerConsumer(activity: Activity): Boolean =
+        activity is MainActivity || activity is PlayerActivity
+
     private val legacyLifecycle = object : ActivityLifecycleCallbacks {
         override fun onActivityStarted(activity: Activity) {
-            if (activity !is MainActivity) return
-            legacyActivityCount++
-            if (legacyActivityCount == 1) {
+            if (!isLegacyTrackerConsumer(activity)) return
+            legacyConsumerCount++
+            if (legacyConsumerCount == 1) {
                 trackerBridge = LegacyTrackerBridge(applicationContext).also { it.start() }
             }
         }
 
         override fun onActivityStopped(activity: Activity) {
-            if (activity !is MainActivity) return
-            legacyActivityCount = (legacyActivityCount - 1).coerceAtLeast(0)
-            if (legacyActivityCount == 0) {
+            if (!isLegacyTrackerConsumer(activity)) return
+            legacyConsumerCount = (legacyConsumerCount - 1).coerceAtLeast(0)
+            if (legacyConsumerCount == 0) {
                 trackerBridge?.stop()
                 trackerBridge = null
             }

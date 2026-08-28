@@ -66,6 +66,10 @@ private fun PlayerSettingsScreen(activity: ComponentActivity) {
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
             ) { Text("Детальна статистика прослуховування") }
             OutlinedButton(
+                onClick = { activity.startActivity(Intent(activity, QueueEditorActivity::class.java)) },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
+            ) { Text("Черга — перетягування книг") }
+            OutlinedButton(
                 onClick = { activity.startActivity(Intent(activity, LibraryToolsActivity::class.java)) },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
             ) { Text("Теги, smart-lists та експорт закладок") }

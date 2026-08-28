@@ -51,7 +51,7 @@ class AudoibooApp : Application() {
         appScope.launch {
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
             runCatching { PreferenceDataStore.importLegacyIfNeeded(this@AudoibooApp) }
-            runCatching { PlaybackStateRepository.syncFromLegacy(this@AudoibooApp) }
+            runCatching { PlaybackStateRepository.reconcile(this@AudoibooApp) }
         }
     }
 }

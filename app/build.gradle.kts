@@ -11,8 +11,8 @@ android {
         applicationId = "org.audoiboo.tracker"
         minSdk = 23
         targetSdk = 37
-        versionCode = 112
-        versionName = "1.1.2-dev"
+        versionCode = 113
+        versionName = "1.1.3-dev"
     }
 
     signingConfigs {
@@ -56,5 +56,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-session:1.8.0")
     implementation("androidx.media3:media3-common:1.8.0")
+    implementation("androidx.work:work-runtime-ktx:2.10.5")
+    implementation("org.jsoup:jsoup:1.21.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

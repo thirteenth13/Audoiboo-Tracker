@@ -37,8 +37,12 @@ internal object CoverCache {
     }
 
     fun remoteUrlFor(context: Context, item: PlayerLibraryItem): String? {
+        val title = item.bookTitle ?: item.relativePath.replace('\\', '/').trimEnd('/').substringAfterLast('/')
+        RoomCoverSync.lookup(context, item.series, title)?.let { return it }
+
+        // Temporary compatibility fallback until the legacy tracker JSON is fully retired.
         val raw = context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]") ?: return null
-        val wantedTitle = normalize(item.bookTitle ?: item.relativePath.replace('\\', '/').trimEnd('/').substringAfterLast('/'))
+        val wantedTitle = normalize(title)
         val wantedSeries = normalize(item.series.orEmpty())
         return runCatching {
             val root = JSONArray(raw)

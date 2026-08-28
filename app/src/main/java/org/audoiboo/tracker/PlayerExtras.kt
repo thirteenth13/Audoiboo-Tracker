@@ -4,6 +4,9 @@ import android.content.Context
 import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /** Persistent audiobook-specific state shared by the player UI and playback service. */
 internal object PlayerExtras {
@@ -15,10 +18,24 @@ internal object PlayerExtras {
     private const val LAST_AT = "last_at"
     private const val LISTENED_MS = "listened_ms"
     private const val BOOKMARKS = "bookmarks_v2"
+    private const val SNAPSHOT = "playback_snapshot"
+    private const val SPEEDS = "book_speeds"
+    private const val BROKEN = "broken_uris"
+    private const val DAILY = "daily_listened"
+    private const val TAGS = "book_tags"
 
     data class Resume(val dir: String, val title: String, val uri: String, val at: Long)
     data class HistoryItem(val dir: String, val title: String, val at: Long)
     data class Bookmark(val uri: String, val position: Long, val note: String, val createdAt: Long)
+    data class PlaybackSnapshot(
+        val dir: String,
+        val title: String,
+        val uri: String,
+        val fileIndex: Int,
+        val positionMs: Long,
+        val queue: List<String>,
+        val updatedAt: Long
+    )
 
     fun rememberBook(context: Context, dir: String, title: String, uri: Uri?) {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -38,6 +55,25 @@ internal object PlayerExtras {
         return Resume(dir, p.getString(LAST_TITLE, dir).orEmpty(), p.getString(LAST_URI, "").orEmpty(), p.getLong(LAST_AT, 0L))
     }
 
+    fun saveSnapshot(context: Context, dir: String, title: String, uri: Uri?, fileIndex: Int, positionMs: Long, queue: List<String>) {
+        if (dir.isBlank()) return
+        val q = JSONArray(); queue.distinct().forEach(q::put)
+        val o = JSONObject()
+            .put("dir", dir).put("title", title).put("uri", uri?.toString().orEmpty())
+            .put("fileIndex", fileIndex).put("positionMs", positionMs.coerceAtLeast(0L))
+            .put("queue", q).put("updatedAt", System.currentTimeMillis())
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(SNAPSHOT, o.toString()).apply()
+    }
+
+    fun snapshot(context: Context): PlaybackSnapshot? = runCatching {
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(SNAPSHOT, null) ?: return null
+        val o = JSONObject(raw); val q = o.optJSONArray("queue") ?: JSONArray()
+        PlaybackSnapshot(
+            o.optString("dir"), o.optString("title"), o.optString("uri"), o.optInt("fileIndex"),
+            o.optLong("positionMs"), (0 until q.length()).mapNotNull { q.optString(it).takeIf(String::isNotBlank) }, o.optLong("updatedAt")
+        ).takeIf { it.dir.isNotBlank() }
+    }.getOrNull()
+
     fun history(context: Context): List<HistoryItem> = runCatching {
         val a = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(HISTORY, "[]"))
         (0 until a.length()).mapNotNull { i -> a.optJSONObject(i)?.let { HistoryItem(it.optString("dir"), it.optString("title"), it.optLong("at")) } }.filter { it.dir.isNotBlank() }
@@ -47,9 +83,19 @@ internal object PlayerExtras {
         if (deltaMs <= 0 || deltaMs > 10_000) return
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         p.edit().putLong(LISTENED_MS, p.getLong(LISTENED_MS, 0L) + deltaMs).apply()
+        val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        val daily = runCatching { JSONObject(p.getString(DAILY, "{}")) }.getOrElse { JSONObject() }
+        daily.put(day, daily.optLong(day) + deltaMs)
+        val keys = daily.keys().asSequence().toList().sortedDescending()
+        keys.drop(120).forEach { daily.remove(it) }
+        p.edit().putString(DAILY, daily.toString()).apply()
     }
 
     fun totalListenedMs(context: Context): Long = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(LISTENED_MS, 0L)
+    fun dailyListened(context: Context): Map<String, Long> = runCatching {
+        val o = JSONObject(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(DAILY, "{}"))
+        o.keys().asSequence().associateWith { o.optLong(it) }
+    }.getOrDefault(emptyMap())
 
     fun smartRewindMs(lastPlayedAt: Long): Long {
         val gap = (System.currentTimeMillis() - lastPlayedAt).coerceAtLeast(0L)
@@ -60,6 +106,44 @@ internal object PlayerExtras {
             else -> 0L
         }
     }
+
+    fun speedFor(context: Context, dir: String?): Float {
+        if (dir.isNullOrBlank()) return 1f
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(SPEEDS, "{}")
+        return runCatching { JSONObject(raw).optDouble(dir, 1.0).toFloat().coerceIn(.5f, 3f) }.getOrDefault(1f)
+    }
+
+    fun setSpeed(context: Context, dir: String, speed: Float) {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val o = runCatching { JSONObject(p.getString(SPEEDS, "{}")) }.getOrElse { JSONObject() }
+        o.put(dir, speed.coerceIn(.5f, 3f).toDouble())
+        p.edit().putString(SPEEDS, o.toString()).apply()
+    }
+
+    fun markBroken(context: Context, uri: Uri) {
+        val set = brokenUris(context).toMutableSet().apply { add(uri.toString()) }
+        val a = JSONArray(); set.forEach(a::put)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(BROKEN, a.toString()).apply()
+    }
+
+    fun clearBroken(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(BROKEN).apply()
+
+    fun brokenUris(context: Context): Set<String> = runCatching {
+        val a = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(BROKEN, "[]"))
+        (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) }.toSet()
+    }.getOrDefault(emptySet())
+
+    fun setTags(context: Context, dir: String, tags: List<String>) {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val o = runCatching { JSONObject(p.getString(TAGS, "{}")) }.getOrElse { JSONObject() }
+        val a = JSONArray(); tags.map { it.trim() }.filter { it.isNotBlank() }.distinct().forEach(a::put)
+        o.put(dir, a); p.edit().putString(TAGS, o.toString()).apply()
+    }
+
+    fun tags(context: Context, dir: String): List<String> = runCatching {
+        val o = JSONObject(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(TAGS, "{}")); val a = o.optJSONArray(dir) ?: JSONArray()
+        (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) }
+    }.getOrDefault(emptyList())
 
     fun addBookmark(context: Context, uri: Uri, position: Long, note: String) {
         val list = bookmarks(context).toMutableList()

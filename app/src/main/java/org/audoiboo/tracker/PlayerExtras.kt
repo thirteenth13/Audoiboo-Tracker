@@ -1,0 +1,95 @@
+package org.audoiboo.tracker
+
+import android.content.Context
+import android.net.Uri
+import org.json.JSONArray
+import org.json.JSONObject
+
+/** Persistent audiobook-specific state shared by the player UI and playback service. */
+internal object PlayerExtras {
+    private const val PREFS = "player_extras"
+    private const val HISTORY = "history"
+    private const val LAST_DIR = "last_book_dir"
+    private const val LAST_TITLE = "last_book_title"
+    private const val LAST_URI = "last_uri"
+    private const val LAST_AT = "last_at"
+    private const val LISTENED_MS = "listened_ms"
+    private const val BOOKMARKS = "bookmarks_v2"
+
+    data class Resume(val dir: String, val title: String, val uri: String, val at: Long)
+    data class HistoryItem(val dir: String, val title: String, val at: Long)
+    data class Bookmark(val uri: String, val position: Long, val note: String, val createdAt: Long)
+
+    fun rememberBook(context: Context, dir: String, title: String, uri: Uri?) {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        p.edit().putString(LAST_DIR, dir).putString(LAST_TITLE, title).putString(LAST_URI, uri?.toString().orEmpty()).putLong(LAST_AT, now).apply()
+        val history = history(context).toMutableList().apply {
+            removeAll { it.dir == dir }
+            add(0, HistoryItem(dir, title, now))
+        }.take(50)
+        val arr = JSONArray(); history.forEach { arr.put(JSONObject().put("dir", it.dir).put("title", it.title).put("at", it.at)) }
+        p.edit().putString(HISTORY, arr.toString()).apply()
+    }
+
+    fun resume(context: Context): Resume? {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val dir = p.getString(LAST_DIR, null)?.takeIf { it.isNotBlank() } ?: return null
+        return Resume(dir, p.getString(LAST_TITLE, dir).orEmpty(), p.getString(LAST_URI, "").orEmpty(), p.getLong(LAST_AT, 0L))
+    }
+
+    fun history(context: Context): List<HistoryItem> = runCatching {
+        val a = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(HISTORY, "[]"))
+        (0 until a.length()).mapNotNull { i -> a.optJSONObject(i)?.let { HistoryItem(it.optString("dir"), it.optString("title"), it.optLong("at")) } }.filter { it.dir.isNotBlank() }
+    }.getOrDefault(emptyList())
+
+    fun addListened(context: Context, deltaMs: Long) {
+        if (deltaMs <= 0 || deltaMs > 10_000) return
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        p.edit().putLong(LISTENED_MS, p.getLong(LISTENED_MS, 0L) + deltaMs).apply()
+    }
+
+    fun totalListenedMs(context: Context): Long = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(LISTENED_MS, 0L)
+
+    fun smartRewindMs(lastPlayedAt: Long): Long {
+        val gap = (System.currentTimeMillis() - lastPlayedAt).coerceAtLeast(0L)
+        return when {
+            gap >= 24 * 60 * 60_000L -> 60_000L
+            gap >= 60 * 60_000L -> 30_000L
+            gap >= 5 * 60_000L -> 10_000L
+            else -> 0L
+        }
+    }
+
+    fun addBookmark(context: Context, uri: Uri, position: Long, note: String) {
+        val list = bookmarks(context).toMutableList()
+        list.add(0, Bookmark(uri.toString(), position, note.trim(), System.currentTimeMillis()))
+        saveBookmarks(context, list.take(500))
+    }
+
+    fun bookmarks(context: Context): List<Bookmark> = runCatching {
+        val a = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(BOOKMARKS, "[]"))
+        (0 until a.length()).mapNotNull { i -> a.optJSONObject(i)?.let { Bookmark(it.optString("uri"), it.optLong("position"), it.optString("note"), it.optLong("createdAt")) } }
+    }.getOrDefault(emptyList())
+
+    fun deleteBookmark(context: Context, createdAt: Long) = saveBookmarks(context, bookmarks(context).filterNot { it.createdAt == createdAt })
+
+    private fun saveBookmarks(context: Context, list: List<Bookmark>) {
+        val a = JSONArray(); list.forEach { a.put(JSONObject().put("uri", it.uri).put("position", it.position).put("note", it.note).put("createdAt", it.createdAt)) }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(BOOKMARKS, a.toString()).apply()
+    }
+}
+
+internal object PlayerQueueActions {
+    fun playNext(current: List<String>, activeDir: String?, dir: String): List<String> {
+        val base = current.filterNot { it == dir }.toMutableList()
+        val index = activeDir?.let { base.indexOf(it) } ?: -1
+        base.add(if (index >= 0) index + 1 else 0, dir)
+        return base
+    }
+
+    fun move(current: List<String>, from: Int, to: Int): List<String> {
+        if (from !in current.indices || to !in current.indices || from == to) return current
+        return current.toMutableList().apply { add(to, removeAt(from)) }
+    }
+}

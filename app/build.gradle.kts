@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.kapt")
 }
 
 android {
@@ -60,6 +61,15 @@ dependencies {
     implementation("com.google.guava:guava:33.4.8-android")
     implementation("androidx.work:work-runtime-ktx:2.10.5")
     implementation("org.jsoup:jsoup:1.21.2")
+
+    implementation("androidx.room:room-runtime:2.8.0")
+    implementation("androidx.room:room-ktx:2.8.0")
+    implementation("androidx.room:room-paging:2.8.0")
+    kapt("androidx.room:room-compiler:2.8.0")
+    implementation("androidx.datastore:datastore-preferences:1.1.7")
+    implementation("androidx.paging:paging-runtime-ktx:3.3.6")
+    implementation("androidx.paging:paging-compose:3.3.6")
+
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

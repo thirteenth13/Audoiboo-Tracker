@@ -1,8 +1,10 @@
 package org.audoiboo.tracker
 
+import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Bundle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -12,7 +14,8 @@ class AudoibooApp : Application() {
     private lateinit var playerExtrasPrefs: SharedPreferences
     private lateinit var playerQueuePrefs: SharedPreferences
     private lateinit var appSettingsPrefs: SharedPreferences
-    private lateinit var trackerBridge: LegacyTrackerBridge
+    private var trackerBridge: LegacyTrackerBridge? = null
+    private var legacyActivityCount = 0
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val playerExtrasListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -35,6 +38,31 @@ class AudoibooApp : Application() {
         }
     }
 
+    private val legacyLifecycle = object : ActivityLifecycleCallbacks {
+        override fun onActivityStarted(activity: Activity) {
+            if (activity !is MainActivity) return
+            legacyActivityCount++
+            if (legacyActivityCount == 1) {
+                trackerBridge = LegacyTrackerBridge(applicationContext).also { it.start() }
+            }
+        }
+
+        override fun onActivityStopped(activity: Activity) {
+            if (activity !is MainActivity) return
+            legacyActivityCount = (legacyActivityCount - 1).coerceAtLeast(0)
+            if (legacyActivityCount == 0) {
+                trackerBridge?.stop()
+                trackerBridge = null
+            }
+        }
+
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+        override fun onActivityResumed(activity: Activity) = Unit
+        override fun onActivityPaused(activity: Activity) = Unit
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+        override fun onActivityDestroyed(activity: Activity) = Unit
+    }
+
     override fun onCreate() {
         super.onCreate()
         DownloadScheduler.recover(this)
@@ -47,7 +75,7 @@ class AudoibooApp : Application() {
         playerQueuePrefs.registerOnSharedPreferenceChangeListener(playerQueueListener)
         appSettingsPrefs = getSharedPreferences("app_settings", Context.MODE_PRIVATE)
         appSettingsPrefs.registerOnSharedPreferenceChangeListener(appSettingsListener)
-        trackerBridge = LegacyTrackerBridge(applicationContext).also { it.start() }
+        registerActivityLifecycleCallbacks(legacyLifecycle)
         ContinueListeningWidget.updateAll(this)
 
         appScope.launch {

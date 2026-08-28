@@ -71,6 +71,8 @@ interface LibraryDao {
     @Query("DELETE FROM books WHERE seriesId = :seriesId") suspend fun deleteBooksForSeries(seriesId: String)
     @Query("DELETE FROM series WHERE id = :id") suspend fun deleteSeries(id: String)
     @Query("SELECT COUNT(*) FROM series") suspend fun seriesCount(): Int
+    @Query("UPDATE books SET status=:status, updatedAt=:updatedAt WHERE id=:bookId") suspend fun updateBookStatus(bookId: String, status: String, updatedAt: Long = System.currentTimeMillis())
+    @Query("UPDATE books SET archiveUrl=:archiveUrl, updatedAt=:updatedAt WHERE id=:bookId") suspend fun updateBookArchive(bookId: String, archiveUrl: String?, updatedAt: Long = System.currentTimeMillis())
 
     @Transaction @Query("SELECT * FROM books WHERE id=:bookId LIMIT 1") suspend fun bookWithTags(bookId: String): BookWithTags?
     @Query("SELECT * FROM tags ORDER BY name COLLATE NOCASE") fun observeTags(): Flow<List<TagEntity>>

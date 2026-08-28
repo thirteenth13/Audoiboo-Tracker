@@ -118,7 +118,7 @@ private fun SettingsScreen(activity: ComponentActivity) {
                 SettingCard("Тема інтерфейсу", if (dark) "Темна • Material You" else "Світла • Material You") { Switch(checked = dark, onCheckedChange = { dark = it; save() }) }
 
                 SectionTitle("Плеєр")
-                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Налаштування вбудованого плеєра", style = MaterialTheme.typography.titleMedium); Text("Швидкість тепер запам’ятовується окремо для кожної книги.", style = MaterialTheme.typography.bodySmall); OutlinedButton(onClick = { activity.startActivity(Intent(activity, PlayerSettingsActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) { Text("Налаштування плеєра") } } }
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Налаштування вбудованого плеєра", style = MaterialTheme.typography.titleMedium); Text("Швидкість запам’ятовується окремо для кожної книги.", style = MaterialTheme.typography.bodySmall); OutlinedButton(onClick = { activity.startActivity(Intent(activity, PlayerSettingsActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) { Text("Налаштування плеєра") } } }
 
                 SectionTitle("Картка книги")
                 SettingCard("Кнопка «Сторінка»", "Відкривати сторінку книги в браузері") { Switch(checked = showPage, onCheckedChange = { showPage = it; save() }) }
@@ -134,6 +134,8 @@ private fun SettingsScreen(activity: ComponentActivity) {
                     SettingRow("Розпаковувати ZIP", "Перед розпакуванням перевіряється CRC") { Switch(checked = unpack, onCheckedChange = { unpack = it; save() }) }
                     OutlinedButton(onClick = { folderLauncher.launch(StorageAccess.treeUri(activity)) }, modifier = Modifier.fillMaxWidth()) { Text(if (storageName == null) "Вибрати папку через SAF" else "Папка: $storageName") }
                     if (storageName != null) TextButton(onClick = { StorageAccess.setTree(activity, null); storageName = null }) { Text("Повернутися до Downloads/Audoiboo") }
+                    OutlinedButton(onClick = { activity.startActivity(Intent(activity, ManualDownloadActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) { Text("Ручне додавання архіву") }
+                    Text("Використовуй ручний режим, якщо автоматичний JSoup → WebView парсер не знайшов посилання.", style = MaterialTheme.typography.bodySmall)
                     Button(onClick = { save() }) { Text("Зберегти") }
                 } }
 

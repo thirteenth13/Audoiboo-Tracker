@@ -50,6 +50,24 @@ data class PlaybackResumeEntity(
     val updatedAt: Long
 )
 
+@Entity(tableName = "playback_history", indices = [Index("at")])
+data class PlaybackHistoryEntity(@PrimaryKey val dir: String, val title: String, val at: Long)
+
+@Entity(tableName = "player_bookmarks", indices = [Index("createdAt"), Index("uri")])
+data class PlayerBookmarkEntity(
+    @PrimaryKey val id: String,
+    val uri: String,
+    val positionMs: Long,
+    val note: String,
+    val createdAt: Long
+)
+
+@Entity(tableName = "daily_listening")
+data class DailyListeningEntity(@PrimaryKey val day: String, val listenedMs: Long)
+
+@Entity(tableName = "listening_totals")
+data class ListeningTotalEntity(@PrimaryKey val key: String = "total", val listenedMs: Long)
+
 data class SeriesWithBooks(@Embedded val series: SeriesEntity, @Relation(parentColumn = "id", entityColumn = "seriesId") val books: List<BookEntity>)
 
 data class BookWithTags(
@@ -100,10 +118,43 @@ interface LibraryDao {
     @Query("SELECT * FROM playback_resume WHERE `key`='current' LIMIT 1") suspend fun playbackResume(): PlaybackResumeEntity?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertPlaybackResume(value: PlaybackResumeEntity)
 
+    @Query("SELECT * FROM playback_history ORDER BY at DESC LIMIT 50") fun observePlaybackHistory(): Flow<List<PlaybackHistoryEntity>>
+    @Query("SELECT * FROM playback_history ORDER BY at DESC LIMIT 50") suspend fun playbackHistory(): List<PlaybackHistoryEntity>
+    @Query("DELETE FROM playback_history") suspend fun clearPlaybackHistory()
+    @Upsert suspend fun upsertPlaybackHistory(items: List<PlaybackHistoryEntity>)
+
+    @Query("SELECT * FROM player_bookmarks ORDER BY createdAt DESC LIMIT 500") fun observePlayerBookmarks(): Flow<List<PlayerBookmarkEntity>>
+    @Query("SELECT * FROM player_bookmarks ORDER BY createdAt DESC LIMIT 500") suspend fun playerBookmarks(): List<PlayerBookmarkEntity>
+    @Query("DELETE FROM player_bookmarks") suspend fun clearPlayerBookmarks()
+    @Upsert suspend fun upsertPlayerBookmarks(items: List<PlayerBookmarkEntity>)
+
+    @Query("SELECT * FROM daily_listening ORDER BY day DESC") fun observeDailyListening(): Flow<List<DailyListeningEntity>>
+    @Query("SELECT * FROM daily_listening ORDER BY day DESC") suspend fun dailyListening(): List<DailyListeningEntity>
+    @Query("DELETE FROM daily_listening") suspend fun clearDailyListening()
+    @Upsert suspend fun upsertDailyListening(items: List<DailyListeningEntity>)
+    @Query("SELECT * FROM listening_totals WHERE `key`='total' LIMIT 1") suspend fun listeningTotal(): ListeningTotalEntity?
+    @Upsert suspend fun upsertListeningTotal(value: ListeningTotalEntity)
+
     @Transaction
     suspend fun replacePlaybackQueue(dirs: List<String>) {
         clearPlaybackQueue()
         insertPlaybackQueue(dirs.distinct().mapIndexed { index, dir -> PlaybackQueueEntity(index, dir) })
+    }
+
+    @Transaction
+    suspend fun replacePlayerExtras(
+        history: List<PlaybackHistoryEntity>,
+        bookmarks: List<PlayerBookmarkEntity>,
+        daily: List<DailyListeningEntity>,
+        totalMs: Long
+    ) {
+        clearPlaybackHistory()
+        upsertPlaybackHistory(history.take(50))
+        clearPlayerBookmarks()
+        upsertPlayerBookmarks(bookmarks.take(500))
+        clearDailyListening()
+        upsertDailyListening(daily.take(120))
+        upsertListeningTotal(ListeningTotalEntity(listenedMs = totalMs.coerceAtLeast(0L)))
     }
 
     @Transaction
@@ -136,8 +187,12 @@ interface LibraryDao {
 }
 
 @Database(
-    entities = [SeriesEntity::class, BookEntity::class, TagEntity::class, BookTagCrossRef::class, PlaybackQueueEntity::class, PlaybackResumeEntity::class],
-    version = 3,
+    entities = [
+        SeriesEntity::class, BookEntity::class, TagEntity::class, BookTagCrossRef::class,
+        PlaybackQueueEntity::class, PlaybackResumeEntity::class, PlaybackHistoryEntity::class,
+        PlayerBookmarkEntity::class, DailyListeningEntity::class, ListeningTotalEntity::class
+    ],
+    version = 4,
     exportSchema = false
 )
 abstract class AudoibooDatabase : RoomDatabase() {
@@ -159,10 +214,21 @@ abstract class AudoibooDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `playback_resume` (`key` TEXT NOT NULL, `dir` TEXT NOT NULL, `title` TEXT NOT NULL, `uri` TEXT NOT NULL, `fileIndex` INTEGER NOT NULL, `positionMs` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`key`))")
             }
         }
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `playback_history` (`dir` TEXT NOT NULL, `title` TEXT NOT NULL, `at` INTEGER NOT NULL, PRIMARY KEY(`dir`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_playback_history_at` ON `playback_history` (`at`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `player_bookmarks` (`id` TEXT NOT NULL, `uri` TEXT NOT NULL, `positionMs` INTEGER NOT NULL, `note` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_player_bookmarks_createdAt` ON `player_bookmarks` (`createdAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_player_bookmarks_uri` ON `player_bookmarks` (`uri`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `daily_listening` (`day` TEXT NOT NULL, `listenedMs` INTEGER NOT NULL, PRIMARY KEY(`day`))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `listening_totals` (`key` TEXT NOT NULL, `listenedMs` INTEGER NOT NULL, PRIMARY KEY(`key`))")
+            }
+        }
         @Volatile private var instance: AudoibooDatabase? = null
         fun get(context: Context): AudoibooDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AudoibooDatabase::class.java, "audoiboo.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build().also { instance = it }
         }
     }

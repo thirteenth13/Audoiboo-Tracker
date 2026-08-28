@@ -20,6 +20,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -43,6 +44,7 @@ import kotlinx.coroutines.delay
 import java.util.Locale
 
 internal data class AudioTrack(val uri: Uri, val name: String, val relativePath: String)
+private data class AudioBookGroup(val title: String, val relativeDir: String, val tracks: List<AudioTrack>)
 
 object PlayerPrefs {
     private const val FILE = "player_settings"
@@ -73,7 +75,12 @@ class PlayerActivity : ComponentActivity() {
 @Composable
 private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initialTitle: String?) {
     var refresh by remember { mutableIntStateOf(0) }
-    var tracks by remember(refresh, initialDir) { mutableStateOf(loadPlayerTracks(activity, initialDir)) }
+    var activeDir by remember { mutableStateOf(initialDir) }
+    var requestedTitle by remember { mutableStateOf(initialTitle) }
+    var showBooks by remember { mutableStateOf(initialDir.isNullOrBlank()) }
+    var allTracks by remember(refresh) { mutableStateOf(loadPlayerTracks(activity, null)) }
+    val books = remember(allTracks) { groupTracksIntoBooks(allTracks) }
+    var tracks by remember(activeDir, allTracks) { mutableStateOf(if (activeDir.isNullOrBlank()) emptyList() else loadPlayerTracks(activity, activeDir)) }
     var controller by remember { mutableStateOf<MediaController?>(null) }
     var index by remember { mutableIntStateOf(0) }
     var playing by remember { mutableStateOf(false) }
@@ -86,7 +93,13 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
     val current = tracks.getOrNull(index)
 
     val audioPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) { refresh++; tracks = loadPlayerTracks(activity, initialDir) } }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            refresh++
+            allTracks = loadPlayerTracks(activity, null)
+            if (!activeDir.isNullOrBlank()) tracks = loadPlayerTracks(activity, activeDir)
+        }
+    }
 
     DisposableEffect(Unit) {
         val token = SessionToken(activity, ComponentName(activity, PlaybackService::class.java))
@@ -100,9 +113,7 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
                         index = c.currentMediaItemIndex.coerceAtLeast(0)
                         cover = tracks.getOrNull(index)?.let { embeddedCover(activity, it.uri) }
                     }
-                    override fun onPlaybackStateChanged(playbackState: Int) {
-                        duration = c.duration.coerceAtLeast(0L)
-                    }
+                    override fun onPlaybackStateChanged(playbackState: Int) { duration = c.duration.coerceAtLeast(0L) }
                 })
             }
         }, ContextCompat.getMainExecutor(activity))
@@ -113,7 +124,7 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
         val c = controller ?: return
         if (tracks.isEmpty()) return
         index = startIndex.coerceIn(0, tracks.lastIndex)
-        val mediaItems = tracks.map { t -> PlaybackService.mediaItem(PlayerLibraryItem(t.uri.toString(), t.name, t.relativePath)) }
+        val mediaItems = tracks.map { t -> PlaybackService.mediaItem(PlayerLibraryItem(t.uri.toString(), t.name, t.relativePath, requestedTitle)) }
         c.setMediaItems(mediaItems, index, 0L)
         c.prepare()
         val saved = PlayerPrefs.position(activity, tracks[index].uri)
@@ -124,7 +135,16 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
         cover = embeddedCover(activity, tracks[index].uri)
     }
 
-    LaunchedEffect(controller, tracks) { if (controller != null && tracks.isNotEmpty() && controller?.mediaItemCount == 0) loadPlaylist(0, false) }
+    LaunchedEffect(activeDir, controller) {
+        if (!activeDir.isNullOrBlank()) {
+            tracks = loadPlayerTracks(activity, activeDir)
+            index = 0
+            position = 0
+            duration = 0
+            cover = tracks.firstOrNull()?.let { embeddedCover(activity, it.uri) }
+            if (controller != null && tracks.isNotEmpty()) loadPlaylist(0, false)
+        }
+    }
     LaunchedEffect(controller) {
         while (true) {
             delay(500)
@@ -138,18 +158,38 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
         }
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text(initialTitle ?: "Плеєр") }, navigationIcon = { IconButton(onClick = { activity.finish() }) { Icon(Icons.Filled.ArrowBack, "Назад") } }, actions = { IconButton(onClick = { activity.startActivity(Intent(activity, PlayerSettingsActivity::class.java)) }) { Icon(Icons.Filled.Settings, "Налаштування плеєра") } }) }) { padding ->
-        if (tracks.isEmpty()) {
+    Scaffold(topBar = {
+        TopAppBar(
+            title = { Text(if (showBooks) "Вибір книги" else requestedTitle ?: activeDir?.substringAfterLast('/') ?: "Плеєр") },
+            navigationIcon = { IconButton(onClick = { if (showBooks && !activeDir.isNullOrBlank()) showBooks = false else activity.finish() }) { Icon(Icons.Filled.ArrowBack, "Назад") } },
+            actions = {
+                IconButton(onClick = { refresh++; allTracks = loadPlayerTracks(activity, null); showBooks = true }) { Icon(Icons.Filled.LibraryBooks, "Вибрати книгу") }
+                IconButton(onClick = { activity.startActivity(Intent(activity, PlayerSettingsActivity::class.java)) }) { Icon(Icons.Filled.Settings, "Налаштування плеєра") }
+            }
+        )
+    }) { padding ->
+        if (showBooks) {
+            BookChooser(
+                modifier = Modifier.padding(padding).fillMaxSize(),
+                books = books,
+                onRefresh = {
+                    if (ContextCompat.checkSelfPermission(activity, audioPermission) != PackageManager.PERMISSION_GRANTED) permissionLauncher.launch(audioPermission)
+                    else { refresh++; allTracks = loadPlayerTracks(activity, null) }
+                },
+                onSelect = { book ->
+                    activeDir = book.relativeDir
+                    requestedTitle = book.title
+                    tracks = book.tracks
+                    showBooks = false
+                }
+            )
+        } else if (tracks.isEmpty()) {
             Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Filled.Headphones, null, modifier = Modifier.size(64.dp)); Spacer(Modifier.height(12.dp))
-                    Text("Завантажені аудіокниги не знайдені")
-                    Text("Плеєр шукає аудіо в Downloads/Audoiboo", style = MaterialTheme.typography.bodySmall)
+                    Text("Аудіофайли цієї книги не знайдені")
                     Spacer(Modifier.height(8.dp))
-                    Button(onClick = {
-                        if (ContextCompat.checkSelfPermission(activity, audioPermission) != PackageManager.PERMISSION_GRANTED) permissionLauncher.launch(audioPermission)
-                        else { refresh++; tracks = loadPlayerTracks(activity, initialDir) }
-                    }) { Text("Оновити бібліотеку") }
+                    Button(onClick = { showBooks = true }) { Text("Вибрати іншу книгу") }
                 }
             }
         } else Column(Modifier.padding(padding).fillMaxSize().padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -185,12 +225,57 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
     }
 }
 
+@Composable
+private fun BookChooser(modifier: Modifier, books: List<AudioBookGroup>, onRefresh: () -> Unit, onSelect: (AudioBookGroup) -> Unit) {
+    if (books.isEmpty()) {
+        Box(modifier, contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Filled.LibraryBooks, null, modifier = Modifier.size(72.dp))
+                Spacer(Modifier.height(12.dp))
+                Text("Завантажені книги не знайдені")
+                Text("Пошук виконується в Downloads/Audoiboo", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = onRefresh) { Text("Оновити бібліотеку") }
+            }
+        }
+        return
+    }
+    Column(modifier) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("${books.size} книг", style = MaterialTheme.typography.titleMedium)
+            TextButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, null); Spacer(Modifier.width(4.dp)); Text("Оновити") }
+        }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(books, key = { it.relativeDir }) { book ->
+                ElevatedCard(Modifier.fillMaxWidth().clickable { onSelect(book) }, shape = RoundedCornerShape(14.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.MenuBook, null, modifier = Modifier.size(42.dp), tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(book.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text("${book.tracks.size} аудіофайлів", style = MaterialTheme.typography.bodySmall)
+                            Text(book.relativeDir, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Icon(Icons.Filled.ChevronRight, null)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun groupTracksIntoBooks(tracks: List<AudioTrack>): List<AudioBookGroup> {
+    return tracks.groupBy { normalizeBookDir(it.relativePath) }
+        .map { (dir, items) -> AudioBookGroup(dir.trimEnd('/').substringAfterLast('/').ifBlank { "Книга" }, dir, items.sortedBy { naturalKey(it.name) }) }
+        .sortedBy { it.title.lowercase() }
+}
+
+private fun normalizeBookDir(path: String): String = path.trimEnd('/')
+
 private fun loadPlayerTracks(context: Context, relativeDir: String?): List<AudioTrack> {
     val indexed = PlayerLibrary.forPath(context, relativeDir).map { AudioTrack(Uri.parse(it.uri), it.name, it.relativePath) }
     val scanned = scanAudioTracks(context, relativeDir)
-    val merged = (indexed + scanned).distinctBy { it.uri.toString() }.sortedWith(compareBy<AudioTrack> { it.relativePath }.thenBy { naturalKey(it.name) })
-    if (merged.isNotEmpty()) PlayerLibrary.replaceAll(context, merged.map { PlayerLibraryItem(it.uri.toString(), it.name, it.relativePath) })
-    return merged
+    return (indexed + scanned).distinctBy { it.uri.toString() }.sortedWith(compareBy<AudioTrack> { it.relativePath }.thenBy { naturalKey(it.name) })
 }
 
 private fun scanAudioTracks(context: Context, relativeDir: String?): List<AudioTrack> {

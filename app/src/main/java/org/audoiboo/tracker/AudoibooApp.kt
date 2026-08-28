@@ -35,10 +35,8 @@ class AudoibooApp : Application() {
             appScope.launch { runCatching { PlaybackStateRepository.syncFromLegacy(this@AudoibooApp) } }
         }
     }
-    private val appSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == null || key in setOf("wifi_only", "auto_find_archives", "dark_theme")) {
-            appScope.launch { runCatching { PreferenceDataStore.syncFromLegacy(this@AudoibooApp) } }
-        }
+    private val appSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        appScope.launch { runCatching { PreferenceDataStore.syncFromLegacy(this@AudoibooApp) } }
     }
 
     private fun isLegacyTrackerConsumer(activity: Activity): Boolean =

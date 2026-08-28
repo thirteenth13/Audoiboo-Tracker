@@ -34,13 +34,27 @@ object PreferenceDataStore {
     suspend fun importLegacyIfNeeded(context: Context) {
         context.audoibooDataStore.edit { p ->
             if (p[LEGACY_IMPORTED] == true) return@edit
-            // Read through the existing public facade so migration follows the app's current semantics.
-            p[WIFI_ONLY] = AppPrefs.wifiOnly(context)
-            p[AUTO_ARCHIVES] = AppPrefs.autoFindArchives(context)
-            p[DARK_THEME] = AppPrefs.darkTheme(context)
-            p[VERSION] = 1
+            copyLegacy(context, p)
             p[LEGACY_IMPORTED] = true
         }
+    }
+
+    /**
+     * Transition bridge: while SettingsActivity still writes SharedPreferences, keep DataStore
+     * synchronized so new readers can be switched over independently without stale values.
+     */
+    suspend fun syncFromLegacy(context: Context) {
+        context.audoibooDataStore.edit { p ->
+            copyLegacy(context, p)
+            p[LEGACY_IMPORTED] = true
+        }
+    }
+
+    private fun copyLegacy(context: Context, p: MutablePreferences) {
+        p[WIFI_ONLY] = AppPrefs.wifiOnly(context)
+        p[AUTO_ARCHIVES] = AppPrefs.autoFindArchives(context)
+        p[DARK_THEME] = AppPrefs.darkTheme(context)
+        p[VERSION] = 1
     }
 
     suspend fun setWifiOnly(context: Context, value: Boolean) = context.audoibooDataStore.edit { it[WIFI_ONLY] = value }

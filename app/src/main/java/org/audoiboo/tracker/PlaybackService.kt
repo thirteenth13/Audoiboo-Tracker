@@ -5,7 +5,6 @@ import android.content.SharedPreferences
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import androidx.media3.common.AudioAttributes
-import androidx.media3.common.AudioListener
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -82,7 +81,6 @@ class PlaybackService : MediaLibraryService() {
     private var session: MediaLibrarySession? = null
     private lateinit var player: ExoPlayer
     private var loudnessEnhancer: LoudnessEnhancer? = null
-    private var currentAudioSessionId: Int = C.AUDIO_SESSION_ID_UNSET
     private lateinit var audioPrefs: SharedPreferences
     private val audioPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> applyVoiceBoost() }
 
@@ -100,9 +98,8 @@ class PlaybackService : MediaLibraryService() {
             )
             setHandleAudioBecomingNoisy(true)
             repeatMode = Player.REPEAT_MODE_OFF
-            addAudioListener(object : AudioListener {
+            addListener(object : Player.Listener {
                 override fun onAudioSessionIdChanged(audioSessionId: Int) {
-                    currentAudioSessionId = audioSessionId
                     attachVoiceBoost(audioSessionId)
                 }
             })

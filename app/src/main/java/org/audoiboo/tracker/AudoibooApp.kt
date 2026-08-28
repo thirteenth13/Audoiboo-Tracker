@@ -37,7 +37,6 @@ class AudoibooApp : Application() {
         DownloadScheduler.recover(this)
         WebDavSync.schedule(this)
         SeriesAutomationPrefs.schedule(this)
-        CoverCache.enqueueTrackerCovers(this)
 
         playerExtrasPrefs = getSharedPreferences("player_extras", Context.MODE_PRIVATE)
         playerExtrasPrefs.registerOnSharedPreferenceChangeListener(playerExtrasListener)
@@ -52,6 +51,7 @@ class AudoibooApp : Application() {
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
             runCatching { PreferenceDataStore.importLegacyIfNeeded(this@AudoibooApp) }
             runCatching { PlaybackStateRepository.reconcile(this@AudoibooApp) }
+            runCatching { RoomCoverSync.enqueueAll(this@AudoibooApp) }
         }
     }
 }

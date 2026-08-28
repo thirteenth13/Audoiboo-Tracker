@@ -41,6 +41,7 @@
         <activity android:name=".SettingsActivity" android:exported="false" android:label="Налаштування" />
         <activity android:name=".PlayerSettingsActivity" android:exported="false" android:label="Налаштування плеєра" />
         <activity android:name=".PlayerActivity" android:exported="false" android:label="Плеєр" />
+        <activity android:name=".ManualDownloadActivity" android:exported="false" android:label="Ручне додавання архіву" />
 
         <activity
             android:name=".MainActivity"

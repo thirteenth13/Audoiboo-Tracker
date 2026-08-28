@@ -62,6 +62,8 @@ data class BookWithTags(
 interface LibraryDao {
     @Transaction @Query("SELECT * FROM series ORDER BY name COLLATE NOCASE") fun observeLibrary(): Flow<List<SeriesWithBooks>>
     @Transaction @Query("SELECT * FROM series ORDER BY name COLLATE NOCASE") suspend fun library(): List<SeriesWithBooks>
+    @Query("SELECT * FROM series WHERE id=:id LIMIT 1") suspend fun seriesById(id: String): SeriesEntity?
+    @Query("SELECT * FROM series WHERE url=:url LIMIT 1") suspend fun seriesByUrl(url: String): SeriesEntity?
     @Query("SELECT * FROM books ORDER BY updatedAt DESC") fun pagedBooks(): PagingSource<Int, BookEntity>
     @Query("SELECT * FROM books WHERE title LIKE '%' || :query || '%' OR author LIKE '%' || :query || '%' ORDER BY title COLLATE NOCASE") fun searchBooks(query: String): PagingSource<Int, BookEntity>
     @Query("SELECT DISTINCT books.* FROM books LEFT JOIN book_tags ON books.id=book_tags.bookId LEFT JOIN tags ON tags.id=book_tags.tagId WHERE books.title LIKE '%' || :query || '%' OR books.author LIKE '%' || :query || '%' OR tags.name LIKE '%' || :query || '%' ORDER BY books.title COLLATE NOCASE") fun searchBooksAndTags(query: String): PagingSource<Int, BookEntity>

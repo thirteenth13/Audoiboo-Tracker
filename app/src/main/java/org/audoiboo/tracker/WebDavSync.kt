@@ -9,8 +9,6 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.TimeUnit
@@ -47,20 +45,20 @@ internal object WebDavSync {
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(WORK, ExistingPeriodicWorkPolicy.UPDATE, request)
     }
 
-    suspend fun upload(context: Context) = withContext(Dispatchers.IO) {
+    fun upload(context: Context) {
         val base = url(context).trimEnd('/'); if (base.isBlank()) error("Не вказано WebDAV URL")
         val conn = connection(context, "$base/$FILE", "PUT")
         try {
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            val backup = BackupStore.exportJsonFromRoom(context.applicationContext)
-            conn.outputStream.bufferedWriter().use { it.write(backup) }
+            // BackupStore now materializes the tracker payload from Room before serializing format 4.
+            conn.outputStream.bufferedWriter().use { it.write(BackupStore.exportJson(context.applicationContext)) }
             val code = conn.responseCode
             if (code !in 200..299) error("WebDAV HTTP $code")
         } finally { conn.disconnect() }
     }
 
-    suspend fun download(context: Context) = withContext(Dispatchers.IO) {
+    fun download(context: Context) {
         val base = url(context).trimEnd('/'); if (base.isBlank()) error("Не вказано WebDAV URL")
         val conn = connection(context, "$base/$FILE", "GET")
         try {

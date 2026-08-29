@@ -7,12 +7,12 @@ import org.junit.Test
 
 class DownloadControlPolicyTest {
     @Test
-    fun staleStartCannotReviveTerminalOrPausedStates() {
+    fun staleStartCannotReviveTerminalPausedOrFailedStates() {
         assertFalse(DownloadControlPolicy.canStart(ManagedDownloadState.PAUSED))
         assertFalse(DownloadControlPolicy.canStart(ManagedDownloadState.CANCELLED))
         assertFalse(DownloadControlPolicy.canStart(ManagedDownloadState.COMPLETED))
+        assertFalse(DownloadControlPolicy.canStart(ManagedDownloadState.FAILED))
         assertTrue(DownloadControlPolicy.canStart(ManagedDownloadState.QUEUED))
-        assertTrue(DownloadControlPolicy.canStart(ManagedDownloadState.FAILED))
     }
 
     @Test

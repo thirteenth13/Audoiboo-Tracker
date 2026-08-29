@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -24,26 +25,30 @@ object BackupStore {
 
     fun exportJson(context: Context, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean): String {
         val root = JSONObject()
-        root.put("format", 6)
+        root.put("format", 7)
         root.put("createdAt", System.currentTimeMillis())
-        val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportCompatJson(context.applicationContext) } }
+        val app = context.applicationContext
+        val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportCompatJson(app) } }
             .getOrElse { context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]").orEmpty() }
         root.put("tracker", tracker)
-        runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportTagsJson(context.applicationContext) } }
-            .getOrNull()?.let { root.put("roomTags", it) }
-        runCatching { runBlocking(Dispatchers.IO) { TrackPositionStore.exportJson(context.applicationContext) } }
-            .getOrNull()?.let { root.put("roomTrackPositions", it) }
+        runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportTagsJson(app) } }.getOrNull()?.let { root.put("roomTags", it) }
+        runCatching { runBlocking(Dispatchers.IO) { TrackPositionStore.exportJson(app) } }.getOrNull()?.let { root.put("roomTrackPositions", it) }
+        runCatching { runBlocking(Dispatchers.IO) { PlaybackStateRepository.exportQueueJson(app) } }.getOrNull()?.let { root.put("roomPlaybackQueue", it) }
+        runCatching { runBlocking(Dispatchers.IO) { PlaybackStateRepository.exportResumeJson(app) } }.getOrNull()?.let { root.put("roomPlaybackResume", it) }
         addSharedState(context, root, includeSettings, includeBookmarks, includeStatistics)
         return root.toString(2)
     }
 
     suspend fun exportJsonFromRoom(context: Context, includeSettings: Boolean = true, includeBookmarks: Boolean = true, includeStatistics: Boolean = true): String {
+        val app = context.applicationContext
         val root = JSONObject()
-        root.put("format", 6)
+        root.put("format", 7)
         root.put("createdAt", System.currentTimeMillis())
-        root.put("tracker", LibraryRepository.exportCompatJson(context.applicationContext))
-        root.put("roomTags", LibraryRepository.exportTagsJson(context.applicationContext))
-        root.put("roomTrackPositions", TrackPositionStore.exportJson(context.applicationContext))
+        root.put("tracker", LibraryRepository.exportCompatJson(app))
+        root.put("roomTags", LibraryRepository.exportTagsJson(app))
+        root.put("roomTrackPositions", TrackPositionStore.exportJson(app))
+        root.put("roomPlaybackQueue", PlaybackStateRepository.exportQueueJson(app))
+        PlaybackStateRepository.exportResumeJson(app)?.let { root.put("roomPlaybackResume", it) }
         addSharedState(context, root, includeSettings, includeBookmarks, includeStatistics)
         return root.toString(2)
     }
@@ -53,11 +58,13 @@ object BackupStore {
         val tracker = root.optString("tracker", "[]")
         val roomTags = root.optJSONObject("roomTags")
         val trackPositions = root.optJSONObject("roomTrackPositions") ?: root.optJSONObject("playerPositions")
+        val roomQueue = root.optJSONArray("roomPlaybackQueue") ?: legacyQueueFromBackup(root.optJSONObject("playerQueue"))
+        val roomResume = root.optJSONObject("roomPlaybackResume") ?: legacyResumeFromBackup(root.optJSONObject("playerExtras"))
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreNonTrackerState(context, root)
         restoreScope.launch {
             runCatching {
-                reconcileRestoredState(context.applicationContext, tracker, roomTags, trackPositions)
+                reconcileRestoredState(context.applicationContext, tracker, roomTags, trackPositions, roomQueue, roomResume)
                 recoverAfterRestore(context.applicationContext)
             }
         }
@@ -68,17 +75,26 @@ object BackupStore {
         val tracker = root.optString("tracker", "[]")
         val roomTags = root.optJSONObject("roomTags")
         val trackPositions = root.optJSONObject("roomTrackPositions") ?: root.optJSONObject("playerPositions")
+        val roomQueue = root.optJSONArray("roomPlaybackQueue") ?: legacyQueueFromBackup(root.optJSONObject("playerQueue"))
+        val roomResume = root.optJSONObject("roomPlaybackResume") ?: legacyResumeFromBackup(root.optJSONObject("playerExtras"))
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreNonTrackerState(context, root)
-        reconcileRestoredState(context.applicationContext, tracker, roomTags, trackPositions)
+        reconcileRestoredState(context.applicationContext, tracker, roomTags, trackPositions, roomQueue, roomResume)
         recoverAfterRestore(context)
     }
 
-    private suspend fun reconcileRestoredState(context: Context, tracker: String, roomTags: JSONObject?, trackPositions: JSONObject?) {
+    private suspend fun reconcileRestoredState(
+        context: Context,
+        tracker: String,
+        roomTags: JSONObject?,
+        trackPositions: JSONObject?,
+        roomQueue: JSONArray?,
+        roomResume: JSONObject?
+    ) {
         LibraryRepository.restoreLegacyJson(context, tracker)
         LibraryRepository.restoreTagsJson(context, roomTags)
         TrackPositionStore.restoreJson(context, trackPositions)
-        PlaybackStateRepository.syncFromLegacy(context)
+        PlaybackStateRepository.restoreRoomState(context, roomQueue, roomResume)
         PreferenceDataStore.syncFromLegacy(context)
         PlayerExtrasRoomSync.syncFromLegacy(context)
         RoomCoverSync.enqueueAll(context)
@@ -87,7 +103,6 @@ object BackupStore {
     private fun addSharedState(context: Context, root: JSONObject, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean) {
         root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
         root.put("playerLibrary", prefsToJson(context, "player_library"))
-        root.put("playerQueue", prefsToJson(context, "player_queue"))
         if (includeSettings) {
             root.put("settings", prefsToJson(context, "app_settings"))
             root.put("playerSettings", prefsToJson(context, "player_settings"))
@@ -97,8 +112,6 @@ object BackupStore {
         }
         if (includeBookmarks || includeStatistics) root.put("playerExtras", prefsToJson(context, "player_extras"))
         if (includeBookmarks) root.put("bookmarks", prefsToJson(context, "bookmarks"))
-        // format 6 stores progress in Room-native roomTrackPositions. Old format 5
-        // playerPositions is still accepted by restore for backwards compatibility.
     }
 
     private fun restoreNonTrackerState(context: Context, root: JSONObject) {
@@ -109,8 +122,18 @@ object BackupStore {
         root.optJSONObject("seriesAutomation")?.let { jsonToPrefs(context, "series_automation", it) }
         root.optJSONObject("bookmarks")?.let { jsonToPrefs(context, "bookmarks", it) }
         root.optJSONObject("playerLibrary")?.let { jsonToPrefs(context, "player_library", it) }
-        root.optJSONObject("playerQueue")?.let { jsonToPrefs(context, "player_queue", it) }
+        // Old backups are parsed into Room by legacyQueueFromBackup/legacyResumeFromBackup.
         root.optJSONObject("playerExtras")?.let { jsonToPrefs(context, "player_extras", it) }
+    }
+
+    private fun legacyQueueFromBackup(value: JSONObject?): JSONArray? {
+        val raw = value?.optString("book_dirs")?.takeIf { it.isNotBlank() } ?: return null
+        return runCatching { JSONArray(raw) }.getOrNull()
+    }
+
+    private fun legacyResumeFromBackup(value: JSONObject?): JSONObject? {
+        val raw = value?.optString("playback_snapshot")?.takeIf { it.isNotBlank() } ?: return null
+        return runCatching { JSONObject(raw) }.getOrNull()
     }
 
     private fun recoverAfterRestore(context: Context) {

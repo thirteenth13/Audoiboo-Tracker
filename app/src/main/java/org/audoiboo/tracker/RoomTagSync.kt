@@ -67,7 +67,9 @@ internal object RoomTagSync {
         val app = context.applicationContext
         val tracker = LibraryRepository.snapshot(app)
         val id = resolveBookId(tracker, playerBooks(app), dir) ?: return@withContext false
-        AudoibooDatabase.get(app).libraryDao().setBookTags(id, tags)
+        val clean = tags.map { it.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase() }
+        AudoibooDatabase.get(app).libraryDao().setBookTags(id, clean)
+        PlayerTagStore.setCached(dir, clean)
         true
     }
 

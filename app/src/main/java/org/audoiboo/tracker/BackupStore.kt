@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -24,7 +25,7 @@ object BackupStore {
 
     fun exportJson(context: Context, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean): String {
         val root = JSONObject()
-        root.put("format", 12)
+        root.put("format", BackupFormatPolicy.CURRENT_FORMAT)
         root.put("createdAt", System.currentTimeMillis())
         val app = context.applicationContext
         val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportCompatJson(app) } }
@@ -49,7 +50,7 @@ object BackupStore {
     suspend fun exportJsonFromRoom(context: Context, includeSettings: Boolean = true, includeBookmarks: Boolean = true, includeStatistics: Boolean = true): String {
         val app = context.applicationContext
         val root = JSONObject()
-        root.put("format", 12)
+        root.put("format", BackupFormatPolicy.CURRENT_FORMAT)
         root.put("createdAt", System.currentTimeMillis())
         root.put("tracker", LibraryRepository.exportCompatJson(app))
         root.put("roomTags", LibraryRepository.exportTagsJson(app))
@@ -65,8 +66,8 @@ object BackupStore {
     }
 
     fun importJson(context: Context, raw: String) {
-        val root = JSONObject(raw)
-        val tracker = root.optString("tracker", "[]")
+        val root = validatedRoot(raw)
+        val tracker = root.getString("tracker")
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreNonTrackerState(context, root)
         restoreScope.launch {
@@ -78,12 +79,22 @@ object BackupStore {
     }
 
     suspend fun importJsonToRoom(context: Context, raw: String) {
-        val root = JSONObject(raw)
-        val tracker = root.optString("tracker", "[]")
+        val root = validatedRoot(raw)
+        val tracker = root.getString("tracker")
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreNonTrackerState(context, root)
         restoreRoomState(context.applicationContext, tracker, root)
         recoverAfterRestore(context)
+    }
+
+    private fun validatedRoot(raw: String): JSONObject {
+        val root = JSONObject(raw)
+        val trackerValue = root.opt("tracker")
+        val tracker = trackerValue as? String
+        val trackerValid = tracker != null && runCatching { JSONArray(tracker) }.isSuccess
+        val format = if (root.has("format") && !root.isNull("format")) root.optInt("format", Int.MIN_VALUE) else null
+        BackupFormatPolicy.validate(format, root.has("tracker"), trackerValid)?.let { throw IllegalArgumentException(it) }
+        return root
     }
 
     /**
@@ -126,6 +137,7 @@ object BackupStore {
         root.optJSONObject("seriesAutomation")?.let { jsonToPrefs(context, "series_automation", it) }
         root.optJSONObject("bookmarks")?.let { jsonToPrefs(context, "bookmarks", it) }
         root.optJSONObject("playerLibrary")?.let { jsonToPrefs(context, "player_library", it) }
+        root.optJSONObject("storageAccess")?.let { jsonToPrefs(context, "storage_access", it) }
     }
 
     private fun recoverAfterRestore(context: Context) {

@@ -51,7 +51,6 @@ object TrackPositionStore {
         val key = uri.toString()
         return positions.value[key]
             ?: synchronized(pending) { pending[key] }
-            // Only used during the short asynchronous first migration window.
             ?: context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE).getLong(key, 0L)
     }
 
@@ -83,16 +82,17 @@ object TrackPositionStore {
             while (keys.hasNext()) {
                 val uri = keys.next()
                 if (uri.isBlank()) continue
-                val value = json.optLong(uri, 0L).coerceAtLeast(0L)
-                add(TrackPositionEntity(uri, value))
+                add(TrackPositionEntity(uri, json.optLong(uri, 0L).coerceAtLeast(0L)))
             }
         }
         val app = context.applicationContext
-        val dao = AudoibooDatabase.get(app).libraryDao()
-        dao.replaceTrackPositions(rows)
-        val restored = rows.associate { it.uri to it.positionMs }
+        val db = AudoibooDatabase.get(app)
+        val dao = db.libraryDao()
+        // Backup restore is an explicit replacement of this isolated table.
+        db.openHelper.writableDatabase.execSQL("DELETE FROM track_positions")
+        if (rows.isNotEmpty()) dao.upsertTrackPositions(rows)
         synchronized(pending) { pending.clear() }
-        positions.value = restored
+        positions.value = rows.associate { it.uri to it.positionMs }
         app.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE).edit().clear().apply()
         app.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE).edit().putBoolean(MIGRATION_KEY, true).apply()
         initialized = true

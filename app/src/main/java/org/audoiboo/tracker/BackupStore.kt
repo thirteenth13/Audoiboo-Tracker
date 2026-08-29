@@ -7,7 +7,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -25,7 +24,7 @@ object BackupStore {
 
     fun exportJson(context: Context, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean): String {
         val root = JSONObject()
-        root.put("format", 10)
+        root.put("format", 11)
         root.put("createdAt", System.currentTimeMillis())
         val app = context.applicationContext
         val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportCompatJson(app) } }
@@ -39,6 +38,9 @@ object BackupStore {
         if (includeBookmarks || includeStatistics) {
             runCatching { runBlocking(Dispatchers.IO) { PlayerExtrasRepository.exportJson(app) } }.getOrNull()?.let { root.put("roomPlayerExtras", it) }
         }
+        if (includeSettings) {
+            runCatching { runBlocking(Dispatchers.IO) { PreferenceDataStore.exportJson(app) } }.getOrNull()?.let { root.put("settings", it) }
+        }
         addSharedState(context, root, includeSettings, includeBookmarks)
         return root.toString(2)
     }
@@ -46,7 +48,7 @@ object BackupStore {
     suspend fun exportJsonFromRoom(context: Context, includeSettings: Boolean = true, includeBookmarks: Boolean = true, includeStatistics: Boolean = true): String {
         val app = context.applicationContext
         val root = JSONObject()
-        root.put("format", 10)
+        root.put("format", 11)
         root.put("createdAt", System.currentTimeMillis())
         root.put("tracker", LibraryRepository.exportCompatJson(app))
         root.put("roomTags", LibraryRepository.exportTagsJson(app))
@@ -55,6 +57,7 @@ object BackupStore {
         PlaybackStateRepository.exportResumeJson(app)?.let { root.put("roomPlaybackResume", it) }
         root.put("roomPlayerState", PlayerStateStore.exportJson(app))
         if (includeBookmarks || includeStatistics) root.put("roomPlayerExtras", PlayerExtrasRepository.exportJson(app))
+        if (includeSettings) root.put("settings", PreferenceDataStore.exportJson(app))
         addSharedState(context, root, includeSettings, includeBookmarks)
         return root.toString(2)
     }
@@ -83,8 +86,7 @@ object BackupStore {
 
     /**
      * Series tracking remains backward-compatible through the legacy tracker JSON.
-     * Player data is restored only from the current Room-native fields; pre-Room player
-     * backup formats are intentionally ignored because no player data needs migration.
+     * Player data is restored only from current Room-native fields.
      */
     private suspend fun restoreRoomState(context: Context, tracker: String, root: JSONObject) {
         LibraryRepository.restoreLegacyJson(context, tracker)
@@ -100,9 +102,7 @@ object BackupStore {
         root.optJSONObject("roomPlayerState")?.let { PlayerStateStore.restoreJson(context, it) }
         root.optJSONObject("roomPlayerExtras")?.let { PlayerExtrasRepository.restoreJson(context, it) }
         PlayerExtrasStore.refresh(context)
-
-        // Settings still use the compatibility SharedPreferences facade until AppPrefs is switched.
-        if (root.has("settings")) PreferenceDataStore.syncFromLegacy(context)
+        root.optJSONObject("settings")?.let { PreferenceDataStore.restoreJson(context, it) }
         RoomCoverSync.enqueueAll(context)
     }
 
@@ -110,7 +110,6 @@ object BackupStore {
         root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
         root.put("playerLibrary", prefsToJson(context, "player_library"))
         if (includeSettings) {
-            root.put("settings", prefsToJson(context, "app_settings"))
             root.put("playerSettings", prefsToJson(context, "player_settings"))
             root.put("audioEnhancement", prefsToJson(context, "audio_enhancement"))
             root.put("seriesAutomation", prefsToJson(context, "series_automation"))
@@ -121,7 +120,6 @@ object BackupStore {
 
     private fun restoreNonTrackerState(context: Context, root: JSONObject) {
         context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).edit().putString("items", root.optString("downloads", "[]")).apply()
-        root.optJSONObject("settings")?.let { jsonToPrefs(context, "app_settings", it) }
         root.optJSONObject("playerSettings")?.let { jsonToPrefs(context, "player_settings", it) }
         root.optJSONObject("audioEnhancement")?.let { jsonToPrefs(context, "audio_enhancement", it) }
         root.optJSONObject("seriesAutomation")?.let { jsonToPrefs(context, "series_automation", it) }

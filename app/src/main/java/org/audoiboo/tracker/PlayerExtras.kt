@@ -201,16 +201,10 @@ internal object PlayerExtras {
     }.getOrDefault(emptySet())
 
     fun setTags(context: Context, dir: String, tags: List<String>) {
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val o = runCatching { JSONObject(p.getString(TAGS, "{}")) }.getOrElse { JSONObject() }
-        val a = JSONArray(); tags.map { it.trim() }.filter { it.isNotBlank() }.distinct().forEach(a::put)
-        o.put(dir, a); p.edit().putString(TAGS, o.toString()).apply()
+        PlayerTagStore.setTags(context, dir, tags)
     }
 
-    fun tags(context: Context, dir: String): List<String> = runCatching {
-        val o = JSONObject(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(TAGS, "{}")); val a = o.optJSONArray(dir) ?: JSONArray()
-        (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) }
-    }.getOrDefault(emptyList())
+    fun tags(context: Context, dir: String): List<String> = PlayerTagStore.tags(context, dir)
 
     fun addBookmark(context: Context, uri: Uri, position: Long, note: String) {
         PlayerExtrasStore.addBookmark(context, uri.toString(), position, note)

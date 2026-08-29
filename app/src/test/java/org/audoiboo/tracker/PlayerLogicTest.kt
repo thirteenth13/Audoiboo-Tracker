@@ -31,6 +31,15 @@ class PlayerLogicTest {
         assertEquals(1f, PlayerLogic.aggregateProgress(1, 0, 50_000, 10_000), .0001f)
     }
 
+    @Test fun uriBrokenSetMapsBackToStableTrackIndices() {
+        val uris = listOf("content://a", "content://b", "content://c", "content://d")
+        val broken = PlayerLogic.brokenIndices(uris, setOf("content://b", "content://d", "content://missing"))
+        assertEquals(setOf(1, 3), broken)
+        assertEquals(2, PlayerLogic.playableCount(uris.size, broken))
+        assertEquals(4, PlayerLogic.playableCount(uris.size, emptySet()))
+        assertEquals(0, PlayerLogic.playableCount(0, broken))
+    }
+
     @Test fun emptyAndSingleTrackBooksAreStable() {
         val empty = PlayerLogic.bookProgress(emptyList(), emptyList())
         assertEquals(0f, empty.fraction)

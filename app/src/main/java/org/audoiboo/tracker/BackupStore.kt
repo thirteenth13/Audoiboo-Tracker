@@ -24,23 +24,26 @@ object BackupStore {
 
     fun exportJson(context: Context, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean): String {
         val root = JSONObject()
-        root.put("format", 5)
+        root.put("format", 6)
         root.put("createdAt", System.currentTimeMillis())
         val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportCompatJson(context.applicationContext) } }
             .getOrElse { context.getSharedPreferences("tracker", Context.MODE_PRIVATE).getString("library", "[]").orEmpty() }
         root.put("tracker", tracker)
         runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportTagsJson(context.applicationContext) } }
             .getOrNull()?.let { root.put("roomTags", it) }
+        runCatching { runBlocking(Dispatchers.IO) { TrackPositionStore.exportJson(context.applicationContext) } }
+            .getOrNull()?.let { root.put("roomTrackPositions", it) }
         addSharedState(context, root, includeSettings, includeBookmarks, includeStatistics)
         return root.toString(2)
     }
 
     suspend fun exportJsonFromRoom(context: Context, includeSettings: Boolean = true, includeBookmarks: Boolean = true, includeStatistics: Boolean = true): String {
         val root = JSONObject()
-        root.put("format", 5)
+        root.put("format", 6)
         root.put("createdAt", System.currentTimeMillis())
         root.put("tracker", LibraryRepository.exportCompatJson(context.applicationContext))
         root.put("roomTags", LibraryRepository.exportTagsJson(context.applicationContext))
+        root.put("roomTrackPositions", TrackPositionStore.exportJson(context.applicationContext))
         addSharedState(context, root, includeSettings, includeBookmarks, includeStatistics)
         return root.toString(2)
     }
@@ -49,11 +52,12 @@ object BackupStore {
         val root = JSONObject(raw)
         val tracker = root.optString("tracker", "[]")
         val roomTags = root.optJSONObject("roomTags")
+        val trackPositions = root.optJSONObject("roomTrackPositions") ?: root.optJSONObject("playerPositions")
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreNonTrackerState(context, root)
         restoreScope.launch {
             runCatching {
-                reconcileRestoredState(context.applicationContext, tracker, roomTags)
+                reconcileRestoredState(context.applicationContext, tracker, roomTags, trackPositions)
                 recoverAfterRestore(context.applicationContext)
             }
         }
@@ -63,15 +67,17 @@ object BackupStore {
         val root = JSONObject(raw)
         val tracker = root.optString("tracker", "[]")
         val roomTags = root.optJSONObject("roomTags")
+        val trackPositions = root.optJSONObject("roomTrackPositions") ?: root.optJSONObject("playerPositions")
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreNonTrackerState(context, root)
-        reconcileRestoredState(context.applicationContext, tracker, roomTags)
+        reconcileRestoredState(context.applicationContext, tracker, roomTags, trackPositions)
         recoverAfterRestore(context)
     }
 
-    private suspend fun reconcileRestoredState(context: Context, tracker: String, roomTags: JSONObject?) {
+    private suspend fun reconcileRestoredState(context: Context, tracker: String, roomTags: JSONObject?, trackPositions: JSONObject?) {
         LibraryRepository.restoreLegacyJson(context, tracker)
         LibraryRepository.restoreTagsJson(context, roomTags)
+        TrackPositionStore.restoreJson(context, trackPositions)
         PlaybackStateRepository.syncFromLegacy(context)
         PreferenceDataStore.syncFromLegacy(context)
         PlayerExtrasRoomSync.syncFromLegacy(context)
@@ -91,7 +97,8 @@ object BackupStore {
         }
         if (includeBookmarks || includeStatistics) root.put("playerExtras", prefsToJson(context, "player_extras"))
         if (includeBookmarks) root.put("bookmarks", prefsToJson(context, "bookmarks"))
-        if (includeStatistics) root.put("playerPositions", prefsToJson(context, "player_positions"))
+        // format 6 stores progress in Room-native roomTrackPositions. Old format 5
+        // playerPositions is still accepted by restore for backwards compatibility.
     }
 
     private fun restoreNonTrackerState(context: Context, root: JSONObject) {
@@ -101,7 +108,6 @@ object BackupStore {
         root.optJSONObject("audioEnhancement")?.let { jsonToPrefs(context, "audio_enhancement", it) }
         root.optJSONObject("seriesAutomation")?.let { jsonToPrefs(context, "series_automation", it) }
         root.optJSONObject("bookmarks")?.let { jsonToPrefs(context, "bookmarks", it) }
-        root.optJSONObject("playerPositions")?.let { jsonToPrefs(context, "player_positions", it) }
         root.optJSONObject("playerLibrary")?.let { jsonToPrefs(context, "player_library", it) }
         root.optJSONObject("playerQueue")?.let { jsonToPrefs(context, "player_queue", it) }
         root.optJSONObject("playerExtras")?.let { jsonToPrefs(context, "player_extras", it) }

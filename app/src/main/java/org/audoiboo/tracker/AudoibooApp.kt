@@ -2,7 +2,6 @@ package org.audoiboo.tracker
 
 import android.app.Activity
 import android.app.Application
-import android.content.Context
 import android.content.SharedPreferences
 import android.os.Bundle
 import kotlinx.coroutines.CoroutineScope
@@ -11,15 +10,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 class AudoibooApp : Application() {
-    private lateinit var playerExtrasPrefs: SharedPreferences
     private lateinit var appSettingsPrefs: SharedPreferences
     private var trackerBridge: LegacyTrackerBridge? = null
     private var legacyConsumerCount = 0
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val playerExtrasListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-        ContinueListeningWidget.updateAll(this)
-    }
     private val appSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         appScope.launch { runCatching { PreferenceDataStore.syncFromLegacy(this@AudoibooApp) } }
     }
@@ -62,10 +57,9 @@ class AudoibooApp : Application() {
         PlaybackResumeStore.initialize(this)
         PlayerExtrasStore.initialize(this)
         PlayerTagStore.initialize(this)
+        PlayerStateStore.initialize(this)
 
-        playerExtrasPrefs = getSharedPreferences("player_extras", Context.MODE_PRIVATE)
-        playerExtrasPrefs.registerOnSharedPreferenceChangeListener(playerExtrasListener)
-        appSettingsPrefs = getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+        appSettingsPrefs = getSharedPreferences("app_settings", MODE_PRIVATE)
         appSettingsPrefs.registerOnSharedPreferenceChangeListener(appSettingsListener)
         registerActivityLifecycleCallbacks(legacyLifecycle)
         ContinueListeningWidget.updateAll(this)

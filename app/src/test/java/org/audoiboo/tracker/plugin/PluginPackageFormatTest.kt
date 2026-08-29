@@ -2,6 +2,7 @@ package org.audoiboo.tracker.plugin
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -53,6 +54,25 @@ class PluginPackageFormatTest {
         )
 
         assertFalse(PluginPackagePolicy.validate(manifest).valid)
+    }
+
+    @Test
+    fun malformedManifestCanBeQuarantinedWithoutConstructingDescriptor() {
+        val manager = SourcePluginManager(listOf(AudiobooSourcePlugin))
+        val registration = manager.registerPackageManifest(
+            PluginPackageManifest(
+                id = "bad-package",
+                name = "Bad package",
+                version = 1,
+                apiVersion = SOURCE_PLUGIN_API_VERSION,
+                hosts = emptySet(),
+                capabilities = emptySet()
+            ),
+            packagePath = "quarantine/bad-package"
+        )
+
+        assertEquals(PluginState.QUARANTINED, registration.state)
+        assertNull(registration.descriptor)
     }
 
     @Test

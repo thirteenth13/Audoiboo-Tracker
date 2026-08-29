@@ -8,8 +8,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
-/** Synchronous facade over DataStore for legacy call sites that need immediate settings reads. */
+/** Synchronous facade over DataStore for call sites that need immediate settings reads. */
 internal object AppSettingsStore {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val state = MutableStateFlow(ModernSettings())
@@ -34,20 +35,38 @@ internal object AppSettingsStore {
     }
 
     fun current(context: Context): ModernSettings {
-        initialize(context)
-        return if (ready) state.value else PreferenceDataStore.legacySnapshot(context.applicationContext)
+        val app = context.applicationContext
+        initialize(app)
+        if (ready) return state.value
+
+        // DataStore is authoritative. Block only the first cold read so callers never observe
+        // defaults merely because the asynchronous warm-up has not completed yet.
+        return synchronized(this) {
+            if (ready) state.value
+            else runBlocking(Dispatchers.IO) {
+                PreferenceDataStore.reconcile(app)
+                PreferenceDataStore.current(app).also {
+                    state.value = it
+                    ready = true
+                }
+            }
+        }
     }
 
     fun save(context: Context, value: ModernSettings) {
         initialize(context)
         val clean = value.copy(baseFolder = value.baseFolder.trim().trim('/').ifBlank { "Audoiboo" })
         state.value = clean
+        ready = true
         scope.launch { PreferenceDataStore.save(context.applicationContext, clean) }
     }
 
     fun refresh(context: Context) {
         val app = context.applicationContext
         initialize(app)
-        scope.launch { state.value = PreferenceDataStore.current(app) }
+        scope.launch {
+            state.value = PreferenceDataStore.current(app)
+            ready = true
+        }
     }
 }

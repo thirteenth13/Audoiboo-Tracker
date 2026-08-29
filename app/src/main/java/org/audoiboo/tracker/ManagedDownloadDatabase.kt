@@ -116,13 +116,23 @@ internal object ManagedDownloadRoomStore {
         list(context).forEach { record -> out.put(record.toBackupJson()) }
     }
 
+    fun isValidBackupPayload(value: Any?): Boolean {
+        val raw = when (value) {
+            is JSONArray -> value
+            is String -> runCatching { JSONArray(value) }.getOrNull()
+            else -> null
+        } ?: return false
+        return parseCompleteArray(raw) != null
+    }
+
     fun restoreJson(context: Context, value: Any?) {
         val raw = when (value) {
             is JSONArray -> value
             is String -> runCatching { JSONArray(value) }.getOrNull()
             else -> null
-        } ?: return
-        val records = parseArray(raw)
+        } ?: throw IllegalArgumentException("Backup downloads data is invalid")
+        val records = parseCompleteArray(raw)
+            ?: throw IllegalArgumentException("Backup downloads data contains invalid records")
         withDao(context) { dao ->
             dao.clear()
             if (records.isNotEmpty()) dao.upsertAll(records.take(200).map { it.toEntity() })
@@ -158,8 +168,16 @@ internal object ManagedDownloadRoomStore {
         }
     }
 
-    private fun parseLegacy(raw: String): List<ManagedDownloadRecord>? =
-        runCatching { parseArray(JSONArray(raw)) }.getOrNull()
+    private fun parseLegacy(raw: String): List<ManagedDownloadRecord>? = runCatching {
+        parseCompleteArray(JSONArray(raw))
+    }.getOrNull()
+
+    private fun parseCompleteArray(arr: JSONArray): List<ManagedDownloadRecord>? {
+        val records = parseArray(arr)
+        return records.takeIf {
+            ManagedDownloadMigrationPolicy.payloadIsComplete(arr.length(), records.size)
+        }
+    }
 
     private fun parseArray(arr: JSONArray): List<ManagedDownloadRecord> =
         (0 until arr.length()).mapNotNull { index ->
@@ -205,7 +223,7 @@ internal object ManagedDownloadRoomStore {
     }
 
     private fun sanitizeLegacyPath(value: String): String =
-        value.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
+        value.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
 }
 
 internal fun ManagedDownloadRecord.toEntity() = ManagedDownloadEntity(

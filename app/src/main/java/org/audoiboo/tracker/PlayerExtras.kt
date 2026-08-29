@@ -4,9 +4,6 @@ import android.content.Context
 import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /** Persistent audiobook-specific state shared by the player UI and playback service. */
 internal object PlayerExtras {
@@ -14,11 +11,7 @@ internal object PlayerExtras {
     private const val HISTORY = "history"
     private const val LISTENED_MS = "listened_ms"
     private const val BOOKMARKS = "bookmarks_v2"
-    private const val SPEEDS = "book_speeds"
-    private const val SERIES_SPEEDS = "series_speeds"
-    private const val BROKEN = "broken_uris"
     private const val DAILY = "daily_listened"
-    private const val SERIES_RESUME = "series_resume"
 
     data class Resume(val dir: String, val title: String, val uri: String, val at: Long)
     data class SeriesResume(val series: String, val dir: String, val title: String, val uri: String, val at: Long)
@@ -52,22 +45,16 @@ internal object PlayerExtras {
     }
 
     private fun saveSeriesResume(context: Context, value: SeriesResume) {
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val root = runCatching { JSONObject(p.getString(SERIES_RESUME, "{}")) }.getOrElse { JSONObject() }
-        root.put(value.series, JSONObject()
-            .put("dir", value.dir)
-            .put("title", value.title)
-            .put("uri", value.uri)
-            .put("at", value.at))
-        p.edit().putString(SERIES_RESUME, root.toString()).apply()
+        PlayerStateStore.saveSeriesResume(
+            context,
+            SeriesResumeEntity(value.series, value.dir, value.title, value.uri, value.at)
+        )
     }
 
-    fun seriesResume(context: Context, series: String): SeriesResume? = runCatching {
-        val root = JSONObject(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(SERIES_RESUME, "{}"))
-        val o = root.optJSONObject(series) ?: return null
-        val dir = o.optString("dir").takeIf { it.isNotBlank() } ?: return null
-        SeriesResume(series, dir, o.optString("title", dir), o.optString("uri"), o.optLong("at"))
-    }.getOrNull()
+    fun seriesResume(context: Context, series: String): SeriesResume? =
+        PlayerStateStore.seriesResume(context, series)?.let {
+            SeriesResume(it.series, it.dir, it.title, it.uri, it.at)
+        }
 
     fun saveSnapshot(context: Context, dir: String, title: String, uri: Uri?, fileIndex: Int, positionMs: Long, queue: List<String>) {
         if (dir.isBlank()) return
@@ -141,9 +128,7 @@ internal object PlayerExtras {
 
     fun speedFor(context: Context, dir: String?): Float {
         if (dir.isNullOrBlank()) return 1f
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val bookSpeeds = runCatching { JSONObject(p.getString(SPEEDS, "{}")) }.getOrElse { JSONObject() }
-        if (bookSpeeds.has(dir)) return bookSpeeds.optDouble(dir, 1.0).toFloat().coerceIn(.5f, 3f)
+        PlayerStateStore.bookSpeed(context, dir)?.let { return it }
         val normalizedDir = dir.replace('\\', '/').trimEnd('/')
         val series = PlayerLibrary.all(context).firstOrNull {
             it.relativePath.replace('\\', '/').trimEnd('/') == normalizedDir
@@ -152,45 +137,31 @@ internal object PlayerExtras {
     }
 
     fun setSpeed(context: Context, dir: String, speed: Float) {
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val o = runCatching { JSONObject(p.getString(SPEEDS, "{}")) }.getOrElse { JSONObject() }
-        o.put(dir, speed.coerceIn(.5f, 3f).toDouble())
-        p.edit().putString(SPEEDS, o.toString()).apply()
+        PlayerStateStore.setBookSpeed(context, dir, speed)
     }
 
     fun clearBookSpeed(context: Context, dir: String) {
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val o = runCatching { JSONObject(p.getString(SPEEDS, "{}")) }.getOrElse { JSONObject() }
-        o.remove(dir)
-        p.edit().putString(SPEEDS, o.toString()).apply()
+        PlayerStateStore.clearBookSpeed(context, dir)
     }
 
     fun seriesSpeedFor(context: Context, series: String): Float {
         if (series.isBlank()) return 1f
-        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(SERIES_SPEEDS, "{}")
-        return runCatching { JSONObject(raw).optDouble(series, 1.0).toFloat().coerceIn(.5f, 3f) }.getOrDefault(1f)
+        return PlayerStateStore.seriesSpeed(context, series) ?: 1f
     }
 
     fun setSeriesSpeed(context: Context, series: String, speed: Float) {
-        if (series.isBlank()) return
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val o = runCatching { JSONObject(p.getString(SERIES_SPEEDS, "{}")) }.getOrElse { JSONObject() }
-        o.put(series, speed.coerceIn(.5f, 3f).toDouble())
-        p.edit().putString(SERIES_SPEEDS, o.toString()).apply()
+        PlayerStateStore.setSeriesSpeed(context, series, speed)
     }
 
     fun markBroken(context: Context, uri: Uri) {
-        val set = brokenUris(context).toMutableSet().apply { add(uri.toString()) }
-        val a = JSONArray(); set.forEach(a::put)
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(BROKEN, a.toString()).apply()
+        PlayerStateStore.markBroken(context, uri.toString())
     }
 
-    fun clearBroken(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(BROKEN).apply()
+    fun clearBroken(context: Context) {
+        PlayerStateStore.clearBroken(context)
+    }
 
-    fun brokenUris(context: Context): Set<String> = runCatching {
-        val a = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(BROKEN, "[]"))
-        (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) }.toSet()
-    }.getOrDefault(emptySet())
+    fun brokenUris(context: Context): Set<String> = PlayerStateStore.brokenUris(context)
 
     fun setTags(context: Context, dir: String, tags: List<String>) {
         PlayerTagStore.setTags(context, dir, tags)

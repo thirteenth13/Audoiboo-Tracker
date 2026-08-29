@@ -35,4 +35,11 @@ class BackupFormatPolicyTest {
             BackupFormatPolicy.validate(12, true, true, hasDownloads = true, downloadsAreValid = false)
         )
     }
+
+    @Test fun rejectsMalformedOptionalSectionsBeforeRestore() {
+        assertEquals(
+            "Backup contains invalid section data",
+            BackupFormatPolicy.validate(12, true, true, sectionsAreValid = false)
+        )
+    }
 }

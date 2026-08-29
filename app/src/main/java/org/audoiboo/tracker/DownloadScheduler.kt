@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit
  */
 internal object DownloadScheduler {
     private const val KEY_ID = "download_id"
+    private const val RECOVERY_WORK = "audoiboo-download-recovery"
     private fun workName(id: String) = "audoiboo-download-$id"
 
     fun enqueue(context: Context, id: String, delayedRetry: Boolean = false) {
@@ -45,6 +46,16 @@ internal object DownloadScheduler {
         WorkManager.getInstance(context).cancelUniqueWork(workName(id))
     }
 
+    fun scheduleRecovery(context: Context) {
+        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+            RECOVERY_WORK,
+            ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<DownloadRecoveryWorker>()
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .build()
+        )
+    }
+
     fun recover(context: Context) {
         ManagedDownloads.list(context)
             .filter { DownloadRecoveryPolicy.shouldRecover(it.state) }
@@ -58,6 +69,14 @@ internal object DownloadScheduler {
     }
 
     internal fun id(input: androidx.work.Data): String? = input.getString(KEY_ID)
+}
+
+internal class DownloadRecoveryWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
+    override suspend fun doWork(): Result = runCatching {
+        ManagedDownloads.initialize(applicationContext)
+        DownloadScheduler.recover(applicationContext)
+        Result.success()
+    }.getOrElse { Result.retry() }
 }
 
 internal class DownloadKickWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {

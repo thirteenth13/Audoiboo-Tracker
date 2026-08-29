@@ -43,6 +43,11 @@ internal object DownloadScheduler {
         )
     }
 
+    /** Compatibility route for the service while keeping retry work independently cancellable. */
+    fun enqueue(context: Context, id: String, delayedRetry: Boolean) {
+        if (delayedRetry) enqueueRetry(context, id) else enqueue(context, id)
+    }
+
     fun enqueueRetry(context: Context, id: String) {
         val request = OneTimeWorkRequestBuilder<DownloadKickWorker>()
             .setInputData(workDataOf(KEY_ID to id, KEY_RETRY to true))

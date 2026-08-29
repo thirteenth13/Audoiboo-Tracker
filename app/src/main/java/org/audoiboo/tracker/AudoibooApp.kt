@@ -17,11 +17,8 @@ class AudoibooApp : Application() {
     private var legacyConsumerCount = 0
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val playerExtrasListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+    private val playerExtrasListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         ContinueListeningWidget.updateAll(this)
-        if (key == null || key == "book_tags") {
-            appScope.launch { runCatching { RoomTagSync.syncFromLegacy(this@AudoibooApp) } }
-        }
     }
     private val appSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         appScope.launch { runCatching { PreferenceDataStore.syncFromLegacy(this@AudoibooApp) } }
@@ -64,6 +61,7 @@ class AudoibooApp : Application() {
         PlaybackQueueStore.initialize(this)
         PlaybackResumeStore.initialize(this)
         PlayerExtrasStore.initialize(this)
+        PlayerTagStore.initialize(this)
 
         playerExtrasPrefs = getSharedPreferences("player_extras", Context.MODE_PRIVATE)
         playerExtrasPrefs.registerOnSharedPreferenceChangeListener(playerExtrasListener)

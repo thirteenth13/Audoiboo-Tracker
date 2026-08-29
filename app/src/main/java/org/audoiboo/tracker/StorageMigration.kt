@@ -16,8 +16,8 @@ internal data class StorageMigrationResult(
  * successful copies. Sources are deliberately left untouched so migration cannot destroy the only
  * readable copy if Android revokes a permission or a provider fails midway.
  *
- * The operation is idempotent: an indexed item that already points at its destination, or whose
- * destination has the same known non-zero byte length, is reused instead of being deleted/copied.
+ * The operation is idempotent and URI-keyed playback state is moved together with every changed
+ * library URI, preserving progress, bookmarks, broken-track state and resume pointers.
  */
 internal object StorageMigration {
     suspend fun copyIndexedLibrary(context: Context): StorageMigrationResult = withContext(Dispatchers.IO) {
@@ -53,8 +53,19 @@ internal object StorageMigration {
                 )
             ) {
                 val alreadyIndexed = source == existing.uri && item.relativePath == relativeDir
-                replacements[index] = item.copy(uri = existing.uri.toString(), relativePath = relativeDir)
-                if (alreadyIndexed) skipped++ else migrated++
+                if (!alreadyIndexed) {
+                    val stateMoved = runCatching {
+                        PlayerUriMigration.remap(app, source.toString(), existing.uri.toString())
+                    }.isSuccess
+                    if (!stateMoved) {
+                        failed++
+                        return@forEachIndexed
+                    }
+                    replacements[index] = item.copy(uri = existing.uri.toString(), relativePath = relativeDir)
+                    migrated++
+                } else {
+                    skipped++
+                }
                 return@forEachIndexed
             }
 
@@ -73,8 +84,15 @@ internal object StorageMigration {
             if (copied == null) {
                 failed++
             } else {
-                replacements[index] = item.copy(uri = copied.toString(), relativePath = relativeDir)
-                migrated++
+                val stateMoved = runCatching {
+                    PlayerUriMigration.remap(app, source.toString(), copied.toString())
+                }.isSuccess
+                if (!stateMoved) {
+                    failed++
+                } else {
+                    replacements[index] = item.copy(uri = copied.toString(), relativePath = relativeDir)
+                    migrated++
+                }
             }
         }
 

@@ -14,7 +14,9 @@ import org.json.JSONObject
 
 /** Room-backed track-position store used by player progress and resume logic. */
 object TrackPositionStore {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Position updates are order-sensitive: seeking backwards must not be overwritten later by an
+    // older async write. Keep persistence on one lane while retaining the in-memory fast path.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
     private val positions = MutableStateFlow<Map<String, Long>>(emptyMap())
     private val pending = mutableMapOf<String, Long>()
     @Volatile private var initialized = false

@@ -94,12 +94,7 @@ object BackupStore {
         val trackerValid = tracker != null && runCatching { JSONArray(tracker) }.isSuccess
         val format = if (root.has("format") && !root.isNull("format")) root.optInt("format", Int.MIN_VALUE) else null
         val downloadsValue = if (root.has("downloads")) root.opt("downloads") else null
-        val downloadsValid = when (downloadsValue) {
-            null -> true
-            is JSONArray -> true
-            is String -> runCatching { JSONArray(downloadsValue) }.isSuccess
-            else -> false
-        }
+        val downloadsValid = downloadsValue == null || ManagedDownloadRoomStore.isValidBackupPayload(downloadsValue)
         BackupFormatPolicy.validate(
             format = format,
             hasTracker = root.has("tracker"),

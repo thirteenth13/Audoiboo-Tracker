@@ -5,16 +5,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DownloadControlPolicyRegressionTest {
-    @Test fun staleStartCannotReviveTerminalOrPausedStates() {
+    @Test fun staleStartCannotReviveTerminalPausedOrFailedStates() {
         assertFalse(DownloadControlPolicy.canStart(ManagedDownloadState.PAUSED))
         assertFalse(DownloadControlPolicy.canStart(ManagedDownloadState.CANCELLED))
         assertFalse(DownloadControlPolicy.canStart(ManagedDownloadState.COMPLETED))
+        assertFalse(DownloadControlPolicy.canStart(ManagedDownloadState.FAILED))
     }
 
-    @Test fun recoverableStatesRemainStartable() {
+    @Test fun automaticRecoverableStatesRemainStartable() {
         assertTrue(DownloadControlPolicy.canStart(ManagedDownloadState.QUEUED))
-        assertTrue(DownloadControlPolicy.canStart(ManagedDownloadState.FAILED))
         assertTrue(DownloadControlPolicy.canStart(ManagedDownloadState.DOWNLOADING))
         assertTrue(DownloadControlPolicy.canStart(ManagedDownloadState.EXTRACTING))
+    }
+
+    @Test fun explicitRetryMayStillReviveFailedTransfer() {
+        assertTrue(DownloadControlPolicy.canManualStart(ManagedDownloadState.FAILED))
+        assertTrue(DownloadControlPolicy.resume(ManagedDownloadState.FAILED) == ManagedDownloadState.QUEUED)
     }
 }

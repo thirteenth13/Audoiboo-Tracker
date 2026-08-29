@@ -29,25 +29,44 @@ jobs:
         with:
           gradle-version: "9.5.0"
 
-      - name: Decode stable signing key
+      - name: Decode release signing key
+        if: github.event_name != 'pull_request'
+        env:
+          AUDOIBOO_KEYSTORE_B64: ${{ secrets.AUDOIBOO_KEYSTORE_B64 }}
+          AUDOIBOO_STORE_PASSWORD: ${{ secrets.AUDOIBOO_STORE_PASSWORD }}
+          AUDOIBOO_KEY_ALIAS: ${{ secrets.AUDOIBOO_KEY_ALIAS }}
+          AUDOIBOO_KEY_PASSWORD: ${{ secrets.AUDOIBOO_KEY_PASSWORD }}
         run: |
-          base64 -d .github/keys/audoiboo-release.keystore.b64 > .github/keys/audoiboo-release.jks
-          keytool -list -keystore .github/keys/audoiboo-release.jks -storepass Audoiboo2026 -alias audoiboo >/dev/null
+          test -n "$AUDOIBOO_KEYSTORE_B64"
+          test -n "$AUDOIBOO_STORE_PASSWORD"
+          test -n "$AUDOIBOO_KEY_ALIAS"
+          test -n "$AUDOIBOO_KEY_PASSWORD"
+          mkdir -p "$RUNNER_TEMP/audoiboo-signing"
+          printf '%s' "$AUDOIBOO_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/audoiboo-signing/release.jks"
+          keytool -list -keystore "$RUNNER_TEMP/audoiboo-signing/release.jks" -storepass "$AUDOIBOO_STORE_PASSWORD" -alias "$AUDOIBOO_KEY_ALIAS" >/dev/null
 
       - name: Unit tests
         run: gradle :app:testDebugUnitTest --stacktrace
 
       - name: Build release APK
+        if: github.event_name != 'pull_request'
+        env:
+          ORG_GRADLE_PROJECT_AUDOIBOO_STORE_FILE: ${{ runner.temp }}/audoiboo-signing/release.jks
+          ORG_GRADLE_PROJECT_AUDOIBOO_STORE_PASSWORD: ${{ secrets.AUDOIBOO_STORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_AUDOIBOO_KEY_ALIAS: ${{ secrets.AUDOIBOO_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_AUDOIBOO_KEY_PASSWORD: ${{ secrets.AUDOIBOO_KEY_PASSWORD }}
         run: gradle :app:assembleRelease --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.1.3-dev.apk
+        if: github.event_name != 'pull_request'
+        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.1.4-dev.apk
 
       - name: Upload workflow artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: Audoiboo-Tracker-1.1.3-dev
-          path: Audoiboo-Tracker-1.1.3-dev.apk
+          name: Audoiboo-Tracker-1.1.4-dev
+          path: Audoiboo-Tracker-1.1.4-dev.apk
 
       - name: Publish dev prerelease
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -55,4 +74,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete dev-player --yes --cleanup-tag || true
-          gh release create dev-player Audoiboo-Tracker-1.1.3-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.3-dev" --prerelease --notes "Reliability and player update: WorkManager scheduling over foreground downloader, reboot recovery, ZIP integrity checks, JSoup/WebView/manual parser fallback, SAF library folder, exact playback-state restore, broken-track skip, per-book speed, Voice Boost, Android Auto MediaLibraryService, WebDAV metadata sync, series monitoring/auto-download, tags and smart library lists, Markdown bookmark export, and advanced sleep timer with 15/30/45/60 minutes, end-of-file/book/series modes and fade-out."
+          gh release create dev-player Audoiboo-Tracker-1.1.4-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.4-dev" --prerelease --notes "Room v6/DataStore storage cleanup, player state reliability improvements, backup format 11, series tracking, downloader reliability and Media3 audiobook player updates."
+
+      - name: Remove signing key
+        if: always() && github.event_name != 'pull_request'
+        run: rm -rf "$RUNNER_TEMP/audoiboo-signing"

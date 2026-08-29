@@ -29,14 +29,8 @@ class SourcePluginManager(
 
     private val packageRegistrations = linkedMapOf<String, SourcePluginRegistration>()
 
-    fun activeRegistry(): SourcePluginRegistry = SourcePluginRegistry(
-        builtInsById.values + packageRegistrations.values
-            .asSequence()
-            .filter { it.state == PluginState.ENABLED }
-            // Executable package plugins are intentionally not instantiated until the sandbox loader exists.
-            .mapNotNull { null as SourcePlugin? }
-            .toList()
-    )
+    // Package plugins remain metadata-only until the sandboxed loader is implemented.
+    fun activeRegistry(): SourcePluginRegistry = SourcePluginRegistry(builtInsById.values)
 
     fun registrations(): List<SourcePluginRegistration> {
         val builtIns = builtInsById.values.map { plugin ->

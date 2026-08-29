@@ -103,8 +103,12 @@ object BackupStore {
         TrackPositionStore.restoreJson(context, trackPositions)
         PlaybackStateRepository.restoreRoomState(context, roomQueue, roomResume)
         PreferenceDataStore.syncFromLegacy(context)
-        if (roomPlayerExtras != null) PlayerExtrasRepository.restoreJson(context, roomPlayerExtras)
-        else PlayerExtrasRoomSync.syncFromLegacy(context)
+        if (roomPlayerExtras != null) {
+            PlayerExtrasRepository.restoreJson(context, roomPlayerExtras)
+        } else {
+            PlayerExtrasRoomSync.restoreFromLegacy(context)
+            PlayerExtrasStore.refresh(context)
+        }
         RoomCoverSync.enqueueAll(context)
     }
 
@@ -118,8 +122,8 @@ object BackupStore {
             root.put("seriesAutomation", prefsToJson(context, "series_automation"))
             root.put("storageAccess", prefsToJson(context, "storage_access"))
         }
-        // player_extras still carries non-Room fields such as speed, broken-file state and
-        // compatibility snapshot. History/bookmarks/listening stats are authoritative in Room.
+        // player_extras still carries non-Room fields such as speed, broken-file state,
+        // series resume and the current book marker. History/bookmarks/stats live in Room.
         if (includeBookmarks || includeStatistics) root.put("playerExtras", prefsToJson(context, "player_extras"))
         if (includeBookmarks) root.put("bookmarks", prefsToJson(context, "bookmarks"))
     }

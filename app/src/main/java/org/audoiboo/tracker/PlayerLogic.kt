@@ -95,6 +95,31 @@ internal object PlayerLogic {
         return (positionMs.coerceAtLeast(0L).coerceAtMost(upper) - rewindMs.coerceAtLeast(0L)).coerceAtLeast(0L)
     }
 
+    fun nextPlayableIndex(trackCount: Int, currentIndex: Int, brokenIndices: Set<Int>): Int? {
+        if (trackCount <= 0) return null
+        val start = (currentIndex + 1).coerceAtLeast(0)
+        return (start until trackCount).firstOrNull { it !in brokenIndices }
+    }
+
+    fun previousPlayableIndex(trackCount: Int, currentIndex: Int, brokenIndices: Set<Int>): Int? {
+        if (trackCount <= 0) return null
+        val start = (currentIndex - 1).coerceAtMost(trackCount - 1)
+        if (start < 0) return null
+        return (start downTo 0).firstOrNull { it !in brokenIndices }
+    }
+
+    /**
+     * A persisted resume may point at a file that was later marked broken. Prefer the requested
+     * track when playable, then the next playable track, then the closest playable one before it.
+     */
+    fun resumePlayableIndex(trackCount: Int, requestedIndex: Int, brokenIndices: Set<Int>): Int? {
+        if (trackCount <= 0) return null
+        val requested = requestedIndex.coerceIn(0, trackCount - 1)
+        if (requested !in brokenIndices) return requested
+        return (requested + 1 until trackCount).firstOrNull { it !in brokenIndices }
+            ?: (requested - 1 downTo 0).firstOrNull { it !in brokenIndices }
+    }
+
     fun parseBookNumber(value: String): Int? {
         val patterns = listOf(
             Regex("(?i)(?:книга|частина|часть|том|book)\\s*[№#:-]?\\s*(\\d{1,3})"),

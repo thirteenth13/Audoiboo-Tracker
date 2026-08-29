@@ -18,7 +18,6 @@ internal object PlayerExtras {
     private const val LAST_AT = "last_at"
     private const val LISTENED_MS = "listened_ms"
     private const val BOOKMARKS = "bookmarks_v2"
-    private const val SNAPSHOT = "playback_snapshot"
     private const val SPEEDS = "book_speeds"
     private const val SERIES_SPEEDS = "series_speeds"
     private const val BROKEN = "broken_uris"
@@ -85,22 +84,32 @@ internal object PlayerExtras {
 
     fun saveSnapshot(context: Context, dir: String, title: String, uri: Uri?, fileIndex: Int, positionMs: Long, queue: List<String>) {
         if (dir.isBlank()) return
-        val q = JSONArray(); queue.distinct().forEach(q::put)
-        val o = JSONObject()
-            .put("dir", dir).put("title", title).put("uri", uri?.toString().orEmpty())
-            .put("fileIndex", fileIndex).put("positionMs", positionMs.coerceAtLeast(0L))
-            .put("queue", q).put("updatedAt", System.currentTimeMillis())
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(SNAPSHOT, o.toString()).apply()
+        PlaybackQueueStore.save(context, queue)
+        PlaybackResumeStore.save(
+            context,
+            PlaybackStateRepository.Snapshot(
+                dir = dir,
+                title = title,
+                uri = uri?.toString().orEmpty(),
+                fileIndex = fileIndex.coerceAtLeast(0),
+                positionMs = positionMs.coerceAtLeast(0L),
+                updatedAt = System.currentTimeMillis()
+            )
+        )
     }
 
-    fun snapshot(context: Context): PlaybackSnapshot? = runCatching {
-        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(SNAPSHOT, null) ?: return null
-        val o = JSONObject(raw); val q = o.optJSONArray("queue") ?: JSONArray()
-        PlaybackSnapshot(
-            o.optString("dir"), o.optString("title"), o.optString("uri"), o.optInt("fileIndex"),
-            o.optLong("positionMs"), (0 until q.length()).mapNotNull { q.optString(it).takeIf(String::isNotBlank) }, o.optLong("updatedAt")
-        ).takeIf { it.dir.isNotBlank() }
-    }.getOrNull()
+    fun snapshot(context: Context): PlaybackSnapshot? {
+        val value = PlaybackResumeStore.current(context) ?: return null
+        return PlaybackSnapshot(
+            dir = value.dir,
+            title = value.title,
+            uri = value.uri,
+            fileIndex = value.fileIndex,
+            positionMs = value.positionMs,
+            queue = PlaybackQueueStore.current(context),
+            updatedAt = value.updatedAt
+        )
+    }
 
     fun history(context: Context): List<HistoryItem> = runCatching {
         val a = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(HISTORY, "[]"))

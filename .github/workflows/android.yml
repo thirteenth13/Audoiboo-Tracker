@@ -29,6 +29,9 @@ jobs:
         with:
           gradle-version: "9.5.0"
 
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+
       - name: Decode release signing key
         if: github.event_name != 'pull_request'
         env:
@@ -44,9 +47,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/audoiboo-signing"
           printf '%s' "$AUDOIBOO_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/audoiboo-signing/release.jks"
           keytool -list -keystore "$RUNNER_TEMP/audoiboo-signing/release.jks" -storepass "$AUDOIBOO_STORE_PASSWORD" -alias "$AUDOIBOO_KEY_ALIAS" >/dev/null
-
-      - name: Unit tests
-        run: gradle :app:testDebugUnitTest --stacktrace
 
       - name: Build release APK
         if: github.event_name != 'pull_request'

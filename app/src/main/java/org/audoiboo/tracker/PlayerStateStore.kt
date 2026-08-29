@@ -132,10 +132,10 @@ internal object PlayerStateStore {
 
     suspend fun restoreJson(context: Context, json: JSONObject?) = withContext(Dispatchers.IO) {
         if (json == null) return@withContext
-        val bookSpeeds = parseSpeeds(json.optJSONObject("bookSpeeds"))
-        val seriesSpeeds = parseSpeeds(json.optJSONObject("seriesSpeeds"))
-        val brokenUris = parseBroken(json.optJSONArray("brokenUris"))
-        val seriesResume = parseSeriesResume(json.optJSONObject("seriesResume"))
+        val bookSpeeds = parseSpeeds(requiredObject(json, "bookSpeeds"))
+        val seriesSpeeds = parseSpeeds(requiredObject(json, "seriesSpeeds"))
+        val brokenUris = parseBroken(requiredArray(json, "brokenUris"))
+        val seriesResume = parseSeriesResume(requiredObject(json, "seriesResume"))
 
         val app = context.applicationContext
         val room = AudoibooDatabase.get(app)
@@ -154,26 +154,66 @@ internal object PlayerStateStore {
         refresh(app)
     }
 
+    private fun requiredObject(root: JSONObject, key: String): JSONObject? {
+        if (!root.has(key) || root.isNull(key)) return null
+        return root.opt(key) as? JSONObject
+            ?: throw IllegalArgumentException("Backup player state $key is invalid")
+    }
+
+    private fun requiredArray(root: JSONObject, key: String): JSONArray? {
+        if (!root.has(key) || root.isNull(key)) return null
+        return root.opt(key) as? JSONArray
+            ?: throw IllegalArgumentException("Backup player state $key is invalid")
+    }
+
     private fun parseSpeeds(obj: JSONObject?): Map<String, Float> {
         if (obj == null) return emptyMap()
-        return obj.keys().asSequence().mapNotNull { key ->
-            key.takeIf(String::isNotBlank)?.let { it to obj.optDouble(key, 1.0).toFloat().coerceIn(.5f, 3f) }
-        }.toMap()
+        val out = LinkedHashMap<String, Float>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            require(PlayerStateValuePolicy.validKey(key)) { "Backup player speed key is invalid" }
+            val speed = PlayerStateValuePolicy.speed(obj.opt(key))
+                ?: throw IllegalArgumentException("Backup player speed is invalid for $key")
+            out[key] = speed
+        }
+        return out
     }
 
     private fun parseBroken(a: JSONArray?): List<String> {
         if (a == null) return emptyList()
-        return (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) }.distinct()
+        val out = LinkedHashSet<String>()
+        for (i in 0 until a.length()) {
+            val uri = PlayerStateValuePolicy.text(a.opt(i), allowBlank = false)
+                ?: throw IllegalArgumentException("Backup broken track URI is invalid")
+            out += uri
+        }
+        return out.toList()
     }
 
     private fun parseSeriesResume(obj: JSONObject?): Map<String, SeriesResumeEntity> {
         if (obj == null) return emptyMap()
-        return obj.keys().asSequence().mapNotNull { series ->
-            val o = obj.optJSONObject(series) ?: return@mapNotNull null
-            val dir = o.optString("dir").takeIf(String::isNotBlank) ?: return@mapNotNull null
-            series.takeIf(String::isNotBlank)?.let {
-                it to SeriesResumeEntity(it, dir, o.optString("title", dir), o.optString("uri"), o.optLong("at", 0L))
-            }
-        }.toMap()
+        val out = LinkedHashMap<String, SeriesResumeEntity>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val series = keys.next()
+            require(PlayerStateValuePolicy.validKey(series)) { "Backup series resume key is invalid" }
+            val value = obj.opt(series)
+            val o = value as? JSONObject
+                ?: throw IllegalArgumentException("Backup series resume entry is invalid for $series")
+            val dir = PlayerStateValuePolicy.text(o.opt("dir"), allowBlank = false)
+                ?: throw IllegalArgumentException("Backup series resume dir is invalid for $series")
+            val title = if (!o.has("title") || o.isNull("title")) dir else
+                PlayerStateValuePolicy.text(o.opt("title"))
+                    ?: throw IllegalArgumentException("Backup series resume title is invalid for $series")
+            val uri = if (!o.has("uri") || o.isNull("uri")) "" else
+                PlayerStateValuePolicy.text(o.opt("uri"))
+                    ?: throw IllegalArgumentException("Backup series resume URI is invalid for $series")
+            val at = if (!o.has("at") || o.isNull("at")) 0L else
+                PlayerStateValuePolicy.timestamp(o.opt("at"))
+                    ?: throw IllegalArgumentException("Backup series resume timestamp is invalid for $series")
+            out[series] = SeriesResumeEntity(series, dir, title, uri, at)
+        }
+        return out
     }
 }

@@ -50,6 +50,7 @@ object TrackPositionStore {
     fun save(context: Context, uri: Uri, positionMs: Long) {
         initialize(context)
         val key = uri.toString()
+        if (!TrackPositionPolicy.validKey(key)) return
         val value = positionMs.coerceAtLeast(0L)
         positions.value = positions.value + (key to value)
         synchronized(pending) { pending[key] = value }
@@ -63,7 +64,7 @@ object TrackPositionStore {
     suspend fun exportJson(context: Context): JSONObject {
         val out = JSONObject()
         AudoibooDatabase.get(context.applicationContext).libraryDao().trackPositions().forEach { row ->
-            out.put(row.uri, row.positionMs.coerceAtLeast(0L))
+            if (TrackPositionPolicy.validKey(row.uri)) out.put(row.uri, row.positionMs.coerceAtLeast(0L))
         }
         return out
     }
@@ -74,8 +75,10 @@ object TrackPositionStore {
             val keys = json.keys()
             while (keys.hasNext()) {
                 val uri = keys.next()
-                if (uri.isBlank()) continue
-                add(TrackPositionEntity(uri, json.optLong(uri, 0L).coerceAtLeast(0L)))
+                require(TrackPositionPolicy.validKey(uri)) { "Backup track position URI is invalid" }
+                val value = TrackPositionPolicy.normalize(json.opt(uri))
+                    ?: throw IllegalArgumentException("Backup track position is invalid for $uri")
+                add(TrackPositionEntity(uri, value))
             }
         }
         val app = context.applicationContext

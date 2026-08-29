@@ -67,24 +67,36 @@ object BackupStore {
 
     fun importJson(context: Context, raw: String) {
         val root = validatedRoot(raw)
-        val tracker = root.getString("tracker")
-        context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
-        restoreNonTrackerState(context, root)
         restoreScope.launch {
-            runCatching {
-                restoreRoomState(context.applicationContext, tracker, root)
-                recoverAfterRestore(context.applicationContext)
-            }
+            runCatching { restoreWithRollback(context.applicationContext, root) }
         }
     }
 
     suspend fun importJsonToRoom(context: Context, raw: String) {
         val root = validatedRoot(raw)
+        restoreWithRollback(context.applicationContext, root)
+    }
+
+    private suspend fun restoreWithRollback(context: Context, root: JSONObject) {
+        val app = context.applicationContext
+        val rollbackRaw = exportJsonFromRoom(app, includeSettings = true, includeBookmarks = true, includeStatistics = true)
+        try {
+            applyValidatedRoot(app, root)
+            recoverAfterRestore(app)
+        } catch (restoreError: Throwable) {
+            runCatching {
+                val rollbackRoot = validatedRoot(rollbackRaw)
+                applyValidatedRoot(app, rollbackRoot)
+            }
+            throw restoreError
+        }
+    }
+
+    private suspend fun applyValidatedRoot(context: Context, root: JSONObject) {
         val tracker = root.getString("tracker")
-        context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
+        context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).commit()
         restoreNonTrackerState(context, root)
         restoreRoomState(context.applicationContext, tracker, root)
-        recoverAfterRestore(context)
     }
 
     private fun validatedRoot(raw: String): JSONObject {
@@ -228,6 +240,6 @@ object BackupStore {
                 is String -> e.putString(k, v)
             }
         }
-        e.apply()
+        e.commit()
     }
 }

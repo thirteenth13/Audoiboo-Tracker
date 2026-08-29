@@ -73,6 +73,7 @@ internal object PlaybackStateRepository {
         }
         parseSnapshot(resumeJson?.toString())?.let { dao.upsertPlaybackResume(it.toEntity()) }
         markMigrated(app)
+        PlaybackResumeStore.refresh(app)
     }
 
     /** One-time import from pre-Room builds. After this flag is set SharedPreferences is never authoritative again. */
@@ -92,6 +93,7 @@ internal object PlaybackStateRepository {
             parseSnapshot(extrasPrefs.getString(SNAPSHOT_KEY, null))?.let { dao.upsertPlaybackResume(it.toEntity()) }
         }
         markMigrated(app)
+        queuePrefs.edit().remove(QUEUE_KEY).apply()
     }
 
     /** Explicit legacy import used only while restoring an old backup. */
@@ -101,12 +103,14 @@ internal object PlaybackStateRepository {
         val queuePrefs = app.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE)
         if (queuePrefs.contains(QUEUE_KEY)) {
             dao.replacePlaybackQueue(parseQueue(queuePrefs.getString(QUEUE_KEY, "[]").orEmpty()))
+            queuePrefs.edit().remove(QUEUE_KEY).apply()
         }
         val extrasPrefs = app.getSharedPreferences(EXTRAS_PREFS, Context.MODE_PRIVATE)
         if (extrasPrefs.contains(SNAPSHOT_KEY)) {
             parseSnapshot(extrasPrefs.getString(SNAPSHOT_KEY, null))?.let { dao.upsertPlaybackResume(it.toEntity()) }
         }
         markMigrated(app)
+        PlaybackResumeStore.refresh(app)
     }
 
     private fun markMigrated(context: Context) {

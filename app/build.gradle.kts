@@ -16,22 +16,30 @@ android {
         versionName = "1.1.4-dev"
     }
 
+    val releaseStoreFile = providers.gradleProperty("AUDOIBOO_STORE_FILE").orNull
+    val releaseStorePassword = providers.gradleProperty("AUDOIBOO_STORE_PASSWORD").orNull
+    val releaseKeyAlias = providers.gradleProperty("AUDOIBOO_KEY_ALIAS").orNull
+    val releaseKeyPassword = providers.gradleProperty("AUDOIBOO_KEY_PASSWORD").orNull
+    val hasReleaseSigning = !releaseStoreFile.isNullOrBlank() &&
+        !releaseStorePassword.isNullOrBlank() &&
+        !releaseKeyAlias.isNullOrBlank() &&
+        !releaseKeyPassword.isNullOrBlank()
+
     signingConfigs {
-        create("stableRelease") {
-            storeFile = rootProject.file(".github/keys/audoiboo-release.jks")
-            storePassword = "Audoiboo2026"
-            keyAlias = "audoiboo"
-            keyPassword = "Audoiboo2026"
+        if (hasReleaseSigning) {
+            create("stableRelease") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
 
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("stableRelease")
-        }
-        getByName("debug") {
-            signingConfig = signingConfigs.getByName("stableRelease")
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("stableRelease")
         }
     }
 

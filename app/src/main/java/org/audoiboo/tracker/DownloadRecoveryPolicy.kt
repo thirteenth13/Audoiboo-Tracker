@@ -15,5 +15,5 @@ internal object DownloadRecoveryPolicy {
         else -> state
     }
 
-    fun workerCanKick(state: ManagedDownloadState): Boolean = DownloadControlPolicy.canStart(state)
+    fun workerCanKick(state: ManagedDownloadState): Boolean = DownloadControlPolicy.canAutoStart(state)
 }

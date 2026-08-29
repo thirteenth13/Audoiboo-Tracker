@@ -51,7 +51,7 @@ internal object DownloadScheduler {
             .forEach { record ->
                 val normalized = DownloadRecoveryPolicy.normalizedState(record.state)
                 if (normalized != record.state) {
-                    ManagedDownloads.saveOne(context, record.copy(state = normalized, error = null), durable = true)
+                    ManagedDownloads.saveOne(context, record.copy(state = normalized, error = null))
                 }
                 enqueue(context, record.id)
             }

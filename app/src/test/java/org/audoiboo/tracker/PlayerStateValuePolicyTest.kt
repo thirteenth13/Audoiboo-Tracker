@@ -7,7 +7,7 @@ import org.junit.Test
 
 class PlayerStateValuePolicyTest {
     @Test fun speedsMustBeFiniteNumbersWithinPlayerRange() {
-        assertEquals(1.25f, PlayerStateValuePolicy.speed(1.25), .0001f)
+        assertEquals(1.25f, requireNotNull(PlayerStateValuePolicy.speed(1.25)), .0001f)
         assertNull(PlayerStateValuePolicy.speed("1.25"))
         assertNull(PlayerStateValuePolicy.speed(Double.NaN))
         assertNull(PlayerStateValuePolicy.speed(Double.POSITIVE_INFINITY))

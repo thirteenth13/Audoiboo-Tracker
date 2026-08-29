@@ -10,6 +10,24 @@ internal object PlayerLogic {
         val playableCount: Int
     )
 
+    data class AutoTransition(
+        val targetIndex: Int?,
+        val shouldPlay: Boolean,
+        val consumeSleepAtEnd: Boolean
+    )
+
+    fun automaticTransition(
+        trackCount: Int,
+        currentIndex: Int,
+        brokenIndices: Set<Int>,
+        sleepAtEndOfTrack: Boolean
+    ): AutoTransition {
+        if (sleepAtEndOfTrack) return AutoTransition(null, false, true)
+        if (currentIndex !in brokenIndices) return AutoTransition(currentIndex.takeIf { it in 0 until trackCount }, true, false)
+        val next = nextPlayableIndex(trackCount, currentIndex, brokenIndices)
+        return AutoTransition(next, next != null, false)
+    }
+
     fun smartRewindForGapMs(gapMs: Long): Long = when {
         gapMs.coerceAtLeast(0L) >= 24 * 60 * 60_000L -> 60_000L
         gapMs >= 60 * 60_000L -> 30_000L
@@ -39,11 +57,6 @@ internal object PlayerLogic {
         return (0 until trackCount).count { it !in brokenIndices }
     }
 
-    /**
-     * Computes book progress from persisted positions while excluding tracks already known to be
-     * broken. Unknown duration never makes a started track look finished, and impossible saved
-     * positions are clamped to the known duration.
-     */
     fun bookProgress(
         positionsMs: List<Long>,
         durationsMs: List<Long>,
@@ -52,18 +65,13 @@ internal object PlayerLogic {
     ): Progress {
         val count = maxOf(positionsMs.size, durationsMs.size)
         if (count == 0) return Progress(if (trackerRead) 1f else 0f, false, trackerRead, 0, 0)
-
         val playable = (0 until count).filterNot { it in brokenIndices }
         if (playable.isEmpty()) {
             val started = positionsMs.any { it > 0L }
             return Progress(if (trackerRead) 1f else 0f, started, trackerRead, 0, 0)
         }
-
         val lastStartedOriginal = playable.lastOrNull { index -> (positionsMs.getOrNull(index) ?: 0L) > 0L }
-        if (lastStartedOriginal == null) {
-            return Progress(if (trackerRead) 1f else 0f, false, trackerRead, 0, playable.size)
-        }
-
+        if (lastStartedOriginal == null) return Progress(if (trackerRead) 1f else 0f, false, trackerRead, 0, playable.size)
         val playableOrdinal = playable.indexOf(lastStartedOriginal)
         val rawPosition = (positionsMs.getOrNull(lastStartedOriginal) ?: 0L).coerceAtLeast(0L)
         val duration = (durationsMs.getOrNull(lastStartedOriginal) ?: 0L).coerceAtLeast(0L)
@@ -73,30 +81,15 @@ internal object PlayerLogic {
         val lastPlayable = playable.last()
         val finishedByPosition = lastStartedOriginal == lastPlayable && duration > 0L && within >= .95f
         val finished = trackerRead || finishedByPosition
-        return Progress(
-            fraction = if (finished) 1f else fraction,
-            started = true,
-            finished = finished,
-            currentTrack = lastStartedOriginal + 1,
-            playableCount = playable.size
-        )
+        return Progress(if (finished) 1f else fraction, true, finished, lastStartedOriginal + 1, playable.size)
     }
 
-    /** Current-player progress with broken tracks removed from the denominator. */
-    fun currentBookProgress(
-        trackCount: Int,
-        currentIndex: Int,
-        positionMs: Long,
-        durationMs: Long,
-        brokenIndices: Set<Int> = emptySet()
-    ): Float {
+    fun currentBookProgress(trackCount: Int, currentIndex: Int, positionMs: Long, durationMs: Long, brokenIndices: Set<Int> = emptySet()): Float {
         if (trackCount <= 0 || currentIndex !in 0 until trackCount) return 0f
         val playable = (0 until trackCount).filterNot { it in brokenIndices }
         val ordinal = playable.indexOf(currentIndex)
         if (ordinal < 0 || playable.isEmpty()) return 0f
-        val within = if (durationMs > 0L) {
-            positionMs.coerceIn(0L, durationMs).toFloat() / durationMs
-        } else 0f
+        val within = if (durationMs > 0L) positionMs.coerceIn(0L, durationMs).toFloat() / durationMs else 0f
         return ((ordinal + within) / playable.size.toFloat()).coerceIn(0f, 1f)
     }
 
@@ -118,10 +111,6 @@ internal object PlayerLogic {
         return (start downTo 0).firstOrNull { it !in brokenIndices }
     }
 
-    /**
-     * A persisted resume may point at a file that was later marked broken. Prefer the requested
-     * track when playable, then the next playable track, then the closest playable one before it.
-     */
     fun resumePlayableIndex(trackCount: Int, requestedIndex: Int, brokenIndices: Set<Int>): Int? {
         if (trackCount <= 0) return null
         val requested = requestedIndex.coerceIn(0, trackCount - 1)

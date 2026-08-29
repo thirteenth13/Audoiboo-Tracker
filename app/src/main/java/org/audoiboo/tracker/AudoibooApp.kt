@@ -19,9 +19,6 @@ class AudoibooApp : Application() {
 
     private val playerExtrasListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         ContinueListeningWidget.updateAll(this)
-        if (key == null || key == "playback_snapshot") {
-            appScope.launch { runCatching { PlaybackStateRepository.syncFromLegacy(this@AudoibooApp) } }
-        }
         if (key == null || key == "book_tags") {
             appScope.launch { runCatching { RoomTagSync.syncFromLegacy(this@AudoibooApp) } }
         }
@@ -68,6 +65,7 @@ class AudoibooApp : Application() {
         RoomTrackerCatalog.start(this)
         TrackPositionStore.initialize(this)
         PlaybackQueueStore.initialize(this)
+        PlaybackResumeStore.initialize(this)
 
         playerExtrasPrefs = getSharedPreferences("player_extras", Context.MODE_PRIVATE)
         playerExtrasPrefs.registerOnSharedPreferenceChangeListener(playerExtrasListener)

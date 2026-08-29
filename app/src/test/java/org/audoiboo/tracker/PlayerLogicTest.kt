@@ -7,6 +7,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlayerLogicTest {
+    @Test fun automaticTransitionNeverRestartsPlaybackAfterSleepAtTrackEnd() {
+        val sleeping = PlayerLogic.automaticTransition(4, 1, setOf(1, 2), sleepAtEndOfTrack = true)
+        assertNull(sleeping.targetIndex)
+        assertFalse(sleeping.shouldPlay)
+        assertTrue(sleeping.consumeSleepAtEnd)
+
+        val skipBroken = PlayerLogic.automaticTransition(4, 1, setOf(1, 2), sleepAtEndOfTrack = false)
+        assertEquals(3, skipBroken.targetIndex)
+        assertTrue(skipBroken.shouldPlay)
+        assertFalse(skipBroken.consumeSleepAtEnd)
+
+        val noPlayable = PlayerLogic.automaticTransition(3, 1, setOf(1, 2), sleepAtEndOfTrack = false)
+        assertNull(noPlayable.targetIndex)
+        assertFalse(noPlayable.shouldPlay)
+    }
+
     @Test fun smartRewindBoundaries() {
         assertEquals(0L, PlayerLogic.smartRewindForGapMs(5 * 60_000L - 1))
         assertEquals(10_000L, PlayerLogic.smartRewindForGapMs(5 * 60_000L))
@@ -46,24 +62,18 @@ class PlayerLogicTest {
         assertFalse(empty.started)
         assertFalse(empty.finished)
         assertEquals(0, empty.playableCount)
-
         val half = PlayerLogic.bookProgress(listOf(5_000L), listOf(10_000L))
         assertEquals(.5f, half.fraction, .0001f)
         assertTrue(half.started)
         assertFalse(half.finished)
         assertEquals(1, half.currentTrack)
-
         val done = PlayerLogic.bookProgress(listOf(9_500L), listOf(10_000L))
         assertEquals(1f, done.fraction, .0001f)
         assertTrue(done.finished)
     }
 
     @Test fun brokenTracksDoNotBlockBookCompletion() {
-        val progress = PlayerLogic.bookProgress(
-            positionsMs = listOf(10_000L, 0L, 9_500L),
-            durationsMs = listOf(10_000L, 10_000L, 10_000L),
-            brokenIndices = setOf(1)
-        )
+        val progress = PlayerLogic.bookProgress(listOf(10_000L, 0L, 9_500L), listOf(10_000L, 10_000L, 10_000L), setOf(1))
         assertTrue(progress.finished)
         assertEquals(1f, progress.fraction, .0001f)
         assertEquals(2, progress.playableCount)
@@ -72,24 +82,14 @@ class PlayerLogicTest {
 
     @Test fun unknownDurationCanStartButCannotAutoFinish() {
         val progress = PlayerLogic.bookProgress(listOf(42_000L), listOf(0L))
-        assertTrue(progress.started)
-        assertFalse(progress.finished)
-        assertEquals(0f, progress.fraction, .0001f)
+        assertTrue(progress.started); assertFalse(progress.finished); assertEquals(0f, progress.fraction, .0001f)
     }
 
     @Test fun trackerReadWinsEvenWithoutPlayableFiles() {
         val emptyRead = PlayerLogic.bookProgress(emptyList(), emptyList(), trackerRead = true)
-        assertTrue(emptyRead.finished)
-        assertEquals(1f, emptyRead.fraction)
-
-        val allBrokenRead = PlayerLogic.bookProgress(
-            positionsMs = listOf(1_000L),
-            durationsMs = listOf(10_000L),
-            brokenIndices = setOf(0),
-            trackerRead = true
-        )
-        assertTrue(allBrokenRead.finished)
-        assertEquals(0, allBrokenRead.playableCount)
+        assertTrue(emptyRead.finished); assertEquals(1f, emptyRead.fraction)
+        val allBrokenRead = PlayerLogic.bookProgress(listOf(1_000L), listOf(10_000L), setOf(0), true)
+        assertTrue(allBrokenRead.finished); assertEquals(0, allBrokenRead.playableCount)
     }
 
     @Test fun currentProgressExcludesBrokenTracks() {
@@ -107,29 +107,18 @@ class PlayerLogicTest {
 
     @Test fun brokenTrackNavigationSkipsKnownFailures() {
         val broken = setOf(1, 2, 4)
-        assertEquals(3, PlayerLogic.nextPlayableIndex(6, 0, broken))
-        assertEquals(5, PlayerLogic.nextPlayableIndex(6, 3, broken))
-        assertNull(PlayerLogic.nextPlayableIndex(6, 5, broken))
-        assertEquals(3, PlayerLogic.previousPlayableIndex(6, 5, broken))
-        assertEquals(0, PlayerLogic.previousPlayableIndex(6, 3, broken))
-        assertNull(PlayerLogic.previousPlayableIndex(6, 0, broken))
+        assertEquals(3, PlayerLogic.nextPlayableIndex(6, 0, broken)); assertEquals(5, PlayerLogic.nextPlayableIndex(6, 3, broken)); assertNull(PlayerLogic.nextPlayableIndex(6, 5, broken))
+        assertEquals(3, PlayerLogic.previousPlayableIndex(6, 5, broken)); assertEquals(0, PlayerLogic.previousPlayableIndex(6, 3, broken)); assertNull(PlayerLogic.previousPlayableIndex(6, 0, broken))
     }
 
     @Test fun resumeMovesOffBrokenPersistedTrack() {
         val broken = setOf(1, 2)
-        assertEquals(0, PlayerLogic.resumePlayableIndex(4, 0, broken))
-        assertEquals(3, PlayerLogic.resumePlayableIndex(4, 1, broken))
-        assertEquals(0, PlayerLogic.resumePlayableIndex(3, 2, setOf(1, 2)))
-        assertNull(PlayerLogic.resumePlayableIndex(2, 0, setOf(0, 1)))
-        assertNull(PlayerLogic.resumePlayableIndex(0, 0, emptySet()))
+        assertEquals(0, PlayerLogic.resumePlayableIndex(4, 0, broken)); assertEquals(3, PlayerLogic.resumePlayableIndex(4, 1, broken))
+        assertEquals(0, PlayerLogic.resumePlayableIndex(3, 2, setOf(1, 2))); assertNull(PlayerLogic.resumePlayableIndex(2, 0, setOf(0, 1))); assertNull(PlayerLogic.resumePlayableIndex(0, 0, emptySet()))
     }
 
     @Test fun parsesRealisticSeriesNumbers() {
-        assertEquals(26, PlayerLogic.parseBookNumber("Другая сторона 26"))
-        assertEquals(5, PlayerLogic.parseBookNumber("Книга 5 (2)"))
-        assertEquals(26, PlayerLogic.parseBookNumber("26 - Назва"))
-        assertEquals(3, PlayerLogic.parseBookNumber("Частина 3"))
-        assertNull(PlayerLogic.parseBookNumber("Книга без номера"))
+        assertEquals(26, PlayerLogic.parseBookNumber("Другая сторона 26")); assertEquals(5, PlayerLogic.parseBookNumber("Книга 5 (2)")); assertEquals(26, PlayerLogic.parseBookNumber("26 - Назва")); assertEquals(3, PlayerLogic.parseBookNumber("Частина 3")); assertNull(PlayerLogic.parseBookNumber("Книга без номера"))
     }
 
     @Test fun queueMoveAndPlayNextAreStable() {

@@ -39,6 +39,7 @@ internal object PlaybackStateRepository {
     suspend fun saveQueue(context: Context, dirs: List<String>) = withContext(Dispatchers.IO) {
         val clean = dirs.filter { it.isNotBlank() }.distinct()
         AudoibooDatabase.get(context).libraryDao().replacePlaybackQueue(clean)
+        // Compatibility mirror until PlayerActivity's final local queue facade is removed.
         writeLegacyQueue(context, clean)
     }
 
@@ -48,10 +49,35 @@ internal object PlaybackStateRepository {
         writeLegacySnapshot(context, value, queue(context))
     }
 
-    /**
-     * Two-way transition reconciliation. Existing legacy values win during migration; when a
-     * legacy key is missing, Room repopulates it instead of treating the missing key as empty state.
-     */
+    suspend fun exportQueueJson(context: Context): JSONArray = withContext(Dispatchers.IO) {
+        JSONArray().apply { queue(context).forEach(::put) }
+    }
+
+    suspend fun exportResumeJson(context: Context): JSONObject? = withContext(Dispatchers.IO) {
+        snapshot(context)?.let { value ->
+            JSONObject()
+                .put("dir", value.dir)
+                .put("title", value.title)
+                .put("uri", value.uri)
+                .put("fileIndex", value.fileIndex)
+                .put("positionMs", value.positionMs)
+                .put("updatedAt", value.updatedAt)
+        }
+    }
+
+    suspend fun restoreRoomState(context: Context, queueJson: JSONArray?, resumeJson: JSONObject?) = withContext(Dispatchers.IO) {
+        val dao = AudoibooDatabase.get(context).libraryDao()
+        if (queueJson != null) {
+            val dirs = (0 until queueJson.length()).mapNotNull { queueJson.optString(it).takeIf(String::isNotBlank) }.distinct()
+            dao.replacePlaybackQueue(dirs)
+            writeLegacyQueue(context, dirs)
+        }
+        parseSnapshot(resumeJson?.toString())?.let {
+            dao.upsertPlaybackResume(it.toEntity())
+            writeLegacySnapshot(context, it, dao.playbackQueue().map { row -> row.dir })
+        }
+    }
+
     suspend fun reconcile(context: Context) = withContext(Dispatchers.IO) {
         val dao = AudoibooDatabase.get(context).libraryDao()
         val queuePrefs = context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE)

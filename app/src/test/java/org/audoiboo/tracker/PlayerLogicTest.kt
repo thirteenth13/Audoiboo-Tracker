@@ -96,6 +96,25 @@ class PlayerLogicTest {
         assertEquals(9_000L, PlayerLogic.safeResumePosition(10_000L, 0L, 1_000L))
     }
 
+    @Test fun brokenTrackNavigationSkipsKnownFailures() {
+        val broken = setOf(1, 2, 4)
+        assertEquals(3, PlayerLogic.nextPlayableIndex(6, 0, broken))
+        assertEquals(5, PlayerLogic.nextPlayableIndex(6, 3, broken))
+        assertNull(PlayerLogic.nextPlayableIndex(6, 5, broken))
+        assertEquals(3, PlayerLogic.previousPlayableIndex(6, 5, broken))
+        assertEquals(0, PlayerLogic.previousPlayableIndex(6, 3, broken))
+        assertNull(PlayerLogic.previousPlayableIndex(6, 0, broken))
+    }
+
+    @Test fun resumeMovesOffBrokenPersistedTrack() {
+        val broken = setOf(1, 2)
+        assertEquals(0, PlayerLogic.resumePlayableIndex(4, 0, broken))
+        assertEquals(3, PlayerLogic.resumePlayableIndex(4, 1, broken))
+        assertEquals(0, PlayerLogic.resumePlayableIndex(3, 2, setOf(1, 2)))
+        assertNull(PlayerLogic.resumePlayableIndex(2, 0, setOf(0, 1)))
+        assertNull(PlayerLogic.resumePlayableIndex(0, 0, emptySet()))
+    }
+
     @Test fun parsesRealisticSeriesNumbers() {
         assertEquals(26, PlayerLogic.parseBookNumber("Другая сторона 26"))
         assertEquals(5, PlayerLogic.parseBookNumber("Книга 5 (2)"))

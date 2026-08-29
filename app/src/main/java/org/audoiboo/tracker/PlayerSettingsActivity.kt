@@ -1,9 +1,12 @@
 package org.audoiboo.tracker
 
 import android.content.Intent
+import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -11,12 +14,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
 class PlayerSettingsActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { AudoibooTheme(this) { PlayerSettingsScreen(this) } }
     }
@@ -97,7 +101,38 @@ private fun PlayerSettingsScreen(activity: ComponentActivity) {
             migrationMessage?.let { Text(it, modifier=Modifier.padding(horizontal=20.dp, vertical=8.dp), style=MaterialTheme.typography.bodySmall) }
             HorizontalDivider()
             OutlinedButton(onClick = { activity.startActivity(Intent(activity, SeriesPlaybackSettingsActivity::class.java)) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text("Швидкість за замовчуванням для серій") }
-            OutlinedButton(onClick = { activity.startActivity(Intent(activity, SleepTimerActivity::class.java)) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text("Таймер сну") }
+            OutlinedButton(onClick = { activity.startActivity(Intent(activity, SleepTimerActivity::class.java)) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text("Розширений таймер сну") }
+            OutlinedButton(onClick = { activity.startActivity(Intent(activity, ListeningStatsActivity::class.java)) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text("Детальна статистика прослуховування") }
+            OutlinedButton(onClick = { activity.startActivity(Intent(activity, QueueEditorActivity::class.java)) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text("Черга — перетягування книг") }
+            OutlinedButton(onClick = { activity.startActivity(Intent(activity, LibraryToolsActivity::class.java)) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text("Теги, smart-lists та експорт закладок") }
         }
     }
+}
+
+@Composable
+private fun SettingSwitch(title:String, subtitle:String, checked:Boolean, onChange:(Boolean)->Unit){
+    Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=14.dp),verticalAlignment=Alignment.CenterVertically){
+        Column(Modifier.weight(1f)){
+            Text(title,style=MaterialTheme.typography.titleMedium)
+            Text(subtitle,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked,onChange)
+    }
+    HorizontalDivider()
+}
+
+@Composable
+private fun SettingChoice(title:String, value:String, choices:List<Pair<Int,String>>, onChoose:(Int)->Unit){
+    var open by remember{mutableStateOf(false)}
+    Column(Modifier.fillMaxWidth().clickable{open=true}.padding(horizontal=20.dp,vertical=14.dp)){
+        Text(title,style=MaterialTheme.typography.titleMedium)
+        Text(value,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    HorizontalDivider()
+    if(open) AlertDialog(
+        onDismissRequest={open=false},
+        title={Text(title)},
+        text={Column{choices.forEach{(v,label)->TextButton(onClick={onChoose(v);open=false},modifier=Modifier.fillMaxWidth()){Text(label,modifier=Modifier.fillMaxWidth())}}}},
+        confirmButton={TextButton(onClick={open=false}){Text("Скасувати")}}
+    )
 }

@@ -52,6 +52,7 @@ internal object PlayerTagStore {
         initialize(context)
         val key = RoomTagSync.normalizeDir(dir)
         val clean = tags.map { it.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase() }
+        if (ready && state.value[key].orEmpty() == clean) return
         state.value = state.value + (key to clean)
         val app = context.applicationContext
         scope.launch {

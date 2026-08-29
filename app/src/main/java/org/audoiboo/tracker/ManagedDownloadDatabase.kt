@@ -139,18 +139,27 @@ internal object ManagedDownloadRoomStore {
         val prefs = context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
         val raw = prefs.getString(LEGACY_KEY, null) ?: return
         val dao = ManagedDownloadDatabase.get(context).dao()
-        if (dao.count() == 0) {
+        val roomCount = dao.count()
+        var legacyParsed = false
+
+        if (roomCount == 0) {
             val items = parseLegacy(raw)
-            if (items.isNotEmpty()) {
-                dao.upsertAll(items.map { it.toEntity() })
-                dao.prune()
+            if (items != null) {
+                legacyParsed = true
+                if (items.isNotEmpty()) {
+                    dao.upsertAll(items.take(200).map { it.toEntity() })
+                    dao.prune()
+                }
             }
         }
-        prefs.edit().remove(LEGACY_KEY).commit()
+
+        if (ManagedDownloadMigrationPolicy.shouldRemoveLegacy(roomCount, legacyParsed)) {
+            prefs.edit().remove(LEGACY_KEY).commit()
+        }
     }
 
-    private fun parseLegacy(raw: String): List<ManagedDownloadRecord> =
-        runCatching { parseArray(JSONArray(raw)) }.getOrDefault(emptyList())
+    private fun parseLegacy(raw: String): List<ManagedDownloadRecord>? =
+        runCatching { parseArray(JSONArray(raw)) }.getOrNull()
 
     private fun parseArray(arr: JSONArray): List<ManagedDownloadRecord> =
         (0 until arr.length()).mapNotNull { index ->
@@ -196,7 +205,7 @@ internal object ManagedDownloadRoomStore {
     }
 
     private fun sanitizeLegacyPath(value: String): String =
-        value.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
+        value.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
 }
 
 internal fun ManagedDownloadRecord.toEntity() = ManagedDownloadEntity(

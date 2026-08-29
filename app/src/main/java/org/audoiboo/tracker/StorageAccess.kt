@@ -10,23 +10,41 @@ import java.io.OutputStream
 internal object StorageAccess {
     private const val PREFS = "storage_access"
     private const val TREE = "tree_uri"
+    private const val RUNTIME_PREFS = "storage_access_runtime"
+    private const val LAST_VALID_TREE = "last_valid_tree_uri"
 
     fun treeUri(context: Context): Uri? {
-        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(TREE, null) ?: return null
-        val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return null
-        return uri.takeIf { hasPersistedPermission(context, it) }
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val runtime = context.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
+        val restoredRaw = prefs.getString(TREE, null)
+        val fallbackRaw = runtime.getString(LAST_VALID_TREE, null)
+        val restored = restoredRaw?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        val fallback = fallbackRaw?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        val selectedRaw = StorageTreePolicy.select(
+            restoredRaw = restoredRaw,
+            restoredAllowed = restored != null && hasPersistedPermission(context, restored),
+            fallbackRaw = fallbackRaw,
+            fallbackAllowed = fallback != null && hasPersistedPermission(context, fallback)
+        ) ?: return null
+        val selected = runCatching { Uri.parse(selectedRaw) }.getOrNull() ?: return null
+        if (selectedRaw != restoredRaw) prefs.edit().putString(TREE, selectedRaw).apply()
+        runtime.edit().putString(LAST_VALID_TREE, selectedRaw).apply()
+        return selected
     }
 
     fun setTree(context: Context, uri: Uri?) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val runtime = context.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
         val old = prefs.getString(TREE, null)?.let { runCatching { Uri.parse(it) }.getOrNull() }
         if (uri == null) {
             prefs.edit().remove(TREE).apply()
+            runtime.edit().remove(LAST_VALID_TREE).apply()
             old?.let { releasePermission(context, it) }
             return
         }
         require(hasPersistedPermission(context, uri)) { "Storage tree permission is not persisted" }
         prefs.edit().putString(TREE, uri.toString()).apply()
+        runtime.edit().putString(LAST_VALID_TREE, uri.toString()).apply()
         if (old != null && old != uri) releasePermission(context, old)
     }
 

@@ -60,7 +60,6 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, DownloadResolver {
 }
 
 object BuiltInSourcePlugins {
-    val registry: SourcePluginRegistry by lazy {
-        SourcePluginRegistry(listOf(AudiobooSourcePlugin))
-    }
+    val registry: SourcePluginRegistry
+        get() = BuiltInSourcePluginManager.registry
 }

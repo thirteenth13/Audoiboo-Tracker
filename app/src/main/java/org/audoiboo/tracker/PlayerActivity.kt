@@ -80,8 +80,8 @@ object PlayerPrefs {
     fun save(c: Context, seek:Int, rewind:Int, resume:Boolean, notifications:Boolean, other:Boolean, hours:Int, speed:Boolean, sleep:Boolean, bookmarks:Boolean) {
         c.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putInt("seek",seek).putInt("auto_rewind",rewind).putBoolean("resume_call",resume).putBoolean("pause_notifications",notifications).putBoolean("stop_other",other).putInt("force_hours",hours).putBoolean("show_speed",speed).putBoolean("show_sleep",sleep).putBoolean("show_bookmarks",bookmarks).apply()
     }
-    fun position(c: Context, uri: Uri) = c.getSharedPreferences("player_positions", Context.MODE_PRIVATE).getLong(uri.toString(), 0L)
-    fun savePosition(c: Context, uri: Uri, position: Long) { c.getSharedPreferences("player_positions", Context.MODE_PRIVATE).edit().putLong(uri.toString(), position).apply() }
+    fun position(c: Context, uri: Uri) = TrackPositionStore.position(c, uri)
+    fun savePosition(c: Context, uri: Uri, position: Long) { TrackPositionStore.save(c, uri, position) }
 }
 
 private object PlayerQueueStore {
@@ -91,7 +91,7 @@ private object PlayerQueueStore {
 }
 
 class PlayerActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); setContent { AudoibooTheme(this) { PlayerScreen(this, intent.getStringExtra("relativeDir"), intent.getStringExtra("title")) } } }
+    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); TrackPositionStore.initialize(this); setContent { AudoibooTheme(this) { PlayerScreen(this, intent.getStringExtra("relativeDir"), intent.getStringExtra("title")) } } }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -99,9 +99,10 @@ class PlayerActivity : ComponentActivity() {
 private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initialTitle: String?) {
     val initialSnapshot = remember { PlayerExtras.snapshot(activity) }
     val trackerRevision by RoomTrackerCatalog.revision.collectAsState()
+    val trackPositions by TrackPositionStore.observe().collectAsState()
     var refresh by remember { mutableIntStateOf(0) }
     var allTracks by remember(refresh) { mutableStateOf(loadPlayerTracks(activity, null)) }
-    val books = remember(allTracks, refresh, trackerRevision) { groupTracksIntoBooks(activity, allTracks) }
+    val books = remember(allTracks, refresh, trackerRevision, trackPositions) { groupTracksIntoBooks(activity, allTracks) }
     var queueDirs by remember { mutableStateOf(initialSnapshot?.queue?.takeIf { it.isNotEmpty() } ?: PlayerQueueStore.load(activity)) }
     var activeDir by remember { mutableStateOf(initialDir ?: initialSnapshot?.dir ?: PlayerExtras.resume(activity)?.dir) }
     var requestedTitle by remember { mutableStateOf(initialTitle ?: initialSnapshot?.title ?: PlayerExtras.resume(activity)?.title) }

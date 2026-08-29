@@ -91,10 +91,8 @@ internal object PlayerExtrasRepository {
         PlayerExtrasStore.refresh(app)
     }
 
-    /** Ensure a device upgraded from an older build has Room populated before first Room-native read. */
+    /** Refresh Room-backed caches for callers that still use the reconciliation entry point. */
     suspend fun reconcile(context: Context) {
-        val app = context.applicationContext
-        PlayerExtrasRoomSync.syncFromLegacy(app)
-        PlayerExtrasStore.refresh(app)
+        PlayerExtrasStore.refresh(context.applicationContext)
     }
 }

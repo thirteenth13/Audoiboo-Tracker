@@ -74,6 +74,8 @@ object PluginPackagePolicy {
     fun isPluginPackageName(name: String): Boolean =
         name.substringAfterLast('.', missingDelimiterValue = "").equals(PLUGIN_PACKAGE_EXTENSION, ignoreCase = true)
 
+    fun packageDirectoryName(pluginId: String, version: Int): String = "$pluginId-$version"
+
     private fun isValidHost(host: String): Boolean {
         val normalized = host.lowercase().trim()
         return normalized == host &&

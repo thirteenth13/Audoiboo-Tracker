@@ -23,4 +23,16 @@ class BackupFormatPolicyTest {
         )
         assertEquals("Backup format is invalid", BackupFormatPolicy.validate(-1, true, true))
     }
+
+    @Test fun acceptsMissingOrValidDownloadsPayload() {
+        assertNull(BackupFormatPolicy.validate(12, true, true, hasDownloads = false, downloadsAreValid = true))
+        assertNull(BackupFormatPolicy.validate(12, true, true, hasDownloads = true, downloadsAreValid = true))
+    }
+
+    @Test fun rejectsMalformedDownloadsBeforeRestore() {
+        assertEquals(
+            "Backup downloads data is invalid",
+            BackupFormatPolicy.validate(12, true, true, hasDownloads = true, downloadsAreValid = false)
+        )
+    }
 }

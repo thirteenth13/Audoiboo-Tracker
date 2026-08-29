@@ -14,6 +14,7 @@ import androidx.room.RoomDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
+import org.json.JSONObject
 
 @Entity(tableName = "managed_downloads", indices = [Index("createdAt"), Index("state")])
 internal data class ManagedDownloadEntity(
@@ -52,6 +53,9 @@ internal interface ManagedDownloadDao {
 
     @Query("DELETE FROM managed_downloads WHERE id=:id")
     suspend fun delete(id: String)
+
+    @Query("DELETE FROM managed_downloads")
+    suspend fun clear()
 
     @Query("DELETE FROM managed_downloads WHERE id NOT IN (SELECT id FROM managed_downloads ORDER BY createdAt DESC LIMIT 200)")
     suspend fun prune()
@@ -108,6 +112,23 @@ internal object ManagedDownloadRoomStore {
         withDao(context) { dao -> dao.delete(id) }
     }
 
+    fun exportJson(context: Context): JSONArray = JSONArray().also { out ->
+        list(context).forEach { record -> out.put(record.toBackupJson()) }
+    }
+
+    fun restoreJson(context: Context, value: Any?) {
+        val raw = when (value) {
+            is JSONArray -> value
+            is String -> runCatching { JSONArray(value) }.getOrNull()
+            else -> null
+        } ?: return
+        val records = parseArray(raw)
+        withDao(context) { dao ->
+            dao.clear()
+            if (records.isNotEmpty()) dao.upsertAll(records.take(200).map { it.toEntity() })
+        }
+    }
+
     private fun <T> withDao(context: Context, block: suspend (ManagedDownloadDao) -> T): T {
         initialize(context)
         val dao = ManagedDownloadDatabase.get(context.applicationContext).dao()
@@ -125,13 +146,13 @@ internal object ManagedDownloadRoomStore {
                 dao.prune()
             }
         }
-        // Room is authoritative from this point. Removing the payload prevents accidental
-        // re-import if the download history is later intentionally cleared.
         prefs.edit().remove(LEGACY_KEY).commit()
     }
 
-    private fun parseLegacy(raw: String): List<ManagedDownloadRecord> = runCatching {
-        val arr = JSONArray(raw)
+    private fun parseLegacy(raw: String): List<ManagedDownloadRecord> =
+        runCatching { parseArray(JSONArray(raw)) }.getOrDefault(emptyList())
+
+    private fun parseArray(arr: JSONArray): List<ManagedDownloadRecord> =
         (0 until arr.length()).mapNotNull { index ->
             val o = arr.optJSONObject(index) ?: return@mapNotNull null
             val id = o.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -156,10 +177,26 @@ internal object ManagedDownloadRoomStore {
                 createdAt = o.optLong("createdAt").takeIf { it > 0L } ?: System.currentTimeMillis()
             )
         }
-    }.getOrDefault(emptyList())
+
+    private fun ManagedDownloadRecord.toBackupJson() = JSONObject().apply {
+        put("id", id)
+        put("title", title)
+        put("series", series)
+        put("author", author)
+        put("bookUrl", bookUrl)
+        put("archiveUrl", archiveUrl)
+        put("relativeDir", relativeDir)
+        put("bookDir", bookDir)
+        put("fileName", fileName)
+        put("state", state.name)
+        put("downloaded", downloaded)
+        put("total", total)
+        put("error", error)
+        put("createdAt", createdAt)
+    }
 
     private fun sanitizeLegacyPath(value: String): String =
-        value.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
+        value.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
 }
 
 internal fun ManagedDownloadRecord.toEntity() = ManagedDownloadEntity(

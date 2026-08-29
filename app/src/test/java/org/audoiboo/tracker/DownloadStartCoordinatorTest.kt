@@ -1,47 +1,46 @@
 package org.audoiboo.tracker
 
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DownloadStartCoordinatorTest {
-    @Test fun capsActiveTransfersAndQueuesTheRest() {
-        val c = DownloadStartCoordinator(2)
-        assertTrue(c.request("a"))
-        assertTrue(c.request("b"))
-        assertFalse(c.request("c"))
-        assertEquals(2, c.activeCount())
-        assertEquals(1, c.queuedCount())
-        assertTrue(c.isQueued("c"))
+    @Test fun startsUpToLimitAndQueuesTheRest() {
+        val coordinator = DownloadStartCoordinator(2)
+        assertTrue(coordinator.request("a"))
+        assertTrue(coordinator.request("b"))
+        assertFalse(coordinator.request("c"))
+        assertEquals(2, coordinator.activeCount())
+        assertEquals(1, coordinator.queuedCount())
     }
 
-    @Test fun finishingPromotesNextWithoutExceedingLimit() {
-        val c = DownloadStartCoordinator(2)
-        c.request("a"); c.request("b"); c.request("c")
-        assertEquals("c", c.finished("a"))
-        assertTrue(c.isActive("c"))
-        assertEquals(2, c.activeCount())
-        assertEquals(0, c.queuedCount())
+    @Test fun finishingPromotesQueuedInFifoOrder() {
+        val coordinator = DownloadStartCoordinator(1)
+        assertTrue(coordinator.request("a"))
+        assertFalse(coordinator.request("b"))
+        assertFalse(coordinator.request("c"))
+        assertEquals("b", coordinator.finished("a"))
+        assertEquals("c", coordinator.finished("b"))
+        assertEquals(null, coordinator.finished("c"))
     }
 
-    @Test fun duplicateRequestNeverCreatesDuplicateQueueEntry() {
-        val c = DownloadStartCoordinator(1)
-        assertTrue(c.request("a"))
-        assertFalse(c.request("b"))
-        assertFalse(c.request("b"))
-        assertEquals(1, c.queuedCount())
+    @Test fun duplicateIdIsNeitherStartedNorQueuedTwice() {
+        val coordinator = DownloadStartCoordinator(1)
+        assertTrue(coordinator.request("a"))
+        assertFalse(coordinator.request("a"))
+        assertFalse(coordinator.request("b"))
+        assertFalse(coordinator.request("b"))
+        assertEquals(1, coordinator.activeCount())
+        assertEquals(1, coordinator.queuedCount())
     }
 
-    @Test fun pausedOrCancelledQueuedDownloadCanBeRemovedBeforePromotion() {
-        val c = DownloadStartCoordinator(1)
-        c.request("a"); c.request("b")
-        assertTrue(c.cancelQueued("b"))
-        assertNull(c.finished("a"))
-        assertFalse(c.isActive("b"))
-    }
-
-    @Test fun zeroConfiguredConcurrencyStillAllowsOne() {
-        val c = DownloadStartCoordinator(0)
-        assertTrue(c.request("a"))
-        assertFalse(c.request("b"))
+    @Test fun queuedItemCanBeCancelled() {
+        val coordinator = DownloadStartCoordinator(1)
+        assertTrue(coordinator.request("a"))
+        assertFalse(coordinator.request("b"))
+        assertTrue(coordinator.cancelQueued("b"))
+        assertFalse(coordinator.isQueued("b"))
+        assertEquals(null, coordinator.finished("a"))
     }
 }

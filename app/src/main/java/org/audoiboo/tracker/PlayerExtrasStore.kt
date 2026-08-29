@@ -12,10 +12,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * Room-native live cache for player history, bookmarks and listening statistics.
- * SharedPreferences is used only by the one-time legacy importer.
- */
+/** Room-native live cache for player history, bookmarks and listening statistics. */
 internal object PlayerExtrasStore {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val historyState = MutableStateFlow<List<PlaybackHistoryEntity>>(emptyList())
@@ -44,7 +41,6 @@ internal object PlayerExtrasStore {
         }
         val app = context.applicationContext
         scope.launch {
-            PlayerExtrasRoomSync.syncFromLegacy(app)
             refresh(app)
             ready = true
             val dao = AudoibooDatabase.get(app).libraryDao()
@@ -117,10 +113,9 @@ internal object PlayerExtrasStore {
         initialize(context)
         val delta = deltaMs.coerceAtLeast(0L)
         val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-        totalState.value = totalState.value + delta
+        totalState.value += delta
         val updatedDaily = dailyState.value.associateBy { it.day }.toMutableMap()
-        val current = updatedDaily[day]?.listenedMs ?: 0L
-        updatedDaily[day] = DailyListeningEntity(day, current + delta)
+        updatedDaily[day] = DailyListeningEntity(day, (updatedDaily[day]?.listenedMs ?: 0L) + delta)
         dailyState.value = updatedDaily.values.sortedByDescending { it.day }.take(120)
 
         val app = context.applicationContext
@@ -138,7 +133,6 @@ internal object PlayerExtrasStore {
             } finally {
                 sql.endTransaction()
             }
-            // Refresh the exact persisted total in case initial Room warm-up raced this tick.
             totalState.value = db.libraryDao().listeningTotal()?.listenedMs ?: totalState.value
         }
     }

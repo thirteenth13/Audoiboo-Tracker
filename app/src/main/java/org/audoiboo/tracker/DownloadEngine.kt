@@ -158,7 +158,7 @@ class ManagedDownloadService : Service() {
         private const val NOTIFICATION_ID = 4102
         private val pauses = ConcurrentHashMap<String, AtomicBoolean>()
         private val cancels = ConcurrentHashMap<String, AtomicBoolean>()
-        private val running = ConcurrentHashMap<String, Thread>()
+        private val running = ActiveDownloadRegistry<Thread>()
     }
 
     override fun onCreate() { super.onCreate(); createChannel() }
@@ -179,17 +179,23 @@ class ManagedDownloadService : Service() {
     }
 
     private fun startDownload(id: String) {
-        if (running[id]?.isAlive == true) return
         pauses.getOrPut(id) { AtomicBoolean(false) }.set(false)
         cancels.getOrPut(id) { AtomicBoolean(false) }.set(false)
-        val thread = Thread {
+        lateinit var thread: Thread
+        thread = Thread {
             try { performDownload(id) }
             finally {
-                running.remove(id)
+                running.unregister(id, thread)
                 if (running.isEmpty()) stopForeground(STOP_FOREGROUND_DETACH)
             }
-        }.apply { name = "Audoiboo-$id"; start() }
-        running[id] = thread
+        }.apply { name = "Audoiboo-$id" }
+        if (!running.tryRegister(id, thread)) return
+        try {
+            thread.start()
+        } catch (e: RuntimeException) {
+            running.unregister(id, thread)
+            throw e
+        }
     }
 
     private fun performDownload(id: String) {

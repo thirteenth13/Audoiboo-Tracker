@@ -8,12 +8,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 
 /** Room-backed synchronous facade for the player's current resume snapshot. */
 internal object PlaybackResumeStore {
-    private const val LEGACY_PREFS = "player_extras"
-    private const val LEGACY_KEY = "playback_snapshot"
     private const val WIDGET_REFRESH_MS = 30_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -30,15 +27,12 @@ internal object PlaybackResumeStore {
             initialized = true
         }
         val app = context.applicationContext
-        scope.launch {
-            PlaybackStateRepository.reconcile(app)
-            state.value = PlaybackStateRepository.snapshot(app)
-        }
+        scope.launch { state.value = PlaybackStateRepository.snapshot(app) }
     }
 
     fun current(context: Context): PlaybackStateRepository.Snapshot? {
         initialize(context)
-        return state.value ?: legacySnapshot(context.applicationContext)
+        return state.value
     }
 
     fun rememberBook(context: Context, dir: String, title: String, uri: String) {
@@ -85,19 +79,4 @@ internal object PlaybackResumeStore {
             ContinueListeningWidget.updateAll(app)
         }
     }
-
-    private fun legacySnapshot(context: Context): PlaybackStateRepository.Snapshot? = runCatching {
-        val raw = context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
-            .getString(LEGACY_KEY, null) ?: return null
-        val o = JSONObject(raw)
-        val dir = o.optString("dir").takeIf { it.isNotBlank() } ?: return null
-        PlaybackStateRepository.Snapshot(
-            dir = dir,
-            title = o.optString("title", dir),
-            uri = o.optString("uri"),
-            fileIndex = o.optInt("fileIndex", 0).coerceAtLeast(0),
-            positionMs = o.optLong("positionMs", 0L).coerceAtLeast(0L),
-            updatedAt = o.optLong("updatedAt", System.currentTimeMillis())
-        )
-    }.getOrNull()
 }

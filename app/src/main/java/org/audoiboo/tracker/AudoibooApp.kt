@@ -73,6 +73,7 @@ class AudoibooApp : Application() {
         SeriesAutomationPrefs.schedule(this)
         RoomTrackerCatalog.start(this)
         TrackPositionStore.initialize(this)
+        PlaybackQueueStore.initialize(this)
 
         playerExtrasPrefs = getSharedPreferences("player_extras", Context.MODE_PRIVATE)
         playerExtrasPrefs.registerOnSharedPreferenceChangeListener(playerExtrasListener)

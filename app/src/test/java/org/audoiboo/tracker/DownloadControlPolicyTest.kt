@@ -16,6 +16,18 @@ class DownloadControlPolicyTest {
     }
 
     @Test
+    fun automaticWorkersDoNotReviveFailedTransfers() {
+        assertTrue(DownloadControlPolicy.canAutoStart(ManagedDownloadState.QUEUED))
+        assertTrue(DownloadControlPolicy.canAutoStart(ManagedDownloadState.DOWNLOADING))
+        assertTrue(DownloadControlPolicy.canAutoStart(ManagedDownloadState.EXTRACTING))
+        assertFalse(DownloadControlPolicy.canAutoStart(ManagedDownloadState.FAILED))
+        assertFalse(DownloadControlPolicy.canAutoStart(ManagedDownloadState.PAUSED))
+        assertFalse(DownloadControlPolicy.canAutoStart(ManagedDownloadState.CANCELLED))
+        assertFalse(DownloadControlPolicy.canAutoStart(ManagedDownloadState.COMPLETED))
+        assertTrue(DownloadControlPolicy.canManualStart(ManagedDownloadState.FAILED))
+    }
+
+    @Test
     fun pauseAndCancelArePersistableBeforeServiceSignal() {
         assertEquals(ManagedDownloadState.PAUSED, DownloadControlPolicy.pause(ManagedDownloadState.DOWNLOADING))
         assertEquals(ManagedDownloadState.CANCELLED, DownloadControlPolicy.cancel(ManagedDownloadState.DOWNLOADING))

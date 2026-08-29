@@ -93,7 +93,20 @@ object BackupStore {
         val tracker = trackerValue as? String
         val trackerValid = tracker != null && runCatching { JSONArray(tracker) }.isSuccess
         val format = if (root.has("format") && !root.isNull("format")) root.optInt("format", Int.MIN_VALUE) else null
-        BackupFormatPolicy.validate(format, root.has("tracker"), trackerValid)?.let { throw IllegalArgumentException(it) }
+        val downloadsValue = if (root.has("downloads")) root.opt("downloads") else null
+        val downloadsValid = when (downloadsValue) {
+            null -> true
+            is JSONArray -> true
+            is String -> runCatching { JSONArray(downloadsValue) }.isSuccess
+            else -> false
+        }
+        BackupFormatPolicy.validate(
+            format = format,
+            hasTracker = root.has("tracker"),
+            trackerIsValidArray = trackerValid,
+            hasDownloads = root.has("downloads"),
+            downloadsAreValid = downloadsValid
+        )?.let { throw IllegalArgumentException(it) }
         return root
     }
 

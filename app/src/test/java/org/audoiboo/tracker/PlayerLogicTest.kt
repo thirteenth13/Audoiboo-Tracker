@@ -1,7 +1,9 @@
 package org.audoiboo.tracker
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlayerLogicTest {
@@ -26,6 +28,72 @@ class PlayerLogicTest {
         assertEquals(0f, PlayerLogic.aggregateProgress(0, 0, 0, 0))
         assertEquals(.5f, PlayerLogic.aggregateProgress(1, 0, 5_000, 10_000), .0001f)
         assertEquals(.625f, PlayerLogic.aggregateProgress(4, 2, 5_000, 10_000), .0001f)
+        assertEquals(1f, PlayerLogic.aggregateProgress(1, 0, 50_000, 10_000), .0001f)
+    }
+
+    @Test fun emptyAndSingleTrackBooksAreStable() {
+        val empty = PlayerLogic.bookProgress(emptyList(), emptyList())
+        assertEquals(0f, empty.fraction)
+        assertFalse(empty.started)
+        assertFalse(empty.finished)
+        assertEquals(0, empty.playableCount)
+
+        val half = PlayerLogic.bookProgress(listOf(5_000L), listOf(10_000L))
+        assertEquals(.5f, half.fraction, .0001f)
+        assertTrue(half.started)
+        assertFalse(half.finished)
+        assertEquals(1, half.currentTrack)
+
+        val done = PlayerLogic.bookProgress(listOf(9_500L), listOf(10_000L))
+        assertEquals(1f, done.fraction, .0001f)
+        assertTrue(done.finished)
+    }
+
+    @Test fun brokenTracksDoNotBlockBookCompletion() {
+        val progress = PlayerLogic.bookProgress(
+            positionsMs = listOf(10_000L, 0L, 9_500L),
+            durationsMs = listOf(10_000L, 10_000L, 10_000L),
+            brokenIndices = setOf(1)
+        )
+        assertTrue(progress.finished)
+        assertEquals(1f, progress.fraction, .0001f)
+        assertEquals(2, progress.playableCount)
+        assertEquals(3, progress.currentTrack)
+    }
+
+    @Test fun unknownDurationCanStartButCannotAutoFinish() {
+        val progress = PlayerLogic.bookProgress(listOf(42_000L), listOf(0L))
+        assertTrue(progress.started)
+        assertFalse(progress.finished)
+        assertEquals(0f, progress.fraction, .0001f)
+    }
+
+    @Test fun trackerReadWinsEvenWithoutPlayableFiles() {
+        val emptyRead = PlayerLogic.bookProgress(emptyList(), emptyList(), trackerRead = true)
+        assertTrue(emptyRead.finished)
+        assertEquals(1f, emptyRead.fraction)
+
+        val allBrokenRead = PlayerLogic.bookProgress(
+            positionsMs = listOf(1_000L),
+            durationsMs = listOf(10_000L),
+            brokenIndices = setOf(0),
+            trackerRead = true
+        )
+        assertTrue(allBrokenRead.finished)
+        assertEquals(0, allBrokenRead.playableCount)
+    }
+
+    @Test fun currentProgressExcludesBrokenTracks() {
+        assertEquals(.75f, PlayerLogic.currentBookProgress(3, 2, 5_000L, 10_000L, setOf(1)), .0001f)
+        assertEquals(0f, PlayerLogic.currentBookProgress(3, 1, 5_000L, 10_000L, setOf(1)), .0001f)
+        assertEquals(0f, PlayerLogic.currentBookProgress(0, 0, 0L, 0L), .0001f)
+    }
+
+    @Test fun resumePositionNeverEscapesKnownDuration() {
+        assertEquals(8_000L, PlayerLogic.safeResumePosition(10_000L, 20_000L, 2_000L))
+        assertEquals(18_000L, PlayerLogic.safeResumePosition(50_000L, 20_000L, 2_000L))
+        assertEquals(0L, PlayerLogic.safeResumePosition(1_000L, 20_000L, 5_000L))
+        assertEquals(9_000L, PlayerLogic.safeResumePosition(10_000L, 0L, 1_000L))
     }
 
     @Test fun parsesRealisticSeriesNumbers() {

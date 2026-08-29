@@ -42,11 +42,12 @@ class AudoibooApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        AppSettingsStore.initialize(this)
+        ManagedDownloads.initialize(this)
         DownloadScheduler.recover(this)
         WebDavSync.schedule(this)
         SeriesAutomationPrefs.schedule(this)
         RoomTrackerCatalog.start(this)
-        AppSettingsStore.initialize(this)
         TrackPositionStore.initialize(this)
         PlaybackQueueStore.initialize(this)
         PlaybackResumeStore.initialize(this)

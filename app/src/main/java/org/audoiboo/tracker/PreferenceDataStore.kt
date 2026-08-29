@@ -62,9 +62,17 @@ object PreferenceDataStore {
         }
     }
 
-    /** One-time import only. Once imported, DataStore is authoritative. */
+    /**
+     * Compatibility reconcile while AppPrefs still writes app_settings. Once AppPrefs switches
+     * to AppSettingsStore this can become a one-time import just like the player-state stores.
+     */
     suspend fun reconcile(context: Context) {
         val app = context.applicationContext
+        val legacy = app.getSharedPreferences(LEGACY_FILE, Context.MODE_PRIVATE)
+        if (legacy.all.isNotEmpty()) {
+            syncFromLegacy(app)
+            return
+        }
         val p = app.audoibooDataStore.data.first()
         if (p[LEGACY_IMPORTED] != true || (p[VERSION] ?: 0) < 2) importLegacyIfNeeded(app)
     }

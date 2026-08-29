@@ -5,6 +5,27 @@ import android.content.Intent
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import java.io.OutputStream
+import java.util.UUID
+
+internal class AtomicStorageOutput internal constructor(
+    val output: OutputStream,
+    private val commitAction: () -> Uri?,
+    private val abortAction: () -> Unit
+) {
+    private var finished = false
+
+    fun commit(): Uri? {
+        if (finished) return null
+        finished = true
+        return commitAction()
+    }
+
+    fun abort() {
+        if (finished) return
+        finished = true
+        abortAction()
+    }
+}
 
 /** Optional user-selected library root backed by a persisted SAF permission. */
 internal object StorageAccess {
@@ -12,6 +33,8 @@ internal object StorageAccess {
     private const val TREE = "tree_uri"
     private const val RUNTIME_PREFS = "storage_access_runtime"
     private const val LAST_VALID_TREE = "last_valid_tree_uri"
+    private const val TEMP_PREFIX = ".audoiboo-"
+    private const val TEMP_SUFFIX = ".part"
 
     fun treeUri(context: Context): Uri? {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -73,6 +96,48 @@ internal object StorageAccess {
         return dir.findFile(fileName)?.takeIf { it.isFile }
     }
 
+    /**
+     * Opens a temporary SAF file and promotes it to the requested final name only after commit().
+     * Interrupted copies can therefore be aborted without leaving a partial final file behind.
+     */
+    fun beginAtomicOutput(context: Context, relativeDir: String, fileName: String, mime: String): AtomicStorageOutput? {
+        if (!StoragePathPolicy.validFileName(fileName)) return null
+        val safeDir = StoragePathPolicy.normalizeRelativeDir(relativeDir) ?: return null
+        var dir = root(context) ?: return null
+        for (name in safeDir.split('/').filter { it.isNotBlank() }) {
+            dir = dir.findFile(name)?.takeIf { it.isDirectory } ?: dir.createDirectory(name) ?: return null
+        }
+        dir.listFiles().filter { it.isFile && it.name?.startsWith(TEMP_PREFIX) == true && it.name?.endsWith(TEMP_SUFFIX) == true }
+            .forEach { runCatching { it.delete() } }
+        val tempName = "$TEMP_PREFIX${UUID.randomUUID()}-$fileName$TEMP_SUFFIX"
+        val temp = dir.createFile(mime, tempName) ?: return null
+        val out = context.contentResolver.openOutputStream(temp.uri) ?: run {
+            temp.delete()
+            return null
+        }
+        return AtomicStorageOutput(
+            output = out,
+            commitAction = {
+                runCatching { out.close() }
+                val existing = dir.findFile(fileName)?.takeIf { it.isFile && it.uri != temp.uri }
+                if (existing != null && !existing.delete()) {
+                    temp.delete()
+                    return@AtomicStorageOutput null
+                }
+                if (!temp.renameTo(fileName)) {
+                    temp.delete()
+                    return@AtomicStorageOutput null
+                }
+                temp.uri
+            },
+            abortAction = {
+                runCatching { out.close() }
+                runCatching { temp.delete() }
+            }
+        )
+    }
+
+    /** Legacy direct writer kept for callers that do not need transactional publication. */
     fun openOutput(context: Context, relativeDir: String, fileName: String, mime: String): Pair<Uri, OutputStream>? {
         if (!StoragePathPolicy.validFileName(fileName)) return null
         val safeDir = StoragePathPolicy.normalizeRelativeDir(relativeDir) ?: return null

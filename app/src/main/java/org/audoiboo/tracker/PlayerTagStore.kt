@@ -51,7 +51,7 @@ internal object PlayerTagStore {
     fun setTags(context: Context, dir: String, tags: List<String>) {
         initialize(context)
         val key = RoomTagSync.normalizeDir(dir)
-        val clean = tags.map(String::trim).filter(String::isNotBlank).distinctBy(String::lowercase)
+        val clean = tags.map { it.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase() }
         state.value = state.value + (key to clean)
         val app = context.applicationContext
         scope.launch {
@@ -63,7 +63,8 @@ internal object PlayerTagStore {
 
     fun setCached(dir: String, tags: List<String>) {
         val key = RoomTagSync.normalizeDir(dir)
-        state.value = state.value + (key to tags.map(String::trim).filter(String::isNotBlank).distinctBy(String::lowercase))
+        val clean = tags.map { it.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase() }
+        state.value = state.value + (key to clean)
     }
 
     private fun legacyTags(context: Context, dir: String): List<String> = runCatching {
@@ -71,6 +72,6 @@ internal object PlayerTagStore {
             .getString("book_tags", "{}")
         val root = JSONObject(raw ?: "{}")
         val a = root.optJSONArray(dir) ?: JSONArray()
-        (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) }
+        (0 until a.length()).mapNotNull { a.optString(it).takeIf { value -> value.isNotBlank() } }
     }.getOrDefault(emptyList())
 }

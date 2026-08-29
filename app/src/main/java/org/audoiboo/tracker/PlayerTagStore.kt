@@ -8,8 +8,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
 
 /** Room-native tag cache for synchronous player-library reads. */
 internal object PlayerTagStore {
@@ -29,7 +27,6 @@ internal object PlayerTagStore {
         }
         val app = context.applicationContext
         scope.launch {
-            RoomTagSync.syncFromLegacy(app)
             refresh(app)
             ready = true
         }
@@ -44,8 +41,7 @@ internal object PlayerTagStore {
 
     fun tags(context: Context, dir: String): List<String> {
         initialize(context)
-        val key = RoomTagSync.normalizeDir(dir)
-        return if (ready) state.value[key].orEmpty() else legacyTags(context, key)
+        return state.value[RoomTagSync.normalizeDir(dir)].orEmpty()
     }
 
     fun setTags(context: Context, dir: String, tags: List<String>) {
@@ -56,9 +52,7 @@ internal object PlayerTagStore {
         state.value = state.value + (key to clean)
         val app = context.applicationContext
         scope.launch {
-            if (!RoomTagSync.setTagsForDir(app, key, clean)) {
-                refresh(app)
-            }
+            if (!RoomTagSync.setTagsForDir(app, key, clean)) refresh(app)
         }
     }
 
@@ -67,12 +61,4 @@ internal object PlayerTagStore {
         val clean = tags.map { it.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase() }
         state.value = state.value + (key to clean)
     }
-
-    private fun legacyTags(context: Context, dir: String): List<String> = runCatching {
-        val raw = context.applicationContext.getSharedPreferences("player_extras", Context.MODE_PRIVATE)
-            .getString("book_tags", "{}")
-        val root = JSONObject(raw ?: "{}")
-        val a = root.optJSONArray(dir) ?: JSONArray()
-        (0 until a.length()).mapNotNull { a.optString(it).takeIf { value -> value.isNotBlank() } }
-    }.getOrDefault(emptyList())
 }

@@ -13,6 +13,8 @@ internal object PlaybackStateRepository {
     private const val QUEUE_KEY = "book_dirs"
     private const val EXTRAS_PREFS = "player_extras"
     private const val SNAPSHOT_KEY = "playback_snapshot"
+    private const val MIGRATION_PREFS = "room_migration"
+    private const val MIGRATION_KEY = "playback_state_v1"
 
     data class Snapshot(
         val dir: String,
@@ -24,29 +26,26 @@ internal object PlaybackStateRepository {
     )
 
     fun observeQueue(context: Context): Flow<List<String>> =
-        AudoibooDatabase.get(context).libraryDao().observePlaybackQueue().map { rows -> rows.map { it.dir } }
+        AudoibooDatabase.get(context.applicationContext).libraryDao().observePlaybackQueue().map { rows -> rows.map { it.dir } }
 
     suspend fun queue(context: Context): List<String> = withContext(Dispatchers.IO) {
-        AudoibooDatabase.get(context).libraryDao().playbackQueue().map { it.dir }
+        AudoibooDatabase.get(context.applicationContext).libraryDao().playbackQueue().map { it.dir }
     }
 
     suspend fun snapshot(context: Context): Snapshot? = withContext(Dispatchers.IO) {
-        AudoibooDatabase.get(context).libraryDao().playbackResume()?.let {
+        AudoibooDatabase.get(context.applicationContext).libraryDao().playbackResume()?.let {
             Snapshot(it.dir, it.title, it.uri, it.fileIndex, it.positionMs, it.updatedAt)
         }
     }
 
     suspend fun saveQueue(context: Context, dirs: List<String>) = withContext(Dispatchers.IO) {
         val clean = dirs.filter { it.isNotBlank() }.distinct()
-        AudoibooDatabase.get(context).libraryDao().replacePlaybackQueue(clean)
-        // Compatibility mirror until PlayerActivity's final local queue facade is removed.
-        writeLegacyQueue(context, clean)
+        AudoibooDatabase.get(context.applicationContext).libraryDao().replacePlaybackQueue(clean)
     }
 
     suspend fun saveSnapshot(context: Context, value: Snapshot) = withContext(Dispatchers.IO) {
         if (value.dir.isBlank()) return@withContext
-        AudoibooDatabase.get(context).libraryDao().upsertPlaybackResume(value.toEntity())
-        writeLegacySnapshot(context, value, queue(context))
+        AudoibooDatabase.get(context.applicationContext).libraryDao().upsertPlaybackResume(value.toEntity())
     }
 
     suspend fun exportQueueJson(context: Context): JSONArray = withContext(Dispatchers.IO) {
@@ -66,48 +65,52 @@ internal object PlaybackStateRepository {
     }
 
     suspend fun restoreRoomState(context: Context, queueJson: JSONArray?, resumeJson: JSONObject?) = withContext(Dispatchers.IO) {
-        val dao = AudoibooDatabase.get(context).libraryDao()
+        val app = context.applicationContext
+        val dao = AudoibooDatabase.get(app).libraryDao()
         if (queueJson != null) {
             val dirs = (0 until queueJson.length()).mapNotNull { queueJson.optString(it).takeIf(String::isNotBlank) }.distinct()
             dao.replacePlaybackQueue(dirs)
-            writeLegacyQueue(context, dirs)
         }
-        parseSnapshot(resumeJson?.toString())?.let {
-            dao.upsertPlaybackResume(it.toEntity())
-            writeLegacySnapshot(context, it, dao.playbackQueue().map { row -> row.dir })
-        }
+        parseSnapshot(resumeJson?.toString())?.let { dao.upsertPlaybackResume(it.toEntity()) }
+        markMigrated(app)
     }
 
+    /** One-time import from pre-Room builds. After this flag is set SharedPreferences is never authoritative again. */
     suspend fun reconcile(context: Context) = withContext(Dispatchers.IO) {
-        val dao = AudoibooDatabase.get(context).libraryDao()
-        val queuePrefs = context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE)
-        val extrasPrefs = context.getSharedPreferences(EXTRAS_PREFS, Context.MODE_PRIVATE)
+        val app = context.applicationContext
+        val migration = app.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE)
+        if (migration.getBoolean(MIGRATION_KEY, false)) return@withContext
 
-        val resolvedQueue = if (queuePrefs.contains(QUEUE_KEY)) {
-            parseQueue(queuePrefs.getString(QUEUE_KEY, "[]").orEmpty()).also { dao.replacePlaybackQueue(it) }
-        } else {
-            dao.playbackQueue().map { it.dir }.also { if (it.isNotEmpty()) writeLegacyQueue(context, it) }
+        val dao = AudoibooDatabase.get(app).libraryDao()
+        val queuePrefs = app.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE)
+        val extrasPrefs = app.getSharedPreferences(EXTRAS_PREFS, Context.MODE_PRIVATE)
+
+        if (dao.playbackQueue().isEmpty() && queuePrefs.contains(QUEUE_KEY)) {
+            dao.replacePlaybackQueue(parseQueue(queuePrefs.getString(QUEUE_KEY, "[]").orEmpty()))
         }
-
-        if (extrasPrefs.contains(SNAPSHOT_KEY)) {
+        if (dao.playbackResume() == null && extrasPrefs.contains(SNAPSHOT_KEY)) {
             parseSnapshot(extrasPrefs.getString(SNAPSHOT_KEY, null))?.let { dao.upsertPlaybackResume(it.toEntity()) }
-        } else {
-            dao.playbackResume()?.let {
-                writeLegacySnapshot(context, Snapshot(it.dir, it.title, it.uri, it.fileIndex, it.positionMs, it.updatedAt), resolvedQueue)
-            }
         }
+        markMigrated(app)
     }
 
+    /** Explicit legacy import used only while restoring an old backup. */
     suspend fun syncFromLegacy(context: Context) = withContext(Dispatchers.IO) {
-        val dao = AudoibooDatabase.get(context).libraryDao()
-        val queuePrefs = context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE)
+        val app = context.applicationContext
+        val dao = AudoibooDatabase.get(app).libraryDao()
+        val queuePrefs = app.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE)
         if (queuePrefs.contains(QUEUE_KEY)) {
             dao.replacePlaybackQueue(parseQueue(queuePrefs.getString(QUEUE_KEY, "[]").orEmpty()))
         }
-        val extrasPrefs = context.getSharedPreferences(EXTRAS_PREFS, Context.MODE_PRIVATE)
+        val extrasPrefs = app.getSharedPreferences(EXTRAS_PREFS, Context.MODE_PRIVATE)
         if (extrasPrefs.contains(SNAPSHOT_KEY)) {
             parseSnapshot(extrasPrefs.getString(SNAPSHOT_KEY, null))?.let { dao.upsertPlaybackResume(it.toEntity()) }
         }
+        markMigrated(app)
+    }
+
+    private fun markMigrated(context: Context) {
+        context.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE).edit().putBoolean(MIGRATION_KEY, true).apply()
     }
 
     private fun parseQueue(raw: String): List<String> = runCatching {
@@ -138,22 +141,4 @@ internal object PlaybackStateRepository {
         positionMs = positionMs.coerceAtLeast(0L),
         updatedAt = updatedAt
     )
-
-    private fun writeLegacyQueue(context: Context, dirs: List<String>) {
-        val a = JSONArray(); dirs.filter { it.isNotBlank() }.distinct().forEach(a::put)
-        context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE).edit().putString(QUEUE_KEY, a.toString()).apply()
-    }
-
-    private fun writeLegacySnapshot(context: Context, value: Snapshot, dirs: List<String>) {
-        val q = JSONArray(); dirs.filter { it.isNotBlank() }.distinct().forEach(q::put)
-        val o = JSONObject()
-            .put("dir", value.dir)
-            .put("title", value.title)
-            .put("uri", value.uri)
-            .put("fileIndex", value.fileIndex.coerceAtLeast(0))
-            .put("positionMs", value.positionMs.coerceAtLeast(0L))
-            .put("queue", q)
-            .put("updatedAt", value.updatedAt)
-        context.getSharedPreferences(EXTRAS_PREFS, Context.MODE_PRIVATE).edit().putString(SNAPSHOT_KEY, o.toString()).apply()
-    }
 }

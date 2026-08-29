@@ -105,16 +105,36 @@ object LibraryRepository {
         }
     }
 
+    fun isValidLegacyJson(raw: String): Boolean = runCatching {
+        val root = JSONArray(raw)
+        val seriesIds = HashSet<String>()
+        val bookUrls = HashSet<String>()
+        for (i in 0 until root.length()) {
+            val series = root.optJSONObject(i) ?: return@runCatching false
+            val id = series.optString("id").takeIf { it.isNotBlank() } ?: return@runCatching false
+            if (!seriesIds.add(id)) return@runCatching false
+            if (series.has("books") && series.opt("books") !is JSONArray) return@runCatching false
+            val books = series.optJSONArray("books") ?: JSONArray()
+            for (j in 0 until books.length()) {
+                val book = books.optJSONObject(j) ?: return@runCatching false
+                val url = book.optString("url").takeIf { it.isNotBlank() } ?: return@runCatching false
+                if (!bookUrls.add(url)) return@runCatching false
+            }
+        }
+        true
+    }.getOrDefault(false)
+
     suspend fun restoreLegacyJson(context: Context, raw: String) = withContext(Dispatchers.IO) {
-        val root = runCatching { JSONArray(raw) }.getOrElse { JSONArray() }
-        val library = (0 until root.length()).mapNotNull { i ->
-            val s = root.optJSONObject(i) ?: return@mapNotNull null
-            val id = s.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        require(isValidLegacyJson(raw)) { "Backup tracker data is invalid" }
+        val root = JSONArray(raw)
+        val library = (0 until root.length()).map { i ->
+            val s = root.getJSONObject(i)
+            val id = s.getString("id")
             val series = SeriesEntity(id, s.optString("name"), s.optString("url"))
             val arr = s.optJSONArray("books") ?: JSONArray()
-            val books = (0 until arr.length()).mapNotNull { j ->
-                val b = arr.optJSONObject(j) ?: return@mapNotNull null
-                val url = b.optString("url").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val books = (0 until arr.length()).map { j ->
+                val b = arr.getJSONObject(j)
+                val url = b.getString("url")
                 BookEntity(
                     id = "$id::$url", seriesId = id, title = b.optString("title"), url = url,
                     author = b.optString("author").takeIf { it.isNotBlank() && it != "null" },

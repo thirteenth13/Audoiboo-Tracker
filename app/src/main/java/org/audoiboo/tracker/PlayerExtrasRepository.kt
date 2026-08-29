@@ -61,6 +61,7 @@ internal object PlayerExtrasRepository {
 
     suspend fun restoreJson(context: Context, json: JSONObject?) = withContext(Dispatchers.IO) {
         if (json == null) return@withContext
+        val app = context.applicationContext
         val historyArray = json.optJSONArray("history") ?: JSONArray()
         val bookmarkArray = json.optJSONArray("bookmarks") ?: JSONArray()
         val dailyArray = json.optJSONArray("daily") ?: JSONArray()
@@ -81,14 +82,19 @@ internal object PlayerExtrasRepository {
             val day = o.optString("day").takeIf { it.isNotBlank() } ?: return@mapNotNull null
             DailyListeningEntity(day, o.optLong("listenedMs", 0L).coerceAtLeast(0L))
         }
-        AudoibooDatabase.get(context.applicationContext).libraryDao().replacePlayerExtras(
+        AudoibooDatabase.get(app).libraryDao().replacePlayerExtras(
             history = history,
             bookmarks = bookmarks,
             daily = daily,
             totalMs = json.optLong("totalMs", 0L).coerceAtLeast(0L)
         )
+        PlayerExtrasStore.refresh(app)
     }
 
     /** Ensure a device upgraded from an older build has Room populated before first Room-native read. */
-    suspend fun reconcile(context: Context) = PlayerExtrasRoomSync.syncFromLegacy(context.applicationContext)
+    suspend fun reconcile(context: Context) {
+        val app = context.applicationContext
+        PlayerExtrasRoomSync.syncFromLegacy(app)
+        PlayerExtrasStore.refresh(app)
+    }
 }

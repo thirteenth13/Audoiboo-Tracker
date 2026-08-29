@@ -22,9 +22,10 @@ class DownloadRecoveryPolicyTest {
         assertFalse(DownloadRecoveryPolicy.shouldRecover(ManagedDownloadState.FAILED))
     }
 
-    @Test fun workerUsesSameStartPolicyAsForegroundService() {
+    @Test fun workerUsesAutomaticStartPolicy() {
         ManagedDownloadState.entries.forEach { state ->
-            assertEquals(DownloadControlPolicy.canStart(state), DownloadRecoveryPolicy.workerCanKick(state))
+            assertEquals(DownloadControlPolicy.canAutoStart(state), DownloadRecoveryPolicy.workerCanKick(state))
         }
+        assertFalse(DownloadRecoveryPolicy.workerCanKick(ManagedDownloadState.FAILED))
     }
 }

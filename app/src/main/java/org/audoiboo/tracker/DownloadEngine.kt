@@ -75,18 +75,27 @@ internal object ManagedDownloads {
     }
 
     fun pause(context: Context, id: String) {
+        val record = get(context, id) ?: return
+        val state = DownloadControlPolicy.pause(record.state)
+        if (state != record.state) saveOne(context, record.copy(state = state))
         DownloadScheduler.cancel(context, id)
-        send(context, ManagedDownloadService.ACTION_PAUSE, id)
+        if (state == ManagedDownloadState.PAUSED) send(context, ManagedDownloadService.ACTION_PAUSE, id)
     }
 
     fun resume(context: Context, id: String) {
-        get(context, id)?.let { saveOne(context, it.copy(state = ManagedDownloadState.QUEUED, error = null)) }
+        val record = get(context, id) ?: return
+        val state = DownloadControlPolicy.resume(record.state)
+        if (state != ManagedDownloadState.QUEUED) return
+        saveOne(context, record.copy(state = state, error = null))
         DownloadScheduler.enqueue(context, id)
     }
 
     fun cancel(context: Context, id: String) {
+        val record = get(context, id) ?: return
+        val state = DownloadControlPolicy.cancel(record.state)
+        if (state != record.state) saveOne(context, record.copy(state = state))
         DownloadScheduler.cancel(context, id)
-        send(context, ManagedDownloadService.ACTION_CANCEL, id)
+        if (state == ManagedDownloadState.CANCELLED) send(context, ManagedDownloadService.ACTION_CANCEL, id)
     }
 
     @Synchronized
@@ -169,18 +178,16 @@ class ManagedDownloadService : Service() {
         val id = intent?.getStringExtra(EXTRA_ID) ?: return START_NOT_STICKY
         when (intent.action) {
             ACTION_PAUSE -> pauses.getOrPut(id) { AtomicBoolean(false) }.set(true)
-            ACTION_CANCEL -> {
-                cancels.getOrPut(id) { AtomicBoolean(false) }.set(true)
-                ManagedDownloads.get(this, id)?.let { update(it.copy(state = ManagedDownloadState.CANCELLED)) }
+            ACTION_CANCEL -> cancels.getOrPut(id) { AtomicBoolean(false) }.set(true)
+            ACTION_START, ACTION_RESUME -> {
+                val record = ManagedDownloads.get(this, id) ?: return START_NOT_STICKY
+                if (DownloadControlPolicy.canStart(record.state)) startDownload(id)
             }
-            ACTION_START, ACTION_RESUME -> startDownload(id)
         }
         return START_REDELIVER_INTENT
     }
 
     private fun startDownload(id: String) {
-        pauses.getOrPut(id) { AtomicBoolean(false) }.set(false)
-        cancels.getOrPut(id) { AtomicBoolean(false) }.set(false)
         lateinit var thread: Thread
         thread = Thread {
             try { performDownload(id) }
@@ -190,6 +197,8 @@ class ManagedDownloadService : Service() {
             }
         }.apply { name = "Audoiboo-$id" }
         if (!running.tryRegister(id, thread)) return
+        pauses.getOrPut(id) { AtomicBoolean(false) }.set(false)
+        cancels.getOrPut(id) { AtomicBoolean(false) }.set(false)
         try {
             thread.start()
         } catch (e: RuntimeException) {
@@ -200,6 +209,7 @@ class ManagedDownloadService : Service() {
 
     private fun performDownload(id: String) {
         var record = ManagedDownloads.get(this, id) ?: return
+        if (!DownloadControlPolicy.canStart(record.state)) return
         val stagingRoot = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "staging").apply { mkdirs() }
         val part = File(stagingRoot, "$id.part")
         val existing = part.length()
@@ -280,7 +290,9 @@ class ManagedDownloadService : Service() {
         ZipFile(file).use { zip ->
             val entries = zip.entries(); val buffer = ByteArray(128 * 1024)
             while (entries.hasMoreElements()) {
-                val entry = entries.nextElement(); if (entry.isDirectory) continue; files++
+                val entry = entries.nextElement(); if (entry.isDirectory) continue
+                if (ArchiveEntryPolicy.safeRelativePath(entry.name) == null) error("Небезпечний шлях у ZIP: ${entry.name}")
+                files++
                 val crc = CRC32()
                 zip.getInputStream(entry).use { input -> while (true) { val n = input.read(buffer); if (n < 0) break; crc.update(buffer, 0, n) } }
                 if (entry.crc >= 0 && crc.value != entry.crc) error("CRC не збігається: ${entry.name}")
@@ -331,8 +343,9 @@ class ManagedDownloadService : Service() {
             var entry = zin.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory) {
-                    val safe = entry.name.replace('\\', '/').split('/').filter { it.isNotBlank() && it != ".." }.joinToString("/")
-                    if (safe.isNotBlank()) publishStream(zin, relativeDir, safe, record)
+                    val safe = ArchiveEntryPolicy.safeRelativePath(entry.name)
+                        ?: throw IOException("Небезпечний шлях у ZIP: ${entry.name}")
+                    publishStream(zin, relativeDir, safe, record)
                 }
                 zin.closeEntry(); entry = zin.nextEntry
             }

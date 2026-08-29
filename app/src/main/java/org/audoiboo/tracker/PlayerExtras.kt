@@ -84,7 +84,6 @@ internal object PlayerExtras {
 
     fun saveSnapshot(context: Context, dir: String, title: String, uri: Uri?, fileIndex: Int, positionMs: Long, queue: List<String>) {
         if (dir.isBlank()) return
-        PlaybackQueueStore.save(context, queue)
         PlaybackResumeStore.save(
             context,
             PlaybackStateRepository.Snapshot(

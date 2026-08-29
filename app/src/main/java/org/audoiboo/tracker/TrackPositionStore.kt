@@ -9,8 +9,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
-/** Room-backed synchronous facade for player track positions. */
+/** Room-backed track-position store used by player progress and resume logic. */
 object TrackPositionStore {
     private const val LEGACY_PREFS = "player_positions"
     private const val MIGRATION_PREFS = "room_migrations"
@@ -20,7 +21,6 @@ object TrackPositionStore {
     private val positions = MutableStateFlow<Map<String, Long>>(emptyMap())
     private val pending = mutableMapOf<String, Long>()
     @Volatile private var initialized = false
-    @Volatile private var loaded = false
 
     fun observe(): StateFlow<Map<String, Long>> = positions.asStateFlow()
 
@@ -33,7 +33,6 @@ object TrackPositionStore {
         val app = context.applicationContext
         scope.launch {
             val dao = AudoibooDatabase.get(app).libraryDao()
-            val legacy = app.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
             migrateLegacyIfNeeded(app, dao)
             val room = dao.trackPositions().associate { it.uri to it.positionMs.coerceAtLeast(0L) }
             val pendingSnapshot = synchronized(pending) { pending.toMap() }
@@ -44,19 +43,16 @@ object TrackPositionStore {
                     pendingSnapshot.forEach { (uri, value) -> if (pending[uri] == value) pending.remove(uri) }
                 }
             }
-            loaded = true
-            // PlayerPrefs now delegates to this store, so the old file can be removed safely.
-            legacy.edit().clear().apply()
         }
     }
 
     fun position(context: Context, uri: Uri): Long {
         initialize(context)
         val key = uri.toString()
-        positions.value[key]?.let { return it }
-        synchronized(pending) { pending[key] }?.let { return it }
-        // During the very short asynchronous startup window, preserve old installs' value.
-        return if (!loaded) context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE).getLong(key, 0L) else 0L
+        return positions.value[key]
+            ?: synchronized(pending) { pending[key] }
+            // Only used during the short asynchronous first migration window.
+            ?: context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE).getLong(key, 0L)
     }
 
     fun save(context: Context, uri: Uri, positionMs: Long) {
@@ -72,6 +68,36 @@ object TrackPositionStore {
         }
     }
 
+    suspend fun exportJson(context: Context): JSONObject {
+        val out = JSONObject()
+        AudoibooDatabase.get(context.applicationContext).libraryDao().trackPositions().forEach { row ->
+            out.put(row.uri, row.positionMs.coerceAtLeast(0L))
+        }
+        return out
+    }
+
+    suspend fun restoreJson(context: Context, json: JSONObject?) {
+        if (json == null) return
+        val rows = buildList {
+            val keys = json.keys()
+            while (keys.hasNext()) {
+                val uri = keys.next()
+                if (uri.isBlank()) continue
+                val value = json.optLong(uri, 0L).coerceAtLeast(0L)
+                add(TrackPositionEntity(uri, value))
+            }
+        }
+        val app = context.applicationContext
+        val dao = AudoibooDatabase.get(app).libraryDao()
+        dao.replaceTrackPositions(rows)
+        val restored = rows.associate { it.uri to it.positionMs }
+        synchronized(pending) { pending.clear() }
+        positions.value = restored
+        app.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+        app.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE).edit().putBoolean(MIGRATION_KEY, true).apply()
+        initialized = true
+    }
+
     private suspend fun migrateLegacyIfNeeded(context: Context, dao: LibraryDao) {
         val flags = context.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE)
         if (flags.getBoolean(MIGRATION_KEY, false)) return
@@ -82,5 +108,6 @@ object TrackPositionStore {
         }
         if (rows.isNotEmpty()) dao.upsertTrackPositions(rows)
         flags.edit().putBoolean(MIGRATION_KEY, true).commit()
+        legacy.edit().clear().apply()
     }
 }

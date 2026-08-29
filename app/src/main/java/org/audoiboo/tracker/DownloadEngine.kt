@@ -287,14 +287,30 @@ class ManagedDownloadService : Service() {
 
     private fun verifyZipIntegrity(file: File) {
         var files = 0
+        var uncompressedTotal = 0L
         ZipFile(file).use { zip ->
-            val entries = zip.entries(); val buffer = ByteArray(128 * 1024)
+            val entries = zip.entries()
+            val buffer = ByteArray(128 * 1024)
             while (entries.hasMoreElements()) {
-                val entry = entries.nextElement(); if (entry.isDirectory) continue
+                val entry = entries.nextElement()
+                if (entry.isDirectory) continue
                 if (ArchiveEntryPolicy.safeRelativePath(entry.name) == null) error("Небезпечний шлях у ZIP: ${entry.name}")
+                if (!ArchiveSafetyPolicy.validateDeclaredEntrySize(entry.size)) error("Файл у ZIP завеликий: ${entry.name}")
                 files++
+                if (!ArchiveSafetyPolicy.validateTotals(files, uncompressedTotal)) error("ZIP перевищує безпечні ліміти")
                 val crc = CRC32()
-                zip.getInputStream(entry).use { input -> while (true) { val n = input.read(buffer); if (n < 0) break; crc.update(buffer, 0, n) } }
+                var entryBytes = 0L
+                zip.getInputStream(entry).use { input ->
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        entryBytes += n
+                        uncompressedTotal += n
+                        if (entryBytes > ArchiveSafetyPolicy.MAX_SINGLE_FILE_BYTES) error("Файл у ZIP завеликий: ${entry.name}")
+                        if (!ArchiveSafetyPolicy.validateTotals(files, uncompressedTotal)) error("ZIP перевищує безпечний розпакований обсяг")
+                        crc.update(buffer, 0, n)
+                    }
+                }
                 if (entry.crc >= 0 && crc.value != entry.crc) error("CRC не збігається: ${entry.name}")
             }
         }

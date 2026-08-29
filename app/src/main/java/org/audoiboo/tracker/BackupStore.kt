@@ -25,7 +25,7 @@ object BackupStore {
 
     fun exportJson(context: Context, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean): String {
         val root = JSONObject()
-        root.put("format", 9)
+        root.put("format", 10)
         root.put("createdAt", System.currentTimeMillis())
         val app = context.applicationContext
         val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportCompatJson(app) } }
@@ -39,14 +39,14 @@ object BackupStore {
         if (includeBookmarks || includeStatistics) {
             runCatching { runBlocking(Dispatchers.IO) { PlayerExtrasRepository.exportJson(app) } }.getOrNull()?.let { root.put("roomPlayerExtras", it) }
         }
-        addSharedState(context, root, includeSettings, includeBookmarks, includeStatistics)
+        addSharedState(context, root, includeSettings, includeBookmarks)
         return root.toString(2)
     }
 
     suspend fun exportJsonFromRoom(context: Context, includeSettings: Boolean = true, includeBookmarks: Boolean = true, includeStatistics: Boolean = true): String {
         val app = context.applicationContext
         val root = JSONObject()
-        root.put("format", 9)
+        root.put("format", 10)
         root.put("createdAt", System.currentTimeMillis())
         root.put("tracker", LibraryRepository.exportCompatJson(app))
         root.put("roomTags", LibraryRepository.exportTagsJson(app))
@@ -55,35 +55,18 @@ object BackupStore {
         PlaybackStateRepository.exportResumeJson(app)?.let { root.put("roomPlaybackResume", it) }
         root.put("roomPlayerState", PlayerStateStore.exportJson(app))
         if (includeBookmarks || includeStatistics) root.put("roomPlayerExtras", PlayerExtrasRepository.exportJson(app))
-        addSharedState(context, root, includeSettings, includeBookmarks, includeStatistics)
+        addSharedState(context, root, includeSettings, includeBookmarks)
         return root.toString(2)
     }
 
     fun importJson(context: Context, raw: String) {
         val root = JSONObject(raw)
         val tracker = root.optString("tracker", "[]")
-        val legacyPlayerExtras = root.optJSONObject("playerExtras")
-        val roomTags = root.optJSONObject("roomTags")
-        val trackPositions = root.optJSONObject("roomTrackPositions") ?: root.optJSONObject("playerPositions")
-        val roomQueue = root.optJSONArray("roomPlaybackQueue") ?: legacyQueueFromBackup(root.optJSONObject("playerQueue"))
-        val roomResume = root.optJSONObject("roomPlaybackResume") ?: legacyResumeFromBackup(legacyPlayerExtras)
-        val roomPlayerExtras = root.optJSONObject("roomPlayerExtras")
-        val roomPlayerState = root.optJSONObject("roomPlayerState")
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreNonTrackerState(context, root)
         restoreScope.launch {
             runCatching {
-                reconcileRestoredState(
-                    context.applicationContext,
-                    tracker,
-                    roomTags,
-                    trackPositions,
-                    roomQueue,
-                    roomResume,
-                    roomPlayerExtras,
-                    roomPlayerState,
-                    legacyPlayerExtras != null
-                )
+                restoreRoomState(context.applicationContext, tracker, root)
                 recoverAfterRestore(context.applicationContext)
             }
         }
@@ -92,66 +75,38 @@ object BackupStore {
     suspend fun importJsonToRoom(context: Context, raw: String) {
         val root = JSONObject(raw)
         val tracker = root.optString("tracker", "[]")
-        val legacyPlayerExtras = root.optJSONObject("playerExtras")
-        val roomTags = root.optJSONObject("roomTags")
-        val trackPositions = root.optJSONObject("roomTrackPositions") ?: root.optJSONObject("playerPositions")
-        val roomQueue = root.optJSONArray("roomPlaybackQueue") ?: legacyQueueFromBackup(root.optJSONObject("playerQueue"))
-        val roomResume = root.optJSONObject("roomPlaybackResume") ?: legacyResumeFromBackup(legacyPlayerExtras)
-        val roomPlayerExtras = root.optJSONObject("roomPlayerExtras")
-        val roomPlayerState = root.optJSONObject("roomPlayerState")
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
         restoreNonTrackerState(context, root)
-        reconcileRestoredState(
-            context.applicationContext,
-            tracker,
-            roomTags,
-            trackPositions,
-            roomQueue,
-            roomResume,
-            roomPlayerExtras,
-            roomPlayerState,
-            legacyPlayerExtras != null
-        )
+        restoreRoomState(context.applicationContext, tracker, root)
         recoverAfterRestore(context)
     }
 
-    private suspend fun reconcileRestoredState(
-        context: Context,
-        tracker: String,
-        roomTags: JSONObject?,
-        trackPositions: JSONObject?,
-        roomQueue: JSONArray?,
-        roomResume: JSONObject?,
-        roomPlayerExtras: JSONObject?,
-        roomPlayerState: JSONObject?,
-        hasLegacyPlayerExtras: Boolean
-    ) {
+    /**
+     * Series tracking remains backward-compatible through the legacy tracker JSON.
+     * Player data is restored only from the current Room-native fields; pre-Room player
+     * backup formats are intentionally ignored because no player data needs migration.
+     */
+    private suspend fun restoreRoomState(context: Context, tracker: String, root: JSONObject) {
         LibraryRepository.restoreLegacyJson(context, tracker)
-        when {
-            roomTags != null -> LibraryRepository.restoreTagsJson(context, roomTags)
-            hasLegacyPlayerExtras -> RoomTagSync.restoreFromLegacy(context)
-        }
+        root.optJSONObject("roomTags")?.let { LibraryRepository.restoreTagsJson(context, it) }
         PlayerTagStore.refresh(context)
-        TrackPositionStore.restoreJson(context, trackPositions)
-        PlaybackStateRepository.restoreRoomState(context, roomQueue, roomResume)
-        when {
-            roomPlayerState != null -> PlayerStateStore.restoreJson(context, roomPlayerState)
-            hasLegacyPlayerExtras -> PlayerStateStore.restoreFromLegacy(context)
-            else -> PlayerStateStore.refresh(context)
-        }
-        PreferenceDataStore.syncFromLegacy(context)
-        when {
-            roomPlayerExtras != null -> PlayerExtrasRepository.restoreJson(context, roomPlayerExtras)
-            hasLegacyPlayerExtras -> {
-                PlayerExtrasRoomSync.restoreFromLegacy(context)
-                PlayerExtrasStore.refresh(context)
-            }
-            else -> PlayerExtrasStore.refresh(context)
-        }
+
+        TrackPositionStore.restoreJson(context, root.optJSONObject("roomTrackPositions"))
+        PlaybackStateRepository.restoreRoomState(
+            context,
+            root.optJSONArray("roomPlaybackQueue"),
+            root.optJSONObject("roomPlaybackResume")
+        )
+        root.optJSONObject("roomPlayerState")?.let { PlayerStateStore.restoreJson(context, it) }
+        root.optJSONObject("roomPlayerExtras")?.let { PlayerExtrasRepository.restoreJson(context, it) }
+        PlayerExtrasStore.refresh(context)
+
+        // Settings still use the compatibility SharedPreferences facade until AppPrefs is switched.
+        if (root.has("settings")) PreferenceDataStore.syncFromLegacy(context)
         RoomCoverSync.enqueueAll(context)
     }
 
-    private fun addSharedState(context: Context, root: JSONObject, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean) {
+    private fun addSharedState(context: Context, root: JSONObject, includeSettings: Boolean, includeBookmarks: Boolean) {
         root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
         root.put("playerLibrary", prefsToJson(context, "player_library"))
         if (includeSettings) {
@@ -172,18 +127,6 @@ object BackupStore {
         root.optJSONObject("seriesAutomation")?.let { jsonToPrefs(context, "series_automation", it) }
         root.optJSONObject("bookmarks")?.let { jsonToPrefs(context, "bookmarks", it) }
         root.optJSONObject("playerLibrary")?.let { jsonToPrefs(context, "player_library", it) }
-        // Kept only for importing pre-format-9 backups.
-        root.optJSONObject("playerExtras")?.let { jsonToPrefs(context, "player_extras", it) }
-    }
-
-    private fun legacyQueueFromBackup(value: JSONObject?): JSONArray? {
-        val raw = value?.optString("book_dirs")?.takeIf { it.isNotBlank() } ?: return null
-        return runCatching { JSONArray(raw) }.getOrNull()
-    }
-
-    private fun legacyResumeFromBackup(value: JSONObject?): JSONObject? {
-        val raw = value?.optString("playback_snapshot")?.takeIf { it.isNotBlank() } ?: return null
-        return runCatching { JSONObject(raw) }.getOrNull()
     }
 
     private fun recoverAfterRestore(context: Context) {
@@ -233,7 +176,11 @@ object BackupStore {
 
     private fun prefsToJson(context: Context, name: String): JSONObject {
         val out = JSONObject()
-        context.getSharedPreferences(name, Context.MODE_PRIVATE).all.forEach { (k, v) -> when (v) { is Boolean, is Int, is Long, is Float, is String -> out.put(k, v) } }
+        context.getSharedPreferences(name, Context.MODE_PRIVATE).all.forEach { (k, v) ->
+            when (v) {
+                is Boolean, is Int, is Long, is Float, is String -> out.put(k, v)
+            }
+        }
         return out
     }
 
@@ -242,7 +189,13 @@ object BackupStore {
         val keys = obj.keys()
         while (keys.hasNext()) {
             val k = keys.next()
-            when (val v = obj.get(k)) { is Boolean -> e.putBoolean(k, v); is Int -> e.putInt(k, v); is Long -> e.putLong(k, v); is Double -> e.putFloat(k, v.toFloat()); is String -> e.putString(k, v) }
+            when (val v = obj.get(k)) {
+                is Boolean -> e.putBoolean(k, v)
+                is Int -> e.putInt(k, v)
+                is Long -> e.putLong(k, v)
+                is Double -> e.putFloat(k, v.toFloat())
+                is String -> e.putString(k, v)
+            }
         }
         e.apply()
     }

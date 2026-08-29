@@ -2,17 +2,9 @@ package org.audoiboo.tracker
 
 import android.content.Context
 import android.net.Uri
-import org.json.JSONArray
-import org.json.JSONObject
 
 /** Persistent audiobook-specific state shared by the player UI and playback service. */
 internal object PlayerExtras {
-    private const val PREFS = "player_extras"
-    private const val HISTORY = "history"
-    private const val LISTENED_MS = "listened_ms"
-    private const val BOOKMARKS = "bookmarks_v2"
-    private const val DAILY = "daily_listened"
-
     data class Resume(val dir: String, val title: String, val uri: String, val at: Long)
     data class SeriesResume(val series: String, val dir: String, val title: String, val uri: String, val at: Long)
     data class HistoryItem(val dir: String, val title: String, val at: Long)
@@ -86,16 +78,8 @@ internal object PlayerExtras {
 
     fun history(context: Context): List<HistoryItem> {
         PlayerExtrasStore.initialize(context)
-        if (PlayerExtrasStore.isReady()) {
-            return PlayerExtrasStore.history().map { HistoryItem(it.dir, it.title, it.at) }
-        }
-        return legacyHistory(context)
+        return PlayerExtrasStore.history().map { HistoryItem(it.dir, it.title, it.at) }
     }
-
-    private fun legacyHistory(context: Context): List<HistoryItem> = runCatching {
-        val a = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(HISTORY, "[]"))
-        (0 until a.length()).mapNotNull { i -> a.optJSONObject(i)?.let { HistoryItem(it.optString("dir"), it.optString("title"), it.optLong("at")) } }.filter { it.dir.isNotBlank() }
-    }.getOrDefault(emptyList())
 
     fun addListened(context: Context, deltaMs: Long) {
         PlayerExtrasStore.addListened(context, deltaMs)
@@ -103,17 +87,12 @@ internal object PlayerExtras {
 
     fun totalListenedMs(context: Context): Long {
         PlayerExtrasStore.initialize(context)
-        return if (PlayerExtrasStore.isReady()) PlayerExtrasStore.totalMs()
-        else context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(LISTENED_MS, 0L)
+        return PlayerExtrasStore.totalMs()
     }
 
     fun dailyListened(context: Context): Map<String, Long> {
         PlayerExtrasStore.initialize(context)
-        if (PlayerExtrasStore.isReady()) return PlayerExtrasStore.daily().associate { it.day to it.listenedMs }
-        return runCatching {
-            val o = JSONObject(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(DAILY, "{}"))
-            o.keys().asSequence().associateWith { o.optLong(it) }
-        }.getOrDefault(emptyMap())
+        return PlayerExtrasStore.daily().associate { it.day to it.listenedMs }
     }
 
     fun smartRewindMs(lastPlayedAt: Long): Long {
@@ -175,16 +154,8 @@ internal object PlayerExtras {
 
     fun bookmarks(context: Context): List<Bookmark> {
         PlayerExtrasStore.initialize(context)
-        if (PlayerExtrasStore.isReady()) {
-            return PlayerExtrasStore.bookmarks().map { Bookmark(it.uri, it.positionMs, it.note, it.createdAt) }
-        }
-        return legacyBookmarks(context)
+        return PlayerExtrasStore.bookmarks().map { Bookmark(it.uri, it.positionMs, it.note, it.createdAt) }
     }
-
-    private fun legacyBookmarks(context: Context): List<Bookmark> = runCatching {
-        val a = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(BOOKMARKS, "[]"))
-        (0 until a.length()).mapNotNull { i -> a.optJSONObject(i)?.let { Bookmark(it.optString("uri"), it.optLong("position"), it.optString("note"), it.optLong("createdAt")) } }
-    }.getOrDefault(emptyList())
 
     fun deleteBookmark(context: Context, createdAt: Long) {
         PlayerExtrasStore.deleteBookmark(context, createdAt)

@@ -62,10 +62,11 @@ object BackupStore {
     fun importJson(context: Context, raw: String) {
         val root = JSONObject(raw)
         val tracker = root.optString("tracker", "[]")
+        val legacyPlayerExtras = root.optJSONObject("playerExtras")
         val roomTags = root.optJSONObject("roomTags")
         val trackPositions = root.optJSONObject("roomTrackPositions") ?: root.optJSONObject("playerPositions")
         val roomQueue = root.optJSONArray("roomPlaybackQueue") ?: legacyQueueFromBackup(root.optJSONObject("playerQueue"))
-        val roomResume = root.optJSONObject("roomPlaybackResume") ?: legacyResumeFromBackup(root.optJSONObject("playerExtras"))
+        val roomResume = root.optJSONObject("roomPlaybackResume") ?: legacyResumeFromBackup(legacyPlayerExtras)
         val roomPlayerExtras = root.optJSONObject("roomPlayerExtras")
         val roomPlayerState = root.optJSONObject("roomPlayerState")
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
@@ -80,7 +81,8 @@ object BackupStore {
                     roomQueue,
                     roomResume,
                     roomPlayerExtras,
-                    roomPlayerState
+                    roomPlayerState,
+                    legacyPlayerExtras != null
                 )
                 recoverAfterRestore(context.applicationContext)
             }
@@ -90,10 +92,11 @@ object BackupStore {
     suspend fun importJsonToRoom(context: Context, raw: String) {
         val root = JSONObject(raw)
         val tracker = root.optString("tracker", "[]")
+        val legacyPlayerExtras = root.optJSONObject("playerExtras")
         val roomTags = root.optJSONObject("roomTags")
         val trackPositions = root.optJSONObject("roomTrackPositions") ?: root.optJSONObject("playerPositions")
         val roomQueue = root.optJSONArray("roomPlaybackQueue") ?: legacyQueueFromBackup(root.optJSONObject("playerQueue"))
-        val roomResume = root.optJSONObject("roomPlaybackResume") ?: legacyResumeFromBackup(root.optJSONObject("playerExtras"))
+        val roomResume = root.optJSONObject("roomPlaybackResume") ?: legacyResumeFromBackup(legacyPlayerExtras)
         val roomPlayerExtras = root.optJSONObject("roomPlayerExtras")
         val roomPlayerState = root.optJSONObject("roomPlayerState")
         context.getSharedPreferences("tracker", Context.MODE_PRIVATE).edit().putString("library", tracker).apply()
@@ -106,7 +109,8 @@ object BackupStore {
             roomQueue,
             roomResume,
             roomPlayerExtras,
-            roomPlayerState
+            roomPlayerState,
+            legacyPlayerExtras != null
         )
         recoverAfterRestore(context)
     }
@@ -119,22 +123,30 @@ object BackupStore {
         roomQueue: JSONArray?,
         roomResume: JSONObject?,
         roomPlayerExtras: JSONObject?,
-        roomPlayerState: JSONObject?
+        roomPlayerState: JSONObject?,
+        hasLegacyPlayerExtras: Boolean
     ) {
         LibraryRepository.restoreLegacyJson(context, tracker)
-        if (roomTags != null) LibraryRepository.restoreTagsJson(context, roomTags)
-        else RoomTagSync.restoreFromLegacy(context)
+        when {
+            roomTags != null -> LibraryRepository.restoreTagsJson(context, roomTags)
+            hasLegacyPlayerExtras -> RoomTagSync.restoreFromLegacy(context)
+        }
         PlayerTagStore.refresh(context)
         TrackPositionStore.restoreJson(context, trackPositions)
         PlaybackStateRepository.restoreRoomState(context, roomQueue, roomResume)
-        if (roomPlayerState != null) PlayerStateStore.restoreJson(context, roomPlayerState)
-        else PlayerStateStore.restoreFromLegacy(context)
+        when {
+            roomPlayerState != null -> PlayerStateStore.restoreJson(context, roomPlayerState)
+            hasLegacyPlayerExtras -> PlayerStateStore.restoreFromLegacy(context)
+            else -> PlayerStateStore.refresh(context)
+        }
         PreferenceDataStore.syncFromLegacy(context)
-        if (roomPlayerExtras != null) {
-            PlayerExtrasRepository.restoreJson(context, roomPlayerExtras)
-        } else {
-            PlayerExtrasRoomSync.restoreFromLegacy(context)
-            PlayerExtrasStore.refresh(context)
+        when {
+            roomPlayerExtras != null -> PlayerExtrasRepository.restoreJson(context, roomPlayerExtras)
+            hasLegacyPlayerExtras -> {
+                PlayerExtrasRoomSync.restoreFromLegacy(context)
+                PlayerExtrasStore.refresh(context)
+            }
+            else -> PlayerExtrasStore.refresh(context)
         }
         RoomCoverSync.enqueueAll(context)
     }

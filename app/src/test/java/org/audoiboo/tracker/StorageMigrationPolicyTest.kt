@@ -11,8 +11,8 @@ class StorageMigrationPolicyTest {
         assertTrue(StorageMigrationPolicy.canReuseExisting("content://tree/file", "content://tree/file", null, 0))
     }
 
-    @Test fun equalKnownNonzeroSizesReuseExistingDestination() {
-        assertTrue(StorageMigrationPolicy.canReuseExisting("old", "new", 1234, 1234))
+    @Test fun equalSizeDifferentUriIsStillACollision() {
+        assertFalse(StorageMigrationPolicy.canReuseExisting("old", "new", 1234, 1234))
         assertFalse(StorageMigrationPolicy.canReuseExisting("old", "new", null, 1234))
         assertFalse(StorageMigrationPolicy.canReuseExisting("old", "new", 0, 0))
         assertFalse(StorageMigrationPolicy.canReuseExisting("old", "new", 1234, 1200))

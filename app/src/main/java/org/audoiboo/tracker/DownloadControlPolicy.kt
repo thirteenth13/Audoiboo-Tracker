@@ -1,8 +1,8 @@
 package org.audoiboo.tracker
 
 /**
- * Centralizes persisted download state transitions. Automatic WorkManager kicks are deliberately
- * stricter than an explicit user resume: FAILED must not be revived by a stale worker forever.
+ * Centralizes persisted download state transitions. Automatic starts are deliberately stricter
+ * than an explicit user retry: FAILED must first be re-queued by user action or retry policy.
  */
 internal object DownloadControlPolicy {
     fun canAutoStart(state: ManagedDownloadState): Boolean = state in setOf(
@@ -14,8 +14,8 @@ internal object DownloadControlPolicy {
     fun canManualStart(state: ManagedDownloadState): Boolean =
         canAutoStart(state) || state == ManagedDownloadState.FAILED
 
-    /** Compatibility alias for service-side explicit START/RESUME checks. */
-    fun canStart(state: ManagedDownloadState): Boolean = canManualStart(state)
+    /** Service START is treated as automatic because Android may redeliver stale intents. */
+    fun canStart(state: ManagedDownloadState): Boolean = canAutoStart(state)
 
     fun pause(state: ManagedDownloadState): ManagedDownloadState = when (state) {
         ManagedDownloadState.COMPLETED, ManagedDownloadState.CANCELLED -> state

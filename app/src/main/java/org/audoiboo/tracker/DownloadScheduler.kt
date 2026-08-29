@@ -15,35 +15,54 @@ import androidx.work.workDataOf
 import java.util.concurrent.TimeUnit
 
 /**
- * WorkManager persists and schedules download intentions. The actual long-running
- * transfer still happens inside ManagedDownloadService as a foreground service.
+ * WorkManager persists download intentions. The actual transfer still happens in
+ * ManagedDownloadService. Normal kicks and delayed retries use separate unique work names so a
+ * retry cannot be lost because the worker that started the failed transfer is still finishing.
  */
 internal object DownloadScheduler {
     private const val KEY_ID = "download_id"
+    private const val KEY_RETRY = "download_retry"
     private const val RECOVERY_WORK = "audoiboo-download-recovery"
     private fun workName(id: String) = "audoiboo-download-$id"
+    private fun retryWorkName(id: String) = "audoiboo-download-retry-$id"
 
-    fun enqueue(context: Context, id: String, delayedRetry: Boolean = false) {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(if (AppPrefs.wifiOnly(context)) NetworkType.UNMETERED else NetworkType.CONNECTED)
-            .build()
-        val builder = OneTimeWorkRequestBuilder<DownloadKickWorker>()
-            .setInputData(workDataOf(KEY_ID to id))
-            .setConstraints(constraints)
+    private fun constraints(context: Context) = Constraints.Builder()
+        .setRequiredNetworkType(if (AppPrefs.wifiOnly(context)) NetworkType.UNMETERED else NetworkType.CONNECTED)
+        .build()
+
+    fun enqueue(context: Context, id: String) {
+        val request = OneTimeWorkRequestBuilder<DownloadKickWorker>()
+            .setInputData(workDataOf(KEY_ID to id, KEY_RETRY to false))
+            .setConstraints(constraints(context))
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-        if (delayedRetry) builder.setInitialDelay(30, TimeUnit.SECONDS)
+            .build()
         WorkManager.getInstance(context).enqueueUniqueWork(
             workName(id),
-            // Never replace an already queued/running kick for the same download. REPLACE can
-            // overlap the old and new workers during cancellation and send duplicate STARTs to
-            // the foreground service, where both transfers would target the same staging file.
             ExistingWorkPolicy.KEEP,
-            builder.build()
+            request
+        )
+    }
+
+    fun enqueueRetry(context: Context, id: String) {
+        val request = OneTimeWorkRequestBuilder<DownloadKickWorker>()
+            .setInputData(workDataOf(KEY_ID to id, KEY_RETRY to true))
+            .setConstraints(constraints(context))
+            .setInitialDelay(30, TimeUnit.SECONDS)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+            .build()
+        // Retry workers never write the staging file themselves. REPLACE guarantees that a retry
+        // scheduled by a fresh failure is not dropped behind an older retry worker still exiting.
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            retryWorkName(id),
+            ExistingWorkPolicy.REPLACE,
+            request
         )
     }
 
     fun cancel(context: Context, id: String) {
-        WorkManager.getInstance(context).cancelUniqueWork(workName(id))
+        val work = WorkManager.getInstance(context)
+        work.cancelUniqueWork(workName(id))
+        work.cancelUniqueWork(retryWorkName(id))
     }
 
     fun scheduleRecovery(context: Context) {
@@ -69,6 +88,7 @@ internal object DownloadScheduler {
     }
 
     internal fun id(input: androidx.work.Data): String? = input.getString(KEY_ID)
+    internal fun isRetry(input: androidx.work.Data): Boolean = input.getBoolean(KEY_RETRY, false)
 }
 
 internal class DownloadRecoveryWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
@@ -82,8 +102,16 @@ internal class DownloadRecoveryWorker(appContext: Context, params: WorkerParamet
 internal class DownloadKickWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val id = DownloadScheduler.id(inputData) ?: return Result.failure()
-        val record = ManagedDownloads.get(applicationContext, id) ?: return Result.success()
-        if (!DownloadRecoveryPolicy.workerCanKick(record.state)) return Result.success()
+        var record = ManagedDownloads.get(applicationContext, id) ?: return Result.success()
+        if (DownloadScheduler.isRetry(inputData)) {
+            // A delayed retry is valid only while the exact transfer is still FAILED. Manual
+            // resume/cancel/pause changes the state, making this stale retry a harmless no-op.
+            if (record.state != ManagedDownloadState.FAILED) return Result.success()
+            record = record.copy(state = ManagedDownloadState.QUEUED)
+            ManagedDownloads.saveOne(applicationContext, record)
+        } else if (!DownloadRecoveryPolicy.workerCanKick(record.state)) {
+            return Result.success()
+        }
         return runCatching {
             val intent = Intent(applicationContext, ManagedDownloadService::class.java)
                 .setAction(ManagedDownloadService.ACTION_START)

@@ -125,7 +125,8 @@ internal object PlayerExtrasStore {
 
         val app = context.applicationContext
         scope.launch {
-            val sql = AudoibooDatabase.get(app).openHelper.writableDatabase
+            val db = AudoibooDatabase.get(app)
+            val sql = db.openHelper.writableDatabase
             sql.beginTransaction()
             try {
                 sql.execSQL("INSERT OR IGNORE INTO daily_listening(day, listenedMs) VALUES(?, 0)", arrayOf(day))
@@ -137,6 +138,8 @@ internal object PlayerExtrasStore {
             } finally {
                 sql.endTransaction()
             }
+            // Refresh the exact persisted total in case initial Room warm-up raced this tick.
+            totalState.value = db.libraryDao().listeningTotal()?.listenedMs ?: totalState.value
         }
     }
 

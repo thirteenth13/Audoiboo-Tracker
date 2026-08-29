@@ -14,10 +14,6 @@ import org.json.JSONObject
 
 /** Room v6 store for speeds, broken-track state and per-series resume. */
 internal object PlayerStateStore {
-    private const val PREFS = "player_extras"
-    private const val MIGRATION_PREFS = "room_migration"
-    private const val MIGRATION_KEY = "player_state_v6"
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val bookSpeedsState = MutableStateFlow<Map<String, Float>>(emptyMap())
     private val seriesSpeedsState = MutableStateFlow<Map<String, Float>>(emptyMap())
@@ -40,7 +36,6 @@ internal object PlayerStateStore {
         }
         val app = context.applicationContext
         scope.launch {
-            migrateLegacyIfNeeded(app)
             refresh(app)
             ready = true
             val dao = AudoibooDatabase.get(app).libraryDao()
@@ -61,12 +56,12 @@ internal object PlayerStateStore {
 
     fun bookSpeed(context: Context, dir: String): Float? {
         initialize(context)
-        return if (ready) bookSpeedsState.value[dir] else legacyBookSpeeds(context)[dir]
+        return bookSpeedsState.value[dir]
     }
 
     fun seriesSpeed(context: Context, series: String): Float? {
         initialize(context)
-        return if (ready) seriesSpeedsState.value[series] else legacySeriesSpeeds(context)[series]
+        return seriesSpeedsState.value[series]
     }
 
     fun setBookSpeed(context: Context, dir: String, speed: Float) {
@@ -93,7 +88,7 @@ internal object PlayerStateStore {
 
     fun brokenUris(context: Context): Set<String> {
         initialize(context)
-        return if (ready) brokenState.value else legacyBroken(context)
+        return brokenState.value
     }
 
     fun markBroken(context: Context, uri: String) {
@@ -111,7 +106,7 @@ internal object PlayerStateStore {
 
     fun seriesResume(context: Context, series: String): SeriesResumeEntity? {
         initialize(context)
-        return if (ready) seriesResumeState.value[series] else legacySeriesResume(context)[series]
+        return seriesResumeState.value[series]
     }
 
     fun saveSeriesResume(context: Context, value: SeriesResumeEntity) {
@@ -153,56 +148,8 @@ internal object PlayerStateStore {
         parseSpeeds(json.optJSONObject("seriesSpeeds")).forEach { (key, value) -> dao.upsertSeriesSpeed(PlayerSeriesSpeedEntity(key, value)) }
         parseBroken(json.optJSONArray("brokenUris")).forEach { dao.upsertBrokenTrack(BrokenTrackEntity(it)) }
         parseSeriesResume(json.optJSONObject("seriesResume")).values.forEach { dao.upsertSeriesResume(it) }
-        context.applicationContext.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE).edit().putBoolean(MIGRATION_KEY, true).apply()
         refresh(app)
     }
-
-    suspend fun restoreFromLegacy(context: Context) = withContext(Dispatchers.IO) {
-        val app = context.applicationContext
-        importLegacy(app, overwrite = true)
-        app.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE).edit().putBoolean(MIGRATION_KEY, true).apply()
-        refresh(app)
-    }
-
-    private suspend fun migrateLegacyIfNeeded(context: Context) {
-        val flags = context.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE)
-        if (flags.getBoolean(MIGRATION_KEY, false)) return
-        importLegacy(context, overwrite = false)
-        flags.edit().putBoolean(MIGRATION_KEY, true).apply()
-    }
-
-    private suspend fun importLegacy(context: Context, overwrite: Boolean) {
-        val dao = AudoibooDatabase.get(context).libraryDao()
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val book = legacyBookSpeeds(context)
-        val series = legacySeriesSpeeds(context)
-        val broken = legacyBroken(context)
-        val resumes = legacySeriesResume(context)
-        val existingBook = dao.bookSpeeds().associateBy { it.dir }
-        val existingSeries = dao.seriesSpeeds().associateBy { it.series }
-        val existingBroken = dao.brokenTracks().associateBy { it.uri }
-        val existingResume = dao.seriesResumeEntries().associateBy { it.series }
-        book.forEach { (key, value) -> if (overwrite || key !in existingBook) dao.upsertBookSpeed(PlayerBookSpeedEntity(key, value)) }
-        series.forEach { (key, value) -> if (overwrite || key !in existingSeries) dao.upsertSeriesSpeed(PlayerSeriesSpeedEntity(key, value)) }
-        broken.forEach { uri -> if (overwrite || uri !in existingBroken) dao.upsertBrokenTrack(BrokenTrackEntity(uri)) }
-        resumes.forEach { (key, value) -> if (overwrite || key !in existingResume) dao.upsertSeriesResume(value) }
-    }
-
-    private fun legacyBookSpeeds(context: Context): Map<String, Float> = parseSpeeds(
-        runCatching { JSONObject(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("book_speeds", "{}")) }.getOrNull()
-    )
-
-    private fun legacySeriesSpeeds(context: Context): Map<String, Float> = parseSpeeds(
-        runCatching { JSONObject(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("series_speeds", "{}")) }.getOrNull()
-    )
-
-    private fun legacyBroken(context: Context): Set<String> = parseBroken(
-        runCatching { JSONArray(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("broken_uris", "[]")) }.getOrNull()
-    ).toSet()
-
-    private fun legacySeriesResume(context: Context): Map<String, SeriesResumeEntity> = parseSeriesResume(
-        runCatching { JSONObject(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("series_resume", "{}")) }.getOrNull()
-    )
 
     private fun parseSpeeds(obj: JSONObject?): Map<String, Float> {
         if (obj == null) return emptyMap()

@@ -2,7 +2,6 @@ package org.audoiboo.tracker
 
 import android.app.Activity
 import android.app.Application
-import android.content.SharedPreferences
 import android.os.Bundle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -10,14 +9,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 class AudoibooApp : Application() {
-    private lateinit var appSettingsPrefs: SharedPreferences
     private var trackerBridge: LegacyTrackerBridge? = null
     private var legacyConsumerCount = 0
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    private val appSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-        appScope.launch { runCatching { PreferenceDataStore.syncFromLegacy(this@AudoibooApp) } }
-    }
 
     private fun isLegacyTrackerConsumer(activity: Activity): Boolean = activity is MainActivity
 
@@ -52,6 +46,7 @@ class AudoibooApp : Application() {
         WebDavSync.schedule(this)
         SeriesAutomationPrefs.schedule(this)
         RoomTrackerCatalog.start(this)
+        AppSettingsStore.initialize(this)
         TrackPositionStore.initialize(this)
         PlaybackQueueStore.initialize(this)
         PlaybackResumeStore.initialize(this)
@@ -59,15 +54,12 @@ class AudoibooApp : Application() {
         PlayerTagStore.initialize(this)
         PlayerStateStore.initialize(this)
 
-        appSettingsPrefs = getSharedPreferences("app_settings", MODE_PRIVATE)
-        appSettingsPrefs.registerOnSharedPreferenceChangeListener(appSettingsListener)
         registerActivityLifecycleCallbacks(legacyLifecycle)
         ContinueListeningWidget.updateAll(this)
 
         appScope.launch {
             // Tracking series are the only existing user data that still needs legacy import support.
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
-            runCatching { PreferenceDataStore.reconcile(this@AudoibooApp) }
             runCatching { RoomCoverSync.enqueueAll(this@AudoibooApp) }
         }
     }

@@ -29,6 +29,16 @@ internal object PlayerLogic {
         return ((lastStartedIndex + within) / trackCount.toFloat()).coerceIn(0f, 1f)
     }
 
+    fun brokenIndices(trackUris: List<String>, brokenUris: Set<String>): Set<Int> {
+        if (trackUris.isEmpty() || brokenUris.isEmpty()) return emptySet()
+        return trackUris.indices.filterTo(linkedSetOf()) { trackUris[it] in brokenUris }
+    }
+
+    fun playableCount(trackCount: Int, brokenIndices: Set<Int>): Int {
+        if (trackCount <= 0) return 0
+        return (0 until trackCount).count { it !in brokenIndices }
+    }
+
     /**
      * Computes book progress from persisted positions while excluding tracks already known to be
      * broken. Unknown duration never makes a started track look finished, and impossible saved

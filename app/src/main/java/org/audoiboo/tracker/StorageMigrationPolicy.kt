@@ -3,8 +3,10 @@ package org.audoiboo.tracker
 /** Pure decisions for safely re-running SAF library migrations. */
 internal object StorageMigrationPolicy {
     fun canReuseExisting(sourceUri: String, targetUri: String, sourceBytes: Long?, targetBytes: Long): Boolean {
-        if (sourceUri.isNotBlank() && sourceUri == targetUri) return true
-        return sourceBytes != null && sourceBytes > 0L && targetBytes > 0L && sourceBytes == targetBytes
+        // Equal byte length is not proof that two audio files are identical. Reuse only when the
+        // library already points at the exact destination document; otherwise treat it as a
+        // collision so migration never silently binds playback state to different content.
+        return sourceUri.isNotBlank() && sourceUri == targetUri
     }
 
     fun normalizedDestination(path: String): String? {

@@ -99,7 +99,9 @@ object BackupStore {
         roomPlayerExtras: JSONObject?
     ) {
         LibraryRepository.restoreLegacyJson(context, tracker)
-        LibraryRepository.restoreTagsJson(context, roomTags)
+        if (roomTags != null) LibraryRepository.restoreTagsJson(context, roomTags)
+        else RoomTagSync.restoreFromLegacy(context)
+        PlayerTagStore.refresh(context)
         TrackPositionStore.restoreJson(context, trackPositions)
         PlaybackStateRepository.restoreRoomState(context, roomQueue, roomResume)
         PreferenceDataStore.syncFromLegacy(context)
@@ -122,8 +124,6 @@ object BackupStore {
             root.put("seriesAutomation", prefsToJson(context, "series_automation"))
             root.put("storageAccess", prefsToJson(context, "storage_access"))
         }
-        // player_extras still carries non-Room fields such as speed, broken-file state,
-        // series resume and the current book marker. History/bookmarks/stats live in Room.
         if (includeBookmarks || includeStatistics) root.put("playerExtras", prefsToJson(context, "player_extras"))
         if (includeBookmarks) root.put("bookmarks", prefsToJson(context, "bookmarks"))
     }

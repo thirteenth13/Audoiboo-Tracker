@@ -172,7 +172,8 @@ object BackupStore {
         root.optJSONObject("storageAccess")?.let { jsonToPrefs(context, "storage_access", it) }
     }
 
-    private fun recoverAfterRestore(context: Context) {
+    private suspend fun recoverAfterRestore(context: Context) {
+        LibraryUriRecovery.recover(context)
         DownloadScheduler.recover(context)
         SeriesAutomationPrefs.schedule(context)
         WebDavSync.schedule(context)

@@ -1,6 +1,7 @@
 package org.audoiboo.tracker
 
 import android.content.Context
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -61,34 +62,76 @@ internal object PlayerExtrasRepository {
 
     suspend fun restoreJson(context: Context, json: JSONObject?) = withContext(Dispatchers.IO) {
         if (json == null) return@withContext
+
+        val historyArray = requiredArray(json, "history") ?: JSONArray()
+        val bookmarkArray = requiredArray(json, "bookmarks") ?: JSONArray()
+        val dailyArray = requiredArray(json, "daily") ?: JSONArray()
+        val totalMs = if (!json.has("totalMs") || json.isNull("totalMs")) 0L else
+            PlayerExtrasValuePolicy.nonNegativeLong(json.opt("totalMs"))
+                ?: throw IllegalArgumentException("Backup total listening time is invalid")
+
+        val history = (0 until historyArray.length()).map { i ->
+            val o = historyArray.opt(i) as? JSONObject
+                ?: throw IllegalArgumentException("Backup history entry is invalid at index $i")
+            val dir = PlayerExtrasValuePolicy.text(o.opt("dir"), allowBlank = false)
+                ?: throw IllegalArgumentException("Backup history dir is invalid at index $i")
+            val title = if (!o.has("title") || o.isNull("title")) dir else
+                PlayerExtrasValuePolicy.text(o.opt("title"))
+                    ?: throw IllegalArgumentException("Backup history title is invalid at index $i")
+            val at = if (!o.has("at") || o.isNull("at")) 0L else
+                PlayerExtrasValuePolicy.nonNegativeLong(o.opt("at"))
+                    ?: throw IllegalArgumentException("Backup history timestamp is invalid at index $i")
+            PlaybackHistoryEntity(dir, title, at)
+        }
+
+        val bookmarks = (0 until bookmarkArray.length()).map { i ->
+            val o = bookmarkArray.opt(i) as? JSONObject
+                ?: throw IllegalArgumentException("Backup bookmark entry is invalid at index $i")
+            val uri = PlayerExtrasValuePolicy.text(o.opt("uri"), allowBlank = false)
+                ?: throw IllegalArgumentException("Backup bookmark URI is invalid at index $i")
+            val createdAt = if (!o.has("createdAt") || o.isNull("createdAt")) 0L else
+                PlayerExtrasValuePolicy.nonNegativeLong(o.opt("createdAt"))
+                    ?: throw IllegalArgumentException("Backup bookmark timestamp is invalid at index $i")
+            val positionMs = if (!o.has("positionMs") || o.isNull("positionMs")) 0L else
+                PlayerExtrasValuePolicy.nonNegativeLong(o.opt("positionMs"))
+                    ?: throw IllegalArgumentException("Backup bookmark position is invalid at index $i")
+            val note = if (!o.has("note") || o.isNull("note")) "" else
+                PlayerExtrasValuePolicy.text(o.opt("note"))
+                    ?: throw IllegalArgumentException("Backup bookmark note is invalid at index $i")
+            val id = if (!o.has("id") || o.isNull("id")) "$uri::$createdAt" else
+                PlayerExtrasValuePolicy.text(o.opt("id"), allowBlank = false)
+                    ?: throw IllegalArgumentException("Backup bookmark id is invalid at index $i")
+            PlayerBookmarkEntity(id, uri, positionMs, note, createdAt)
+        }
+
+        val daily = (0 until dailyArray.length()).map { i ->
+            val o = dailyArray.opt(i) as? JSONObject
+                ?: throw IllegalArgumentException("Backup daily listening entry is invalid at index $i")
+            val day = PlayerExtrasValuePolicy.validDay(o.opt("day"))
+                ?: throw IllegalArgumentException("Backup listening day is invalid at index $i")
+            val listenedMs = if (!o.has("listenedMs") || o.isNull("listenedMs")) 0L else
+                PlayerExtrasValuePolicy.nonNegativeLong(o.opt("listenedMs"))
+                    ?: throw IllegalArgumentException("Backup daily listening duration is invalid at index $i")
+            DailyListeningEntity(day, listenedMs)
+        }
+
         val app = context.applicationContext
-        val historyArray = json.optJSONArray("history") ?: JSONArray()
-        val bookmarkArray = json.optJSONArray("bookmarks") ?: JSONArray()
-        val dailyArray = json.optJSONArray("daily") ?: JSONArray()
-        val history = (0 until historyArray.length()).mapNotNull { i ->
-            val o = historyArray.optJSONObject(i) ?: return@mapNotNull null
-            val dir = o.optString("dir").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            PlaybackHistoryEntity(dir, o.optString("title", dir), o.optLong("at", 0L))
+        val room = AudoibooDatabase.get(app)
+        room.withTransaction {
+            room.libraryDao().replacePlayerExtras(
+                history = history,
+                bookmarks = bookmarks,
+                daily = daily,
+                totalMs = totalMs
+            )
         }
-        val bookmarks = (0 until bookmarkArray.length()).mapNotNull { i ->
-            val o = bookmarkArray.optJSONObject(i) ?: return@mapNotNull null
-            val uri = o.optString("uri").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val createdAt = o.optLong("createdAt", 0L)
-            val id = o.optString("id").takeIf { it.isNotBlank() } ?: "$uri::$createdAt"
-            PlayerBookmarkEntity(id, uri, o.optLong("positionMs", 0L).coerceAtLeast(0L), o.optString("note"), createdAt)
-        }
-        val daily = (0 until dailyArray.length()).mapNotNull { i ->
-            val o = dailyArray.optJSONObject(i) ?: return@mapNotNull null
-            val day = o.optString("day").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            DailyListeningEntity(day, o.optLong("listenedMs", 0L).coerceAtLeast(0L))
-        }
-        AudoibooDatabase.get(app).libraryDao().replacePlayerExtras(
-            history = history,
-            bookmarks = bookmarks,
-            daily = daily,
-            totalMs = json.optLong("totalMs", 0L).coerceAtLeast(0L)
-        )
         PlayerExtrasStore.refresh(app)
+    }
+
+    private fun requiredArray(root: JSONObject, key: String): JSONArray? {
+        if (!root.has(key) || root.isNull(key)) return null
+        return root.opt(key) as? JSONArray
+            ?: throw IllegalArgumentException("Backup player extras $key is invalid")
     }
 
     /** Refresh Room-backed caches for callers that still use the reconciliation entry point. */

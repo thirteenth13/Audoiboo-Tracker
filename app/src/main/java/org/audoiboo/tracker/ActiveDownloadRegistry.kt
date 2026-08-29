@@ -10,7 +10,9 @@ import java.util.concurrent.ConcurrentHashMap
  * many different downloads from exhausting threads, sockets, storage bandwidth and
  * foreground-service resources at the same time.
  */
-internal class ActiveDownloadRegistry<T>(private val maxActive: Int = Int.MAX_VALUE) {
+internal class ActiveDownloadRegistry<T>(private val maxActive: Int = DEFAULT_MAX_ACTIVE) {
+    companion object { const val DEFAULT_MAX_ACTIVE = 2 }
+
     init { require(maxActive > 0) { "maxActive must be positive" } }
 
     private val active = ConcurrentHashMap<String, T>()

@@ -6,6 +6,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import org.json.JSONObject
 
 private val Context.audoibooDataStore by preferencesDataStore(name = "audoiboo_settings")
 
@@ -53,26 +54,8 @@ object PreferenceDataStore {
         }
     }
 
-    /** Explicit compatibility path used after restoring an old backup. */
-    suspend fun syncFromLegacy(context: Context) {
-        val app = context.applicationContext
-        app.audoibooDataStore.edit { p ->
-            copyLegacy(app, p)
-            p[LEGACY_IMPORTED] = true
-        }
-    }
-
-    /**
-     * Compatibility reconcile while AppPrefs still writes app_settings. Once AppPrefs switches
-     * to AppSettingsStore this can become a one-time import just like the player-state stores.
-     */
     suspend fun reconcile(context: Context) {
         val app = context.applicationContext
-        val legacy = app.getSharedPreferences(LEGACY_FILE, Context.MODE_PRIVATE)
-        if (legacy.all.isNotEmpty()) {
-            syncFromLegacy(app)
-            return
-        }
         val p = app.audoibooDataStore.data.first()
         if (p[LEGACY_IMPORTED] != true || (p[VERSION] ?: 0) < 2) importLegacyIfNeeded(app)
     }
@@ -97,18 +80,7 @@ object PreferenceDataStore {
 
     private fun copyLegacy(context: Context, p: MutablePreferences) {
         val value = legacySnapshot(context)
-        p[BASE_FOLDER] = value.baseFolder
-        p[AUTHOR_FOLDER] = value.authorFolder
-        p[DEV_TOOLS] = value.devTools
-        p[DARK_THEME] = value.darkTheme
-        p[ASK_PATH] = value.askPath
-        p[WIFI_ONLY] = value.wifiOnly
-        p[UNPACK] = value.unpack
-        p[UPDATE_WIFI] = value.updateWifiOnly
-        p[SHOW_PAGE] = value.showPageButton
-        p[SHOW_FIND] = value.showFindArchiveButton
-        p[AUTO_ARCHIVES] = value.autoFindArchives
-        p[VERSION] = 2
+        put(p, value)
     }
 
     private fun fromPreferences(p: Preferences): ModernSettings = ModernSettings(
@@ -127,24 +99,65 @@ object PreferenceDataStore {
     )
 
     suspend fun save(context: Context, value: ModernSettings) {
+        val clean = value.copy(baseFolder = value.baseFolder.trim().trim('/').ifBlank { "Audoiboo" }, schemaVersion = 2)
         context.applicationContext.audoibooDataStore.edit { p ->
-            p[BASE_FOLDER] = value.baseFolder.trim().trim('/').ifBlank { "Audoiboo" }
-            p[AUTHOR_FOLDER] = value.authorFolder
-            p[DEV_TOOLS] = value.devTools
-            p[DARK_THEME] = value.darkTheme
-            p[ASK_PATH] = value.askPath
-            p[WIFI_ONLY] = value.wifiOnly
-            p[UNPACK] = value.unpack
-            p[UPDATE_WIFI] = value.updateWifiOnly
-            p[SHOW_PAGE] = value.showPageButton
-            p[SHOW_FIND] = value.showFindArchiveButton
-            p[AUTO_ARCHIVES] = value.autoFindArchives
-            p[VERSION] = 2
+            put(p, clean)
             p[LEGACY_IMPORTED] = true
         }
     }
 
-    suspend fun setWifiOnly(context: Context, value: Boolean) = context.applicationContext.audoibooDataStore.edit { it[WIFI_ONLY] = value }
-    suspend fun setAutoFindArchives(context: Context, value: Boolean) = context.applicationContext.audoibooDataStore.edit { it[AUTO_ARCHIVES] = value }
-    suspend fun setDarkTheme(context: Context, value: Boolean) = context.applicationContext.audoibooDataStore.edit { it[DARK_THEME] = value }
+    suspend fun exportJson(context: Context): JSONObject = current(context).toJson()
+
+    suspend fun restoreJson(context: Context, json: JSONObject?) {
+        if (json == null) return
+        val value = ModernSettings(
+            baseFolder = json.optString("baseFolder", "Audoiboo").trim().trim('/').ifBlank { "Audoiboo" },
+            authorFolder = json.optBoolean("authorFolder", true),
+            devTools = json.optBoolean("devTools", false),
+            darkTheme = json.optBoolean("darkTheme", false),
+            askPath = json.optBoolean("askPath", false),
+            wifiOnly = json.optBoolean("wifiOnly", false),
+            unpack = json.optBoolean("unpack", true),
+            updateWifiOnly = json.optBoolean("updateWifiOnly", true),
+            showPageButton = json.optBoolean("showPageButton", true),
+            showFindArchiveButton = json.optBoolean("showFindArchiveButton", true),
+            autoFindArchives = json.optBoolean("autoFindArchives", false),
+            schemaVersion = 2
+        )
+        save(context, value)
+        AppSettingsStore.refresh(context.applicationContext)
+    }
+
+    private fun put(p: MutablePreferences, value: ModernSettings) {
+        p[BASE_FOLDER] = value.baseFolder.trim().trim('/').ifBlank { "Audoiboo" }
+        p[AUTHOR_FOLDER] = value.authorFolder
+        p[DEV_TOOLS] = value.devTools
+        p[DARK_THEME] = value.darkTheme
+        p[ASK_PATH] = value.askPath
+        p[WIFI_ONLY] = value.wifiOnly
+        p[UNPACK] = value.unpack
+        p[UPDATE_WIFI] = value.updateWifiOnly
+        p[SHOW_PAGE] = value.showPageButton
+        p[SHOW_FIND] = value.showFindArchiveButton
+        p[AUTO_ARCHIVES] = value.autoFindArchives
+        p[VERSION] = 2
+    }
+
+    private fun ModernSettings.toJson(): JSONObject = JSONObject()
+        .put("baseFolder", baseFolder)
+        .put("authorFolder", authorFolder)
+        .put("devTools", devTools)
+        .put("darkTheme", darkTheme)
+        .put("askPath", askPath)
+        .put("wifiOnly", wifiOnly)
+        .put("unpack", unpack)
+        .put("updateWifiOnly", updateWifiOnly)
+        .put("showPageButton", showPageButton)
+        .put("showFindArchiveButton", showFindArchiveButton)
+        .put("autoFindArchives", autoFindArchives)
+        .put("schemaVersion", 2)
+
+    suspend fun setWifiOnly(context: Context, value: Boolean) = save(context, current(context).copy(wifiOnly = value))
+    suspend fun setAutoFindArchives(context: Context, value: Boolean) = save(context, current(context).copy(autoFindArchives = value))
+    suspend fun setDarkTheme(context: Context, value: Boolean) = save(context, current(context).copy(darkTheme = value))
 }

@@ -70,7 +70,15 @@ internal object ManagedDownloads {
     }
 
     fun remove(context: Context, id: String) {
+        val record = get(context, id)
         DownloadScheduler.cancel(context, id)
+        if (record?.state in setOf(
+                ManagedDownloadState.QUEUED,
+                ManagedDownloadState.DOWNLOADING,
+                ManagedDownloadState.EXTRACTING
+            )) {
+            send(context, ManagedDownloadService.ACTION_CANCEL, id)
+        }
         ManagedDownloadRoomStore.delete(context, id)
         File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "staging/$id.part").delete()
     }

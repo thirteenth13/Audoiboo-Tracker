@@ -3,48 +3,8 @@ package org.audoiboo.tracker
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 
 internal object RoomTagSync {
-    private const val PREFS = "player_extras"
-    private const val KEY = "book_tags"
-    private const val MIGRATION_PREFS = "room_migration"
-    private const val MIGRATION_KEY = "book_tags_v1"
-
-    suspend fun syncFromLegacy(context: Context) = withContext(Dispatchers.IO) {
-        val app = context.applicationContext
-        val flags = app.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE)
-        if (flags.getBoolean(MIGRATION_KEY, false)) return@withContext
-        importLegacy(app, overwriteExisting = false)
-        flags.edit().putBoolean(MIGRATION_KEY, true).apply()
-    }
-
-    /** Explicit old-backup restore path; backup content is authoritative. */
-    suspend fun restoreFromLegacy(context: Context) = withContext(Dispatchers.IO) {
-        val app = context.applicationContext
-        importLegacy(app, overwriteExisting = true)
-        app.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE).edit().putBoolean(MIGRATION_KEY, true).apply()
-    }
-
-    private suspend fun importLegacy(context: Context, overwriteExisting: Boolean) {
-        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, "{}") ?: "{}"
-        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return
-        val tracker = LibraryRepository.snapshot(context)
-        if (tracker.isEmpty()) return
-        val playerBooks = playerBooks(context)
-        val dao = AudoibooDatabase.get(context).libraryDao()
-        val keys = root.keys()
-        while (keys.hasNext()) {
-            val dir = keys.next()
-            val tagsArray = root.optJSONArray(dir) ?: JSONArray()
-            val tags = (0 until tagsArray.length()).mapNotNull { tagsArray.optString(it).takeIf(String::isNotBlank) }
-            val bookId = resolveBookId(tracker, playerBooks, dir) ?: continue
-            if (!overwriteExisting && dao.bookWithTags(bookId)?.tags?.isNotEmpty() == true) continue
-            dao.setBookTags(bookId, tags)
-        }
-    }
-
     suspend fun tagsForDir(context: Context, dir: String): List<String> = withContext(Dispatchers.IO) {
         val app = context.applicationContext
         val tracker = LibraryRepository.snapshot(app)

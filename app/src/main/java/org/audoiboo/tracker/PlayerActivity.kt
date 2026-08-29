@@ -45,7 +45,6 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
-import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -84,14 +83,8 @@ object PlayerPrefs {
     fun savePosition(c: Context, uri: Uri, position: Long) { TrackPositionStore.save(c, uri, position) }
 }
 
-private object PlayerQueueStore {
-    private const val PREFS = "player_queue"; private const val KEY = "book_dirs"
-    fun load(c: Context): List<String> = runCatching { val a=JSONArray(c.getSharedPreferences(PREFS,Context.MODE_PRIVATE).getString(KEY,"[]")); (0 until a.length()).mapNotNull{a.optString(it).takeIf(String::isNotBlank)} }.getOrDefault(emptyList())
-    fun save(c: Context, dirs: List<String>) { val a=JSONArray();dirs.distinct().forEach(a::put);c.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit().putString(KEY,a.toString()).apply() }
-}
-
 class PlayerActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); TrackPositionStore.initialize(this); setContent { AudoibooTheme(this) { PlayerScreen(this, intent.getStringExtra("relativeDir"), intent.getStringExtra("title")) } } }
+    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); TrackPositionStore.initialize(this); PlaybackQueueStore.initialize(this); setContent { AudoibooTheme(this) { PlayerScreen(this, intent.getStringExtra("relativeDir"), intent.getStringExtra("title")) } } }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -100,10 +93,11 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
     val initialSnapshot = remember { PlayerExtras.snapshot(activity) }
     val trackerRevision by RoomTrackerCatalog.revision.collectAsState()
     val trackPositions by TrackPositionStore.observe().collectAsState()
+    val roomQueue by PlaybackQueueStore.observe().collectAsState()
     var refresh by remember { mutableIntStateOf(0) }
     var allTracks by remember(refresh) { mutableStateOf(loadPlayerTracks(activity, null)) }
     val books = remember(allTracks, refresh, trackerRevision, trackPositions) { groupTracksIntoBooks(activity, allTracks) }
-    var queueDirs by remember { mutableStateOf(initialSnapshot?.queue?.takeIf { it.isNotEmpty() } ?: PlayerQueueStore.load(activity)) }
+    var queueDirs by remember { mutableStateOf(initialSnapshot?.queue?.takeIf { it.isNotEmpty() } ?: PlaybackQueueStore.current(activity)) }
     var activeDir by remember { mutableStateOf(initialDir ?: initialSnapshot?.dir ?: PlayerExtras.resume(activity)?.dir) }
     var requestedTitle by remember { mutableStateOf(initialTitle ?: initialSnapshot?.title ?: PlayerExtras.resume(activity)?.title) }
     var page by remember { mutableStateOf(if (initialDir.isNullOrBlank()) PlayerPage.LIBRARY else PlayerPage.PLAYER) }
@@ -128,7 +122,9 @@ private fun PlayerScreen(activity: ComponentActivity, initialDir: String?, initi
     val activeBook = books.firstOrNull { it.relativeDir == activeDir }
     val siteCover = activeBook?.coverUrl ?: siteCoverUrl(activity, requestedTitle.orEmpty())
 
-    fun persistQueue(v: List<String>) { queueDirs = v.distinct(); PlayerQueueStore.save(activity, queueDirs) }
+    LaunchedEffect(roomQueue) { if (queueDirs != roomQueue) queueDirs = roomQueue }
+
+    fun persistQueue(v: List<String>) { queueDirs = v.distinct(); PlaybackQueueStore.save(activity, queueDirs) }
     fun persistSnapshot() {
         val dir = activeDir ?: return
         PlayerExtras.saveSnapshot(activity, dir, requestedTitle ?: dir, tracks.getOrNull(index)?.uri, index, position, queueDirs)

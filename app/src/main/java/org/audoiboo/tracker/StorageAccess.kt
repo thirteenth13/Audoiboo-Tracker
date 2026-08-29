@@ -20,12 +20,14 @@ internal object StorageAccess {
         val fallbackRaw = runtime.getString(LAST_VALID_TREE, null)
         val restored = restoredRaw?.let { runCatching { Uri.parse(it) }.getOrNull() }
         val fallback = fallbackRaw?.let { runCatching { Uri.parse(it) }.getOrNull() }
-        val selectedRaw = StorageTreePolicy.select(
-            restoredRaw = restoredRaw,
-            restoredAllowed = restored != null && hasPersistedPermission(context, restored),
-            fallbackRaw = fallbackRaw,
-            fallbackAllowed = fallback != null && hasPersistedPermission(context, fallback)
-        ) ?: return null
+        val restoredAllowed = restored != null && hasPersistedPermission(context, restored)
+        val fallbackAllowed = fallback != null && hasPersistedPermission(context, fallback)
+        val selectedRaw = StorageTreePolicy.select(restoredRaw, restoredAllowed, fallbackRaw, fallbackAllowed)
+        if (selectedRaw == null) {
+            if (!restoredAllowed && restoredRaw != null) prefs.edit().remove(TREE).apply()
+            if (!fallbackAllowed && fallbackRaw != null) runtime.edit().remove(LAST_VALID_TREE).apply()
+            return null
+        }
         val selected = runCatching { Uri.parse(selectedRaw) }.getOrNull() ?: return null
         if (selectedRaw != restoredRaw) prefs.edit().putString(TREE, selectedRaw).apply()
         runtime.edit().putString(LAST_VALID_TREE, selectedRaw).apply()

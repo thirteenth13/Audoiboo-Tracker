@@ -95,12 +95,24 @@ object BackupStore {
         val format = if (root.has("format") && !root.isNull("format")) root.optInt("format", Int.MIN_VALUE) else null
         val downloadsValue = if (root.has("downloads")) root.opt("downloads") else null
         val downloadsValid = downloadsValue == null || ManagedDownloadRoomStore.isValidBackupPayload(downloadsValue)
+        val objectSections = arrayOf(
+            "roomTags", "roomTrackPositions", "roomPlaybackResume", "roomPlayerState",
+            "roomPlayerExtras", "settings", "playerLibrary", "playerSettings",
+            "audioEnhancement", "seriesAutomation", "storageAccess", "bookmarks"
+        )
+        val arraySections = arrayOf("roomPlaybackQueue")
+        val sectionsValid = objectSections.all { key ->
+            !root.has(key) || root.isNull(key) || root.opt(key) is JSONObject
+        } && arraySections.all { key ->
+            !root.has(key) || root.isNull(key) || root.opt(key) is JSONArray
+        }
         BackupFormatPolicy.validate(
             format = format,
             hasTracker = root.has("tracker"),
             trackerIsValidArray = trackerValid,
             hasDownloads = root.has("downloads"),
-            downloadsAreValid = downloadsValid
+            downloadsAreValid = downloadsValid,
+            sectionsAreValid = sectionsValid
         )?.let { throw IllegalArgumentException(it) }
         return root
     }

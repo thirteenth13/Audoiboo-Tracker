@@ -69,7 +69,7 @@ internal object PlaybackResumeStore {
         )
         state.value = clean
         val now = System.currentTimeMillis()
-        val refreshWidget = previous?.dir != clean.dir || previous.uri != clean.uri || now - lastWidgetRefresh >= WIDGET_REFRESH_MS
+        val refreshWidget = previous?.dir != clean.dir || previous?.uri != clean.uri || now - lastWidgetRefresh >= WIDGET_REFRESH_MS
         if (refreshWidget) lastWidgetRefresh = now
         scope.launch {
             PlaybackStateRepository.saveSnapshot(app, clean)

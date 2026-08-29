@@ -45,26 +45,31 @@ internal object StorageMigration {
 
             val existing = StorageAccess.existingFile(app, relativeDir, item.name)
             val sourceBytes = sourceLength(app, source)
-            if (existing != null && StorageMigrationPolicy.canReuseExisting(
-                    sourceUri = source.toString(),
-                    targetUri = existing.uri.toString(),
-                    sourceBytes = sourceBytes,
-                    targetBytes = existing.length()
-                )
-            ) {
-                val alreadyIndexed = source == existing.uri && item.relativePath == relativeDir
-                if (!alreadyIndexed) {
-                    val stateMoved = runCatching {
-                        PlayerUriMigration.remap(app, source.toString(), existing.uri.toString())
-                    }.isSuccess
-                    if (!stateMoved) {
-                        failed++
-                        return@forEachIndexed
+            if (existing != null) {
+                if (StorageMigrationPolicy.canReuseExisting(
+                        sourceUri = source.toString(),
+                        targetUri = existing.uri.toString(),
+                        sourceBytes = sourceBytes,
+                        targetBytes = existing.length()
+                    )
+                ) {
+                    val alreadyIndexed = source == existing.uri && item.relativePath == relativeDir
+                    if (!alreadyIndexed) {
+                        val stateMoved = runCatching {
+                            PlayerUriMigration.remap(app, source.toString(), existing.uri.toString())
+                        }.isSuccess
+                        if (!stateMoved) {
+                            failed++
+                            return@forEachIndexed
+                        }
+                        replacements[index] = item.copy(uri = existing.uri.toString(), relativePath = relativeDir)
+                        migrated++
+                    } else {
+                        skipped++
                     }
-                    replacements[index] = item.copy(uri = existing.uri.toString(), relativePath = relativeDir)
-                    migrated++
                 } else {
-                    skipped++
+                    // Never overwrite a different file that already occupies the logical target.
+                    failed++
                 }
                 return@forEachIndexed
             }
@@ -72,13 +77,21 @@ internal object StorageMigration {
             val mime = mimeFor(item.name)
             val copied = runCatching {
                 val input = app.contentResolver.openInputStream(source) ?: return@runCatching null
-                val target = StorageAccess.openOutput(app, relativeDir, item.name, mime) ?: run {
+                val target = StorageAccess.beginAtomicOutput(app, relativeDir, item.name, mime) ?: run {
                     input.close()
                     return@runCatching null
                 }
-                val bytes = input.use { src -> target.second.use { dst -> src.copyTo(dst, 128 * 1024) } }
-                if (sourceBytes != null && sourceBytes > 0L && bytes != sourceBytes) return@runCatching null
-                target.first
+                try {
+                    val bytes = input.use { src -> target.output.use { dst -> src.copyTo(dst, 128 * 1024) } }
+                    if (sourceBytes != null && sourceBytes > 0L && bytes != sourceBytes) {
+                        target.abort()
+                        return@runCatching null
+                    }
+                    target.commit()
+                } catch (t: Throwable) {
+                    target.abort()
+                    throw t
+                }
             }.getOrNull()
 
             if (copied == null) {

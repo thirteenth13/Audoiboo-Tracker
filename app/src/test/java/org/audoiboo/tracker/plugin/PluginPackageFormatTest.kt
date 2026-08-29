@@ -21,6 +21,7 @@ class PluginPackageFormatTest {
         )
 
         assertTrue(PluginPackagePolicy.validate(manifest).valid)
+        assertEquals("baza-knig-1", PluginPackagePolicy.packageDirectoryName(manifest.id, manifest.version))
     }
 
     @Test

@@ -33,7 +33,10 @@ internal object DownloadScheduler {
         if (delayedRetry) builder.setInitialDelay(30, TimeUnit.SECONDS)
         WorkManager.getInstance(context).enqueueUniqueWork(
             workName(id),
-            ExistingWorkPolicy.REPLACE,
+            // Never replace an already queued/running kick for the same download. REPLACE can
+            // overlap the old and new workers during cancellation and send duplicate STARTs to
+            // the foreground service, where both transfers would target the same staging file.
+            ExistingWorkPolicy.KEEP,
             builder.build()
         )
     }

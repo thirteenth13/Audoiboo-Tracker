@@ -45,6 +45,27 @@ object TrackPositionStore {
         }
     }
 
+    suspend fun remapUri(context: Context, oldUri: String, newUri: String) {
+        if (oldUri.isBlank() || newUri.isBlank() || oldUri == newUri) return
+        val app = context.applicationContext
+        val db = AudoibooDatabase.get(app)
+        val dao = db.libraryDao()
+        val cached = positions.value[oldUri]
+        val pendingOld = synchronized(pending) { pending.remove(oldUri) }
+        db.withTransaction {
+            val old = dao.trackPosition(oldUri)?.positionMs
+            val target = dao.trackPosition(newUri)?.positionMs
+            val value = listOfNotNull(old, target, cached, pendingOld).maxOrNull()
+            if (value != null) dao.upsertTrackPosition(TrackPositionEntity(newUri, value.coerceAtLeast(0L)))
+            db.openHelper.writableDatabase.execSQL("DELETE FROM track_positions WHERE uri=?", arrayOf(oldUri))
+        }
+        val value = listOfNotNull(positions.value[newUri], cached, pendingOld).maxOrNull()
+        positions.value = positions.value - oldUri + if (value != null) mapOf(newUri to value) else emptyMap()
+        synchronized(pending) {
+            if (pendingOld != null) pending[newUri] = maxOf(pending[newUri] ?: 0L, pendingOld)
+        }
+    }
+
     fun position(context: Context, uri: Uri): Long {
         initialize(context)
         val key = uri.toString()

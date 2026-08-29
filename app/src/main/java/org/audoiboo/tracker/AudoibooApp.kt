@@ -12,7 +12,6 @@ import kotlinx.coroutines.launch
 
 class AudoibooApp : Application() {
     private lateinit var playerExtrasPrefs: SharedPreferences
-    private lateinit var playerQueuePrefs: SharedPreferences
     private lateinit var appSettingsPrefs: SharedPreferences
     private var trackerBridge: LegacyTrackerBridge? = null
     private var legacyConsumerCount = 0
@@ -28,11 +27,6 @@ class AudoibooApp : Application() {
         }
         if (key == null || key in setOf("history", "bookmarks_v2", "daily_listened", "listened_ms")) {
             appScope.launch { runCatching { PlayerExtrasRoomSync.syncFromLegacy(this@AudoibooApp) } }
-        }
-    }
-    private val playerQueueListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == null || key == "book_dirs") {
-            appScope.launch { runCatching { PlaybackStateRepository.syncFromLegacy(this@AudoibooApp) } }
         }
     }
     private val appSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
@@ -77,8 +71,6 @@ class AudoibooApp : Application() {
 
         playerExtrasPrefs = getSharedPreferences("player_extras", Context.MODE_PRIVATE)
         playerExtrasPrefs.registerOnSharedPreferenceChangeListener(playerExtrasListener)
-        playerQueuePrefs = getSharedPreferences("player_queue", Context.MODE_PRIVATE)
-        playerQueuePrefs.registerOnSharedPreferenceChangeListener(playerQueueListener)
         appSettingsPrefs = getSharedPreferences("app_settings", Context.MODE_PRIVATE)
         appSettingsPrefs.registerOnSharedPreferenceChangeListener(appSettingsListener)
         registerActivityLifecycleCallbacks(legacyLifecycle)

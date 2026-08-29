@@ -91,7 +91,7 @@ object BackupStore {
         val root = JSONObject(raw)
         val trackerValue = root.opt("tracker")
         val tracker = trackerValue as? String
-        val trackerValid = tracker != null && runCatching { JSONArray(tracker) }.isSuccess
+        val trackerValid = tracker != null && LibraryRepository.isValidLegacyJson(tracker)
         val format = if (root.has("format") && !root.isNull("format")) root.optInt("format", Int.MIN_VALUE) else null
         val downloadsValue = if (root.has("downloads")) root.opt("downloads") else null
         val downloadsValid = downloadsValue == null || ManagedDownloadRoomStore.isValidBackupPayload(downloadsValue)

@@ -24,7 +24,7 @@ object BackupStore {
 
     fun exportJson(context: Context, includeSettings: Boolean, includeBookmarks: Boolean, includeStatistics: Boolean): String {
         val root = JSONObject()
-        root.put("format", 11)
+        root.put("format", 12)
         root.put("createdAt", System.currentTimeMillis())
         val app = context.applicationContext
         val tracker = runCatching { runBlocking(Dispatchers.IO) { LibraryRepository.exportCompatJson(app) } }
@@ -35,6 +35,7 @@ object BackupStore {
         runCatching { runBlocking(Dispatchers.IO) { PlaybackStateRepository.exportQueueJson(app) } }.getOrNull()?.let { root.put("roomPlaybackQueue", it) }
         runCatching { runBlocking(Dispatchers.IO) { PlaybackStateRepository.exportResumeJson(app) } }.getOrNull()?.let { root.put("roomPlaybackResume", it) }
         runCatching { runBlocking(Dispatchers.IO) { PlayerStateStore.exportJson(app) } }.getOrNull()?.let { root.put("roomPlayerState", it) }
+        runCatching { ManagedDownloadRoomStore.exportJson(app) }.getOrNull()?.let { root.put("downloads", it) }
         if (includeBookmarks || includeStatistics) {
             runCatching { runBlocking(Dispatchers.IO) { PlayerExtrasRepository.exportJson(app) } }.getOrNull()?.let { root.put("roomPlayerExtras", it) }
         }
@@ -48,7 +49,7 @@ object BackupStore {
     suspend fun exportJsonFromRoom(context: Context, includeSettings: Boolean = true, includeBookmarks: Boolean = true, includeStatistics: Boolean = true): String {
         val app = context.applicationContext
         val root = JSONObject()
-        root.put("format", 11)
+        root.put("format", 12)
         root.put("createdAt", System.currentTimeMillis())
         root.put("tracker", LibraryRepository.exportCompatJson(app))
         root.put("roomTags", LibraryRepository.exportTagsJson(app))
@@ -56,6 +57,7 @@ object BackupStore {
         root.put("roomPlaybackQueue", PlaybackStateRepository.exportQueueJson(app))
         PlaybackStateRepository.exportResumeJson(app)?.let { root.put("roomPlaybackResume", it) }
         root.put("roomPlayerState", PlayerStateStore.exportJson(app))
+        root.put("downloads", ManagedDownloadRoomStore.exportJson(app))
         if (includeBookmarks || includeStatistics) root.put("roomPlayerExtras", PlayerExtrasRepository.exportJson(app))
         if (includeSettings) root.put("settings", PreferenceDataStore.exportJson(app))
         addSharedState(context, root, includeSettings, includeBookmarks)
@@ -103,11 +105,11 @@ object BackupStore {
         root.optJSONObject("roomPlayerExtras")?.let { PlayerExtrasRepository.restoreJson(context, it) }
         PlayerExtrasStore.refresh(context)
         root.optJSONObject("settings")?.let { PreferenceDataStore.restoreJson(context, it) }
+        if (root.has("downloads")) ManagedDownloadRoomStore.restoreJson(context, root.opt("downloads"))
         RoomCoverSync.enqueueAll(context)
     }
 
     private fun addSharedState(context: Context, root: JSONObject, includeSettings: Boolean, includeBookmarks: Boolean) {
-        root.put("downloads", context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).getString("items", "[]"))
         root.put("playerLibrary", prefsToJson(context, "player_library"))
         if (includeSettings) {
             root.put("playerSettings", prefsToJson(context, "player_settings"))
@@ -119,7 +121,6 @@ object BackupStore {
     }
 
     private fun restoreNonTrackerState(context: Context, root: JSONObject) {
-        context.getSharedPreferences("managed_downloads", Context.MODE_PRIVATE).edit().putString("items", root.optString("downloads", "[]")).apply()
         root.optJSONObject("playerSettings")?.let { jsonToPrefs(context, "player_settings", it) }
         root.optJSONObject("audioEnhancement")?.let { jsonToPrefs(context, "audio_enhancement", it) }
         root.optJSONObject("seriesAutomation")?.let { jsonToPrefs(context, "series_automation", it) }

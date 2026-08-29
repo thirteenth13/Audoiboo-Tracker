@@ -75,6 +75,24 @@ data class TrackPositionEntity(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "player_book_speeds")
+data class PlayerBookSpeedEntity(@PrimaryKey val dir: String, val speed: Float)
+
+@Entity(tableName = "player_series_speeds")
+data class PlayerSeriesSpeedEntity(@PrimaryKey val series: String, val speed: Float)
+
+@Entity(tableName = "broken_tracks")
+data class BrokenTrackEntity(@PrimaryKey val uri: String, val updatedAt: Long = System.currentTimeMillis())
+
+@Entity(tableName = "series_resume")
+data class SeriesResumeEntity(
+    @PrimaryKey val series: String,
+    val dir: String,
+    val title: String,
+    val uri: String,
+    val at: Long
+)
+
 data class SeriesWithBooks(@Embedded val series: SeriesEntity, @Relation(parentColumn = "id", entityColumn = "seriesId") val books: List<BookEntity>)
 
 data class BookWithTags(
@@ -148,6 +166,24 @@ interface LibraryDao {
     @Upsert suspend fun upsertTrackPosition(value: TrackPositionEntity)
     @Upsert suspend fun upsertTrackPositions(values: List<TrackPositionEntity>)
 
+    @Query("SELECT * FROM player_book_speeds") fun observeBookSpeeds(): Flow<List<PlayerBookSpeedEntity>>
+    @Query("SELECT * FROM player_book_speeds") suspend fun bookSpeeds(): List<PlayerBookSpeedEntity>
+    @Upsert suspend fun upsertBookSpeed(value: PlayerBookSpeedEntity)
+    @Query("DELETE FROM player_book_speeds WHERE dir=:dir") suspend fun deleteBookSpeed(dir: String)
+
+    @Query("SELECT * FROM player_series_speeds") fun observeSeriesSpeeds(): Flow<List<PlayerSeriesSpeedEntity>>
+    @Query("SELECT * FROM player_series_speeds") suspend fun seriesSpeeds(): List<PlayerSeriesSpeedEntity>
+    @Upsert suspend fun upsertSeriesSpeed(value: PlayerSeriesSpeedEntity)
+
+    @Query("SELECT * FROM broken_tracks") fun observeBrokenTracks(): Flow<List<BrokenTrackEntity>>
+    @Query("SELECT * FROM broken_tracks") suspend fun brokenTracks(): List<BrokenTrackEntity>
+    @Upsert suspend fun upsertBrokenTrack(value: BrokenTrackEntity)
+    @Query("DELETE FROM broken_tracks") suspend fun clearBrokenTracks()
+
+    @Query("SELECT * FROM series_resume") fun observeSeriesResume(): Flow<List<SeriesResumeEntity>>
+    @Query("SELECT * FROM series_resume") suspend fun seriesResumeEntries(): List<SeriesResumeEntity>
+    @Upsert suspend fun upsertSeriesResume(value: SeriesResumeEntity)
+
     @Transaction
     suspend fun replacePlaybackQueue(dirs: List<String>) {
         clearPlaybackQueue()
@@ -204,9 +240,10 @@ interface LibraryDao {
         SeriesEntity::class, BookEntity::class, TagEntity::class, BookTagCrossRef::class,
         PlaybackQueueEntity::class, PlaybackResumeEntity::class, PlaybackHistoryEntity::class,
         PlayerBookmarkEntity::class, DailyListeningEntity::class, ListeningTotalEntity::class,
-        TrackPositionEntity::class
+        TrackPositionEntity::class, PlayerBookSpeedEntity::class, PlayerSeriesSpeedEntity::class,
+        BrokenTrackEntity::class, SeriesResumeEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AudoibooDatabase : RoomDatabase() {
@@ -245,10 +282,18 @@ abstract class AudoibooDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_track_positions_updatedAt` ON `track_positions` (`updatedAt`)")
             }
         }
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `player_book_speeds` (`dir` TEXT NOT NULL, `speed` REAL NOT NULL, PRIMARY KEY(`dir`))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `player_series_speeds` (`series` TEXT NOT NULL, `speed` REAL NOT NULL, PRIMARY KEY(`series`))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `broken_tracks` (`uri` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`uri`))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `series_resume` (`series` TEXT NOT NULL, `dir` TEXT NOT NULL, `title` TEXT NOT NULL, `uri` TEXT NOT NULL, `at` INTEGER NOT NULL, PRIMARY KEY(`series`))")
+            }
+        }
         @Volatile private var instance: AudoibooDatabase? = null
         fun get(context: Context): AudoibooDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AudoibooDatabase::class.java, "audoiboo.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build().also { instance = it }
         }
     }

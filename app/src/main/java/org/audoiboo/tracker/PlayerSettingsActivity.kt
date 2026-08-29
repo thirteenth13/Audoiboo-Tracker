@@ -3,7 +3,9 @@ package org.audoiboo.tracker
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -15,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 
 class PlayerSettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,9 +40,24 @@ private fun PlayerSettingsScreen(activity: ComponentActivity) {
     var bookmarks by remember { mutableStateOf(PlayerPrefs.showBookmarks(activity)) }
     var voiceBoost by remember { mutableStateOf(AudioEnhancementPrefs.voiceBoost(activity)) }
     var gain by remember { mutableIntStateOf(AudioEnhancementPrefs.gainMb(activity)) }
+    var storageLabel by remember { mutableStateOf(StorageAccess.displayName(activity) ?: "Системна папка Download") }
+    var migrationMessage by remember { mutableStateOf<String?>(null) }
+    var migrating by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     fun save() = PlayerPrefs.save(activity, seek, rewind, resume, notifications, other, hours, speed, sleep, bookmarks)
     fun saveAudio() = AudioEnhancementPrefs.save(activity, voiceBoost, gain)
+
+    val treePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            if (StorageAccess.persistTree(activity, uri)) {
+                storageLabel = StorageAccess.displayName(activity) ?: uri.toString()
+                migrationMessage = "Папку збережено. Нові завантаження використовуватимуть її."
+            } else {
+                migrationMessage = "Не вдалося зберегти постійний доступ до папки."
+            }
+        }
+    }
 
     Scaffold(topBar={ TopAppBar(title={Text("Налаштування плеєра")}, navigationIcon={IconButton(onClick={save();saveAudio();activity.finish()}){Icon(Icons.Filled.ArrowBack,"Назад")}}) }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -56,6 +74,38 @@ private fun PlayerSettingsScreen(activity: ComponentActivity) {
             SettingSwitch("Кнопка швидкості відтворення", "Показувати керування швидкістю на екрані плеєра", speed) { speed=it;save() }
             SettingSwitch("Кнопка таймера сну", "Показувати таймер сну на екрані плеєра", sleep) { sleep=it;save() }
             SettingSwitch("Кнопка закладок", "Дозволяє позначати цікаві моменти", bookmarks) { bookmarks=it;save() }
+            HorizontalDivider()
+            Text("Сховище аудіокниг", style=MaterialTheme.typography.titleMedium, modifier=Modifier.padding(horizontal=20.dp, vertical=12.dp))
+            Text(storageLabel, style=MaterialTheme.typography.bodyMedium, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(horizontal=20.dp))
+            OutlinedButton(
+                onClick = { treePicker.launch(null) },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
+            ) { Text("Вибрати папку через SAF") }
+            if (StorageAccess.treeUri(activity) != null) {
+                Button(
+                    enabled = !migrating,
+                    onClick = {
+                        migrating = true
+                        migrationMessage = null
+                        scope.launch {
+                            val result = StorageMigration.copyIndexedLibrary(activity)
+                            migrating = false
+                            migrationMessage = "Скопійовано: ${result.migrated}, пропущено: ${result.skipped}, помилок: ${result.failed}. Старі файли не видалено."
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
+                ) { Text(if (migrating) "Перенесення…" else "Скопіювати бібліотеку у вибрану папку") }
+                TextButton(
+                    enabled = !migrating,
+                    onClick = {
+                        StorageAccess.clearTree(activity)
+                        storageLabel = "Системна папка Download"
+                        migrationMessage = "Вибрану SAF-папку відключено."
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)
+                ) { Text("Повернути системну папку Download") }
+            }
+            migrationMessage?.let { Text(it, modifier=Modifier.padding(horizontal=20.dp, vertical=8.dp), style=MaterialTheme.typography.bodySmall) }
             HorizontalDivider()
             OutlinedButton(
                 onClick = { activity.startActivity(Intent(activity, SeriesPlaybackSettingsActivity::class.java)) },

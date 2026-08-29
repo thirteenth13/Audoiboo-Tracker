@@ -65,11 +65,9 @@ class AudoibooApp : Application() {
         ContinueListeningWidget.updateAll(this)
 
         appScope.launch {
+            // Tracking series are the only existing user data that still needs legacy import support.
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
             runCatching { PreferenceDataStore.reconcile(this@AudoibooApp) }
-            runCatching { PlaybackStateRepository.reconcile(this@AudoibooApp) }
-            runCatching { RoomTagSync.syncFromLegacy(this@AudoibooApp) }
-            runCatching { PlayerExtrasRoomSync.syncFromLegacy(this@AudoibooApp) }
             runCatching { RoomCoverSync.enqueueAll(this@AudoibooApp) }
         }
     }

@@ -3,35 +3,82 @@ package org.audoiboo.tracker
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
-/** Transitional one-way mirror from the existing PlayerExtras API into Room v4. */
+/** One-time import of pre-Room player history, bookmarks and listening statistics. */
 internal object PlayerExtrasRoomSync {
+    private const val PREFS = "player_extras"
+    private const val MIGRATION_PREFS = "room_migration"
+    private const val MIGRATION_KEY = "player_extras_v1"
+
     suspend fun syncFromLegacy(context: Context) = withContext(Dispatchers.IO) {
         val app = context.applicationContext
-        val history = PlayerExtras.history(app).map {
-            PlaybackHistoryEntity(dir = it.dir, title = it.title, at = it.at)
+        val flags = app.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE)
+        if (flags.getBoolean(MIGRATION_KEY, false)) return@withContext
+
+        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val history = parseHistory(prefs.getString("history", "[]").orEmpty())
+        val bookmarks = parseBookmarks(prefs.getString("bookmarks_v2", "[]").orEmpty())
+        val daily = parseDaily(prefs.getString("daily_listened", "{}").orEmpty())
+        val totalMs = prefs.getLong("listened_ms", 0L).coerceAtLeast(0L)
+        val dao = AudoibooDatabase.get(app).libraryDao()
+
+        val roomHasState = dao.playbackHistory().isNotEmpty() ||
+            dao.playerBookmarks().isNotEmpty() ||
+            dao.dailyListening().isNotEmpty() ||
+            (dao.listeningTotal()?.listenedMs ?: 0L) > 0L
+
+        if (!roomHasState && (history.isNotEmpty() || bookmarks.isNotEmpty() || daily.isNotEmpty() || totalMs > 0L)) {
+            dao.replacePlayerExtras(history, bookmarks, daily, totalMs)
         }
-        val bookmarks = PlayerExtras.bookmarks(app).map {
-            PlayerBookmarkEntity(
-                id = bookmarkId(it.uri, it.position, it.createdAt),
-                uri = it.uri,
-                positionMs = it.position,
-                note = it.note,
-                createdAt = it.createdAt
-            )
-        }
-        val daily = PlayerExtras.dailyListened(app).entries
-            .sortedByDescending { it.key }
-            .take(120)
-            .map { DailyListeningEntity(day = it.key, listenedMs = it.value.coerceAtLeast(0L)) }
-        AudoibooDatabase.get(app).libraryDao().replacePlayerExtras(
-            history = history,
-            bookmarks = bookmarks,
-            daily = daily,
-            totalMs = PlayerExtras.totalListenedMs(app)
-        )
+        flags.edit().putBoolean(MIGRATION_KEY, true).apply()
     }
 
-    private fun bookmarkId(uri: String, position: Long, createdAt: Long): String =
-        "$createdAt|$position|$uri"
+    /** Explicit import path for old backup formats. */
+    suspend fun restoreFromLegacy(context: Context) = withContext(Dispatchers.IO) {
+        val app = context.applicationContext
+        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        AudoibooDatabase.get(app).libraryDao().replacePlayerExtras(
+            history = parseHistory(prefs.getString("history", "[]").orEmpty()),
+            bookmarks = parseBookmarks(prefs.getString("bookmarks_v2", "[]").orEmpty()),
+            daily = parseDaily(prefs.getString("daily_listened", "{}").orEmpty()),
+            totalMs = prefs.getLong("listened_ms", 0L).coerceAtLeast(0L)
+        )
+        app.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE).edit().putBoolean(MIGRATION_KEY, true).apply()
+    }
+
+    private fun parseHistory(raw: String): List<PlaybackHistoryEntity> = runCatching {
+        val a = JSONArray(raw.ifBlank { "[]" })
+        (0 until a.length()).mapNotNull { i ->
+            val o = a.optJSONObject(i) ?: return@mapNotNull null
+            val dir = o.optString("dir").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            PlaybackHistoryEntity(dir, o.optString("title", dir), o.optLong("at", 0L))
+        }.sortedByDescending { it.at }.distinctBy { it.dir }.take(50)
+    }.getOrDefault(emptyList())
+
+    private fun parseBookmarks(raw: String): List<PlayerBookmarkEntity> = runCatching {
+        val a = JSONArray(raw.ifBlank { "[]" })
+        (0 until a.length()).mapNotNull { i ->
+            val o = a.optJSONObject(i) ?: return@mapNotNull null
+            val uri = o.optString("uri").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val position = o.optLong("position", 0L).coerceAtLeast(0L)
+            val createdAt = o.optLong("createdAt", 0L)
+            PlayerBookmarkEntity(
+                id = bookmarkId(uri, position, createdAt),
+                uri = uri,
+                positionMs = position,
+                note = o.optString("note"),
+                createdAt = createdAt
+            )
+        }.sortedByDescending { it.createdAt }.take(500)
+    }.getOrDefault(emptyList())
+
+    private fun parseDaily(raw: String): List<DailyListeningEntity> = runCatching {
+        val o = JSONObject(raw.ifBlank { "{}" })
+        o.keys().asSequence().map { day -> DailyListeningEntity(day, o.optLong(day, 0L).coerceAtLeast(0L)) }
+            .sortedByDescending { it.day }.take(120).toList()
+    }.getOrDefault(emptyList())
+
+    private fun bookmarkId(uri: String, position: Long, createdAt: Long): String = "$createdAt|$position|$uri"
 }

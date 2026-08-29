@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -31,6 +33,9 @@ jobs:
 
       - name: Unit tests
         run: gradle :app:testDebugUnitTest --stacktrace
+
+      - name: Android lint
+        run: gradle :app:lintDebug --stacktrace
 
       - name: Decode release signing key
         if: github.event_name != 'pull_request'
@@ -73,10 +78,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RELEASE_NOTES="Room v6/DataStore storage cleanup, player state reliability improvements, backup format 11, series tracking, downloader reliability and Media3 audiobook player updates."
+          RELEASE_NOTES="Backup format 12 with Room-backed downloads and transactional restore, download/reboot recovery, ZIP integrity and extraction limits, Media3 player progress/broken-track recovery, SAF storage migration with URI/state rebinding, and end-to-end regression coverage."
           if gh release view dev-player >/dev/null 2>&1; then
             gh release upload dev-player Audoiboo-Tracker-1.1.4-dev.apk --clobber
             gh release edit dev-player --title "Audoiboo Tracker 1.1.4-dev" --prerelease --notes "$RELEASE_NOTES"
+            git tag -f dev-player "$GITHUB_SHA"
+            git push origin refs/tags/dev-player --force
           else
             gh release create dev-player Audoiboo-Tracker-1.1.4-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.4-dev" --prerelease --notes "$RELEASE_NOTES"
           fi

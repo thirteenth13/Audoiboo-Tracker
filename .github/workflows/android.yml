@@ -73,8 +73,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete dev-player --yes --cleanup-tag || true
-          gh release create dev-player Audoiboo-Tracker-1.1.4-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.4-dev" --prerelease --notes "Room v6/DataStore storage cleanup, player state reliability improvements, backup format 11, series tracking, downloader reliability and Media3 audiobook player updates."
+          RELEASE_NOTES="Room v6/DataStore storage cleanup, player state reliability improvements, backup format 11, series tracking, downloader reliability and Media3 audiobook player updates."
+          if gh release view dev-player >/dev/null 2>&1; then
+            gh release upload dev-player Audoiboo-Tracker-1.1.4-dev.apk --clobber
+            gh release edit dev-player --title "Audoiboo Tracker 1.1.4-dev" --prerelease --notes "$RELEASE_NOTES"
+          else
+            gh release create dev-player Audoiboo-Tracker-1.1.4-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.4-dev" --prerelease --notes "$RELEASE_NOTES"
+          fi
 
       - name: Remove signing key
         if: always() && github.event_name != 'pull_request'

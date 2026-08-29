@@ -1,12 +1,9 @@
 package org.audoiboo.tracker
 
 import android.content.Intent
-import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -14,13 +11,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
 class PlayerSettingsActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { AudoibooTheme(this) { PlayerSettingsScreen(this) } }
     }
@@ -50,9 +46,14 @@ private fun PlayerSettingsScreen(activity: ComponentActivity) {
 
     val treePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
-            if (StorageAccess.persistTree(activity, uri)) {
-                storageLabel = StorageAccess.displayName(activity) ?: uri.toString()
-                migrationMessage = "Папку збережено. Нові завантаження використовуватимуть її."
+            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            if (StorageAccess.persistTreePermission(activity, uri, flags)) {
+                runCatching { StorageAccess.setTree(activity, uri) }
+                    .onSuccess {
+                        storageLabel = StorageAccess.displayName(activity) ?: uri.toString()
+                        migrationMessage = "Папку збережено. Нові завантаження використовуватимуть її."
+                    }
+                    .onFailure { migrationMessage = "Не вдалося зберегти вибрану папку." }
             } else {
                 migrationMessage = "Не вдалося зберегти постійний доступ до папки."
             }
@@ -77,60 +78,26 @@ private fun PlayerSettingsScreen(activity: ComponentActivity) {
             HorizontalDivider()
             Text("Сховище аудіокниг", style=MaterialTheme.typography.titleMedium, modifier=Modifier.padding(horizontal=20.dp, vertical=12.dp))
             Text(storageLabel, style=MaterialTheme.typography.bodyMedium, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(horizontal=20.dp))
-            OutlinedButton(
-                onClick = { treePicker.launch(null) },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
-            ) { Text("Вибрати папку через SAF") }
+            OutlinedButton(onClick = { treePicker.launch(null) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text("Вибрати папку через SAF") }
             if (StorageAccess.treeUri(activity) != null) {
-                Button(
-                    enabled = !migrating,
-                    onClick = {
-                        migrating = true
-                        migrationMessage = null
-                        scope.launch {
-                            val result = StorageMigration.copyIndexedLibrary(activity)
-                            migrating = false
-                            migrationMessage = "Скопійовано: ${result.migrated}, пропущено: ${result.skipped}, помилок: ${result.failed}. Старі файли не видалено."
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
-                ) { Text(if (migrating) "Перенесення…" else "Скопіювати бібліотеку у вибрану папку") }
-                TextButton(
-                    enabled = !migrating,
-                    onClick = {
-                        StorageAccess.clearTree(activity)
-                        storageLabel = "Системна папка Download"
-                        migrationMessage = "Вибрану SAF-папку відключено."
-                    },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)
-                ) { Text("Повернути системну папку Download") }
+                Button(enabled = !migrating, onClick = {
+                    migrating = true; migrationMessage = null
+                    scope.launch {
+                        val result = StorageMigration.copyIndexedLibrary(activity)
+                        migrating = false
+                        migrationMessage = "Скопійовано: ${result.migrated}, пропущено: ${result.skipped}, помилок: ${result.failed}. Старі файли не видалено."
+                    }
+                }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text(if (migrating) "Перенесення…" else "Скопіювати бібліотеку у вибрану папку") }
+                TextButton(enabled = !migrating, onClick = {
+                    StorageAccess.setTree(activity, null)
+                    storageLabel = "Системна папка Download"
+                    migrationMessage = "Вибрану SAF-папку відключено."
+                }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) { Text("Повернути системну папку Download") }
             }
             migrationMessage?.let { Text(it, modifier=Modifier.padding(horizontal=20.dp, vertical=8.dp), style=MaterialTheme.typography.bodySmall) }
             HorizontalDivider()
-            OutlinedButton(
-                onClick = { activity.startActivity(Intent(activity, SeriesPlaybackSettingsActivity::class.java)) },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
-            ) { Text("Швидкість за замовчуванням для серій") }
-            OutlinedButton(
-                onClick = { activity.startActivity(Intent(activity, SleepTimerActivity::class.java)) },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
-            ) { Text("Розширений таймер сну") }
-            OutlinedButton(
-                onClick = { activity.startActivity(Intent(activity, ListeningStatsActivity::class.java)) },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
-            ) { Text("Детальна статистика прослуховування") }
-            OutlinedButton(
-                onClick = { activity.startActivity(Intent(activity, QueueEditorActivity::class.java)) },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
-            ) { Text("Черга — перетягування книг") }
-            OutlinedButton(
-                onClick = { activity.startActivity(Intent(activity, LibraryToolsActivity::class.java)) },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
-            ) { Text("Теги, smart-lists та експорт закладок") }
+            OutlinedButton(onClick = { activity.startActivity(Intent(activity, SeriesPlaybackSettingsActivity::class.java)) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text("Швидкість за замовчуванням для серій") }
+            OutlinedButton(onClick = { activity.startActivity(Intent(activity, SleepTimerActivity::class.java)) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) { Text("Таймер сну") }
         }
     }
 }
-
-@Composable private fun SettingSwitch(title:String, subtitle:String, checked:Boolean, onChange:(Boolean)->Unit){ Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=14.dp),verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text(title,style=MaterialTheme.typography.titleMedium);Text(subtitle,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)};Switch(checked,onChange)};HorizontalDivider() }
-
-@Composable private fun SettingChoice(title:String, value:String, choices:List<Pair<Int,String>>, onChoose:(Int)->Unit){ var open by remember{mutableStateOf(false)}; Column(Modifier.fillMaxWidth().clickable{open=true}.padding(horizontal=20.dp,vertical=14.dp)){Text(title,style=MaterialTheme.typography.titleMedium);Text(value,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)};HorizontalDivider();if(open)AlertDialog(onDismissRequest={open=false},title={Text(title)},text={Column{choices.forEach{(v,label)->TextButton(onClick={onChoose(v);open=false},modifier=Modifier.fillMaxWidth()){Text(label,modifier=Modifier.fillMaxWidth())}}}},confirmButton={TextButton(onClick={open=false}){Text("Скасувати")}}) }

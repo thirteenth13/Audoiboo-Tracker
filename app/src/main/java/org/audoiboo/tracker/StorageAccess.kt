@@ -117,16 +117,16 @@ internal object StorageAccess {
         }
         return AtomicStorageOutput(
             output = out,
-            commitAction = {
+            commitAction = commit@{
                 runCatching { out.close() }
                 val existing = dir.findFile(fileName)?.takeIf { it.isFile && it.uri != temp.uri }
                 if (existing != null && !existing.delete()) {
                     temp.delete()
-                    return@AtomicStorageOutput null
+                    return@commit null
                 }
                 if (!temp.renameTo(fileName)) {
                     temp.delete()
-                    return@AtomicStorageOutput null
+                    return@commit null
                 }
                 temp.uri
             },

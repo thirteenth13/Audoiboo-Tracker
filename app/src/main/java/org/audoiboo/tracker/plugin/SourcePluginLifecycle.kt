@@ -13,7 +13,9 @@ enum class PluginState {
 }
 
 data class SourcePluginRegistration(
-    val descriptor: SourceDescriptor,
+    val descriptor: SourceDescriptor?,
+    val packageId: String,
+    val displayName: String,
     val origin: PluginOrigin,
     val state: PluginState,
     val packagePath: String? = null,
@@ -36,12 +38,14 @@ class SourcePluginManager(
         val builtIns = builtInsById.values.map { plugin ->
             SourcePluginRegistration(
                 descriptor = plugin.descriptor,
+                packageId = plugin.descriptor.id,
+                displayName = plugin.descriptor.name,
                 origin = PluginOrigin.BUILT_IN,
                 state = PluginState.ENABLED
             )
         }
         return (builtIns + packageRegistrations.values)
-            .sortedWith(compareBy<SourcePluginRegistration> { it.descriptor.name.lowercase() }.thenBy { it.descriptor.id })
+            .sortedWith(compareBy<SourcePluginRegistration> { it.displayName.lowercase() }.thenBy { it.packageId })
     }
 
     fun registerPackageManifest(
@@ -49,24 +53,31 @@ class SourcePluginManager(
         packagePath: String
     ): SourcePluginRegistration {
         val validation = PluginPackagePolicy.validate(manifest)
-        val descriptor = SourceDescriptor(
-            id = manifest.id,
-            name = manifest.name,
-            version = manifest.version,
-            apiVersion = manifest.apiVersion,
-            hosts = manifest.hosts,
-            capabilities = manifest.capabilities
-        )
+        val descriptor = if (validation.valid) {
+            SourceDescriptor(
+                id = manifest.id,
+                name = manifest.name,
+                version = manifest.version,
+                apiVersion = manifest.apiVersion,
+                hosts = manifest.hosts,
+                capabilities = manifest.capabilities
+            )
+        } else null
+
         val registration = when {
             manifest.id in builtInsById -> SourcePluginRegistration(
                 descriptor = descriptor,
+                packageId = manifest.id,
+                displayName = manifest.name,
                 origin = PluginOrigin.PACKAGE,
                 state = PluginState.QUARANTINED,
                 packagePath = packagePath,
                 failureReason = "Package id conflicts with a built-in plugin"
             )
             !validation.valid -> SourcePluginRegistration(
-                descriptor = descriptor,
+                descriptor = null,
+                packageId = manifest.id,
+                displayName = manifest.name,
                 origin = PluginOrigin.PACKAGE,
                 state = if (manifest.apiVersion != SOURCE_PLUGIN_API_VERSION) PluginState.INCOMPATIBLE else PluginState.QUARANTINED,
                 packagePath = packagePath,
@@ -74,6 +85,8 @@ class SourcePluginManager(
             )
             else -> SourcePluginRegistration(
                 descriptor = descriptor,
+                packageId = manifest.id,
+                displayName = manifest.name,
                 origin = PluginOrigin.PACKAGE,
                 state = PluginState.DISABLED,
                 packagePath = packagePath,

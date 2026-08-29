@@ -15,6 +15,9 @@ internal data class StorageMigrationResult(
  * Copies indexed library files into the selected SAF tree and updates PlayerLibrary URIs only for
  * successful copies. Sources are deliberately left untouched so migration cannot destroy the only
  * readable copy if Android revokes a permission or a provider fails midway.
+ *
+ * The operation is idempotent: an indexed item that already points at its destination, or whose
+ * destination has the same known non-zero byte length, is reused instead of being deleted/copied.
  */
 internal object StorageMigration {
     suspend fun copyIndexedLibrary(context: Context): StorageMigrationResult = withContext(Dispatchers.IO) {
@@ -30,15 +33,31 @@ internal object StorageMigration {
 
         current.forEachIndexed { index, item ->
             val source = runCatching { Uri.parse(item.uri) }.getOrNull()
-            if (source == null || item.uri.isBlank()) {
+            if (source == null || item.uri.isBlank() || !StoragePathPolicy.validFileName(item.name)) {
                 failed++
                 return@forEachIndexed
             }
-            if (source.scheme == "content" && source.authority == "com.android.externalstorage.documents") {
-                skipped++
+            val relativeDir = StorageMigrationPolicy.normalizedDestination(item.relativePath)
+            if (relativeDir == null) {
+                failed++
                 return@forEachIndexed
             }
-            val relativeDir = normalizeDestination(item.relativePath)
+
+            val existing = StorageAccess.existingFile(app, relativeDir, item.name)
+            val sourceBytes = sourceLength(app, source)
+            if (existing != null && StorageMigrationPolicy.canReuseExisting(
+                    sourceUri = source.toString(),
+                    targetUri = existing.uri.toString(),
+                    sourceBytes = sourceBytes,
+                    targetBytes = existing.length()
+                )
+            ) {
+                val alreadyIndexed = source == existing.uri && item.relativePath == relativeDir
+                replacements[index] = item.copy(uri = existing.uri.toString(), relativePath = relativeDir)
+                if (alreadyIndexed) skipped++ else migrated++
+                return@forEachIndexed
+            }
+
             val mime = mimeFor(item.name)
             val copied = runCatching {
                 val input = app.contentResolver.openInputStream(source) ?: return@runCatching null
@@ -46,9 +65,11 @@ internal object StorageMigration {
                     input.close()
                     return@runCatching null
                 }
-                input.use { src -> target.second.use { dst -> src.copyTo(dst, 128 * 1024) } }
+                val bytes = input.use { src -> target.second.use { dst -> src.copyTo(dst, 128 * 1024) } }
+                if (sourceBytes != null && sourceBytes > 0L && bytes != sourceBytes) return@runCatching null
                 target.first
             }.getOrNull()
+
             if (copied == null) {
                 failed++
             } else {
@@ -61,10 +82,11 @@ internal object StorageMigration {
         StorageMigrationResult(migrated, skipped, failed)
     }
 
-    private fun normalizeDestination(path: String): String {
-        val normalized = path.replace('\\', '/').trim('/')
-        return normalized.removePrefix("Download/").removePrefix("download/")
-    }
+    private fun sourceLength(context: Context, uri: Uri): Long? = runCatching {
+        context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
+            afd.length.takeIf { it >= 0L }
+        }
+    }.getOrNull()
 
     private fun mimeFor(name: String) = when (name.substringAfterLast('.', "").lowercase()) {
         "mp3" -> "audio/mpeg"

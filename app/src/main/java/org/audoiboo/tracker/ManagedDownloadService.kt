@@ -125,9 +125,25 @@ class ManagedDownloadService : Service() {
         if (!DownloadControlPolicy.canStart(record.state)) return
         val stagingRoot = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "staging").apply { mkdirs() }
         val part = File(stagingRoot, "$id.part")
-        val existing = part.length()
+        var existing = part.length()
+        if (DownloadStagingPolicy.shouldDiscard(existing, record.total)) {
+            part.delete()
+            existing = 0L
+        }
+        val actualProgress = DownloadStagingPolicy.actualProgress(existing, record.total)
+        if (record.downloaded != actualProgress) {
+            record = record.copy(downloaded = actualProgress)
+            update(record)
+        }
+
         var conn: HttpURLConnection? = null
         try {
+            ensureRunning(id)
+            if (DownloadStagingPolicy.isComplete(existing, record.total)) {
+                finishDownloadedPart(record.copy(downloaded = existing, error = null), part, id)
+                return
+            }
+
             conn = (URL(record.archiveUrl).openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = true
                 connectTimeout = 20_000
@@ -142,7 +158,10 @@ class ManagedDownloadService : Service() {
             if (code !in 200..299) error("HTTP $code")
             val contentRange = conn.getHeaderField("Content-Range")
             val append = DownloadResumePolicy.canAppend(existing, code, contentRange)
-            if (existing > 0 && !append) part.delete()
+            if (existing > 0 && !append) {
+                part.delete()
+                existing = 0L
+            }
             val startAt = if (append) existing else 0L
             val contentLength = conn.contentLengthLong
             val total = DownloadResumePolicy.expectedTotal(startAt, contentLength, contentRange)
@@ -173,32 +192,7 @@ class ManagedDownloadService : Service() {
             if (record.total > 0 && part.length() != record.total) {
                 error("Неповне завантаження: ${part.length()} із ${record.total} байт")
             }
-
-            if (AppPrefs.unpack(this) && record.fileName.endsWith(".zip", true)) {
-                record = record.copy(state = ManagedDownloadState.EXTRACTING)
-                update(record)
-                try {
-                    verifyZipIntegrity(part, id)
-                } catch (e: DownloadStoppedException) {
-                    throw e
-                } catch (e: Exception) {
-                    part.delete()
-                    throw IOException("ZIP пошкоджений: ${e.message ?: "CRC/структура"}", e)
-                }
-                ensureRunning(id)
-                clearBookFolder(record)
-                extractZipToDownloads(part, "${record.relativeDir}/${record.bookDir}", record)
-                part.delete()
-            } else {
-                publishFile(part, record.relativeDir, record.fileName, record)
-                part.delete()
-            }
-            update(record.copy(
-                state = ManagedDownloadState.COMPLETED,
-                downloaded = if (record.total > 0) record.total else record.downloaded,
-                error = null
-            ))
-            DownloadScheduler.cancel(this, id)
+            finishDownloadedPart(record, part, id)
         } catch (e: DownloadStoppedException) {
             if (cancels[id]?.get() == true) {
                 part.delete()
@@ -223,6 +217,35 @@ class ManagedDownloadService : Service() {
         } finally {
             conn?.disconnect()
         }
+    }
+
+    private fun finishDownloadedPart(record: ManagedDownloadRecord, part: File, id: String) {
+        var current = record.copy(downloaded = part.length())
+        if (AppPrefs.unpack(this) && current.fileName.endsWith(".zip", true)) {
+            current = current.copy(state = ManagedDownloadState.EXTRACTING)
+            update(current)
+            try {
+                verifyZipIntegrity(part, id)
+            } catch (e: DownloadStoppedException) {
+                throw e
+            } catch (e: Exception) {
+                part.delete()
+                throw IOException("ZIP пошкоджений: ${e.message ?: "CRC/структура"}", e)
+            }
+            ensureRunning(id)
+            clearBookFolder(current)
+            extractZipToDownloads(part, "${current.relativeDir}/${current.bookDir}", current)
+            part.delete()
+        } else {
+            publishFile(part, current.relativeDir, current.fileName, current)
+            part.delete()
+        }
+        update(current.copy(
+            state = ManagedDownloadState.COMPLETED,
+            downloaded = if (current.total > 0) current.total else current.downloaded,
+            error = null
+        ))
+        DownloadScheduler.cancel(this, id)
     }
 
     private fun ensureRunning(id: String) {

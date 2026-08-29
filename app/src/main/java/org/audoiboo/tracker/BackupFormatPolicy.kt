@@ -9,7 +9,8 @@ internal object BackupFormatPolicy {
         hasTracker: Boolean,
         trackerIsValidArray: Boolean,
         hasDownloads: Boolean = false,
-        downloadsAreValid: Boolean = true
+        downloadsAreValid: Boolean = true,
+        sectionsAreValid: Boolean = true
     ): String? {
         if (!hasTracker) return "Backup is missing tracker data"
         if (!trackerIsValidArray) return "Backup tracker data is invalid"
@@ -18,6 +19,7 @@ internal object BackupFormatPolicy {
         }
         if (format != null && format < 0) return "Backup format is invalid"
         if (hasDownloads && !downloadsAreValid) return "Backup downloads data is invalid"
+        if (!sectionsAreValid) return "Backup contains invalid section data"
         return null
     }
 }

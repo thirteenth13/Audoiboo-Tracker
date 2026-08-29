@@ -1,6 +1,7 @@
 package org.audoiboo.tracker
 
 import android.content.Context
+import androidx.room.withTransaction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -131,23 +132,25 @@ internal object PlayerStateStore {
 
     suspend fun restoreJson(context: Context, json: JSONObject?) = withContext(Dispatchers.IO) {
         if (json == null) return@withContext
+        val bookSpeeds = parseSpeeds(json.optJSONObject("bookSpeeds"))
+        val seriesSpeeds = parseSpeeds(json.optJSONObject("seriesSpeeds"))
+        val brokenUris = parseBroken(json.optJSONArray("brokenUris"))
+        val seriesResume = parseSeriesResume(json.optJSONObject("seriesResume"))
+
         val app = context.applicationContext
-        val dao = AudoibooDatabase.get(app).libraryDao()
-        val db = AudoibooDatabase.get(app).openHelper.writableDatabase
-        db.beginTransaction()
-        try {
+        val room = AudoibooDatabase.get(app)
+        val dao = room.libraryDao()
+        room.withTransaction {
+            val db = room.openHelper.writableDatabase
             db.execSQL("DELETE FROM player_book_speeds")
             db.execSQL("DELETE FROM player_series_speeds")
             db.execSQL("DELETE FROM broken_tracks")
             db.execSQL("DELETE FROM series_resume")
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
+            bookSpeeds.forEach { (key, value) -> dao.upsertBookSpeed(PlayerBookSpeedEntity(key, value)) }
+            seriesSpeeds.forEach { (key, value) -> dao.upsertSeriesSpeed(PlayerSeriesSpeedEntity(key, value)) }
+            brokenUris.forEach { dao.upsertBrokenTrack(BrokenTrackEntity(it)) }
+            seriesResume.values.forEach { dao.upsertSeriesResume(it) }
         }
-        parseSpeeds(json.optJSONObject("bookSpeeds")).forEach { (key, value) -> dao.upsertBookSpeed(PlayerBookSpeedEntity(key, value)) }
-        parseSpeeds(json.optJSONObject("seriesSpeeds")).forEach { (key, value) -> dao.upsertSeriesSpeed(PlayerSeriesSpeedEntity(key, value)) }
-        parseBroken(json.optJSONArray("brokenUris")).forEach { dao.upsertBrokenTrack(BrokenTrackEntity(it)) }
-        parseSeriesResume(json.optJSONObject("seriesResume")).values.forEach { dao.upsertSeriesResume(it) }
         refresh(app)
     }
 

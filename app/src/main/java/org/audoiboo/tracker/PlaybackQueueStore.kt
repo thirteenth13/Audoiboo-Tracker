@@ -25,7 +25,6 @@ internal object PlaybackQueueStore {
         }
         val app = context.applicationContext
         scope.launch {
-            PlaybackStateRepository.reconcile(app)
             PlaybackStateRepository.observeQueue(app).collect { roomQueue ->
                 state.value = roomQueue.distinct()
             }

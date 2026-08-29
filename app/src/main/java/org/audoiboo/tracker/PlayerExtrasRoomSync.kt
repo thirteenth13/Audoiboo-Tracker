@@ -24,13 +24,11 @@ internal object PlayerExtrasRoomSync {
         val totalMs = prefs.getLong("listened_ms", 0L).coerceAtLeast(0L)
         val dao = AudoibooDatabase.get(app).libraryDao()
 
-        val roomHasState = dao.playbackHistory().isNotEmpty() ||
-            dao.playerBookmarks().isNotEmpty() ||
-            dao.dailyListening().isNotEmpty() ||
-            (dao.listeningTotal()?.listenedMs ?: 0L) > 0L
-
-        if (!roomHasState && (history.isNotEmpty() || bookmarks.isNotEmpty() || daily.isNotEmpty() || totalMs > 0L)) {
-            dao.replacePlayerExtras(history, bookmarks, daily, totalMs)
+        if (dao.playbackHistory().isEmpty() && history.isNotEmpty()) dao.upsertPlaybackHistory(history)
+        if (dao.playerBookmarks().isEmpty() && bookmarks.isNotEmpty()) dao.upsertPlayerBookmarks(bookmarks)
+        if (dao.dailyListening().isEmpty() && daily.isNotEmpty()) dao.upsertDailyListening(daily)
+        if ((dao.listeningTotal()?.listenedMs ?: 0L) <= 0L && totalMs > 0L) {
+            dao.upsertListeningTotal(ListeningTotalEntity(listenedMs = totalMs))
         }
         flags.edit().putBoolean(MIGRATION_KEY, true).apply()
     }
@@ -46,6 +44,15 @@ internal object PlayerExtrasRoomSync {
             totalMs = prefs.getLong("listened_ms", 0L).coerceAtLeast(0L)
         )
         app.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE).edit().putBoolean(MIGRATION_KEY, true).apply()
+    }
+
+    fun clearMigratedLegacy(context: Context) {
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .remove("history")
+            .remove("bookmarks_v2")
+            .remove("daily_listened")
+            .remove("listened_ms")
+            .apply()
     }
 
     private fun parseHistory(raw: String): List<PlaybackHistoryEntity> = runCatching {

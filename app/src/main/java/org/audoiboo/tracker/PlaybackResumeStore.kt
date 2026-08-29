@@ -14,10 +14,12 @@ import org.json.JSONObject
 internal object PlaybackResumeStore {
     private const val LEGACY_PREFS = "player_extras"
     private const val LEGACY_KEY = "playback_snapshot"
+    private const val WIDGET_REFRESH_MS = 30_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val state = MutableStateFlow<PlaybackStateRepository.Snapshot?>(null)
     @Volatile private var initialized = false
+    @Volatile private var lastWidgetRefresh = 0L
 
     fun observe(): StateFlow<PlaybackStateRepository.Snapshot?> = state.asStateFlow()
 
@@ -39,20 +41,49 @@ internal object PlaybackResumeStore {
         return state.value ?: legacySnapshot(context.applicationContext)
     }
 
+    fun rememberBook(context: Context, dir: String, title: String, uri: String) {
+        if (dir.isBlank()) return
+        initialize(context)
+        val current = state.value
+        if (current?.dir == dir && (uri.isBlank() || current.uri == uri)) return
+        save(
+            context,
+            PlaybackStateRepository.Snapshot(
+                dir = dir,
+                title = title.ifBlank { dir },
+                uri = uri,
+                fileIndex = 0,
+                positionMs = 0L,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+    }
+
     fun save(context: Context, value: PlaybackStateRepository.Snapshot) {
         initialize(context)
+        val app = context.applicationContext
+        val previous = state.value
         val clean = value.copy(
             fileIndex = value.fileIndex.coerceAtLeast(0),
             positionMs = value.positionMs.coerceAtLeast(0L)
         )
         state.value = clean
-        scope.launch { PlaybackStateRepository.saveSnapshot(context.applicationContext, clean) }
+        val now = System.currentTimeMillis()
+        val refreshWidget = previous?.dir != clean.dir || previous.uri != clean.uri || now - lastWidgetRefresh >= WIDGET_REFRESH_MS
+        if (refreshWidget) lastWidgetRefresh = now
+        scope.launch {
+            PlaybackStateRepository.saveSnapshot(app, clean)
+            if (refreshWidget) ContinueListeningWidget.updateAll(app)
+        }
     }
 
     fun refresh(context: Context) {
         val app = context.applicationContext
         initialize(app)
-        scope.launch { state.value = PlaybackStateRepository.snapshot(app) }
+        scope.launch {
+            state.value = PlaybackStateRepository.snapshot(app)
+            ContinueListeningWidget.updateAll(app)
+        }
     }
 
     private fun legacySnapshot(context: Context): PlaybackStateRepository.Snapshot? = runCatching {

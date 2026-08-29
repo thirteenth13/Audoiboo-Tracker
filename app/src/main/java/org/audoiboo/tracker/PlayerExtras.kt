@@ -12,17 +12,12 @@ import java.util.Locale
 internal object PlayerExtras {
     private const val PREFS = "player_extras"
     private const val HISTORY = "history"
-    private const val LAST_DIR = "last_book_dir"
-    private const val LAST_TITLE = "last_book_title"
-    private const val LAST_URI = "last_uri"
-    private const val LAST_AT = "last_at"
     private const val LISTENED_MS = "listened_ms"
     private const val BOOKMARKS = "bookmarks_v2"
     private const val SPEEDS = "book_speeds"
     private const val SERIES_SPEEDS = "series_speeds"
     private const val BROKEN = "broken_uris"
     private const val DAILY = "daily_listened"
-    private const val TAGS = "book_tags"
     private const val SERIES_RESUME = "series_resume"
 
     data class Resume(val dir: String, val title: String, val uri: String, val at: Long)
@@ -40,11 +35,10 @@ internal object PlayerExtras {
     )
 
     fun rememberBook(context: Context, dir: String, title: String, uri: Uri?) {
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         val uriText = uri?.toString().orEmpty()
-        p.edit().putString(LAST_DIR, dir).putString(LAST_TITLE, title).putString(LAST_URI, uriText).putLong(LAST_AT, now).apply()
         PlayerExtrasStore.rememberBook(context, dir, title, now)
+        PlaybackResumeStore.rememberBook(context, dir, title, uriText)
 
         if (uriText.isNotBlank()) {
             PlayerLibrary.all(context).firstOrNull { it.uri == uriText }?.series?.takeIf { it.isNotBlank() }?.let { series ->
@@ -53,10 +47,8 @@ internal object PlayerExtras {
         }
     }
 
-    fun resume(context: Context): Resume? {
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val dir = p.getString(LAST_DIR, null)?.takeIf { it.isNotBlank() } ?: return null
-        return Resume(dir, p.getString(LAST_TITLE, dir).orEmpty(), p.getString(LAST_URI, "").orEmpty(), p.getLong(LAST_AT, 0L))
+    fun resume(context: Context): Resume? = PlaybackResumeStore.current(context)?.let {
+        Resume(it.dir, it.title, it.uri, it.updatedAt)
     }
 
     private fun saveSeriesResume(context: Context, value: SeriesResume) {

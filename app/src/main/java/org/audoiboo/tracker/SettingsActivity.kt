@@ -18,35 +18,37 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
 object AppPrefs {
-    private const val FILE = "app_settings"
-    private const val BASE = "base_folder"
-    private const val AUTHOR = "author_folder"
-    private const val DEV = "dev_tools"
-    private const val DARK = "dark_theme"
-    private const val ASK = "ask_path"
-    private const val WIFI = "wifi_only"
-    private const val UNPACK = "unpack"
-    private const val UPDATE_WIFI = "update_wifi"
-    private const val SHOW_PAGE = "show_page_button"
-    private const val SHOW_FIND = "show_find_archive_button"
-    private const val AUTO_ARCHIVES = "auto_find_archives"
+    private fun value(context: Context): ModernSettings = AppSettingsStore.current(context)
 
-    private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-
-    fun baseFolder(context: Context): String = prefs(context).getString(BASE, "Audoiboo")?.trim()?.ifBlank { "Audoiboo" } ?: "Audoiboo"
-    fun useAuthorFolder(context: Context): Boolean = prefs(context).getBoolean(AUTHOR, true)
-    fun devTools(context: Context): Boolean = prefs(context).getBoolean(DEV, false)
-    fun darkTheme(context: Context): Boolean = prefs(context).getBoolean(DARK, false)
-    fun askPath(context: Context): Boolean = prefs(context).getBoolean(ASK, false)
-    fun wifiOnly(context: Context): Boolean = prefs(context).getBoolean(WIFI, false)
-    fun unpack(context: Context): Boolean = prefs(context).getBoolean(UNPACK, true)
-    fun updateWifiOnly(context: Context): Boolean = prefs(context).getBoolean(UPDATE_WIFI, true)
-    fun showPageButton(context: Context): Boolean = prefs(context).getBoolean(SHOW_PAGE, true)
-    fun showFindArchiveButton(context: Context): Boolean = prefs(context).getBoolean(SHOW_FIND, true)
-    fun autoFindArchives(context: Context): Boolean = prefs(context).getBoolean(AUTO_ARCHIVES, false)
+    fun baseFolder(context: Context): String = value(context).baseFolder
+    fun useAuthorFolder(context: Context): Boolean = value(context).authorFolder
+    fun devTools(context: Context): Boolean = value(context).devTools
+    fun darkTheme(context: Context): Boolean = value(context).darkTheme
+    fun askPath(context: Context): Boolean = value(context).askPath
+    fun wifiOnly(context: Context): Boolean = value(context).wifiOnly
+    fun unpack(context: Context): Boolean = value(context).unpack
+    fun updateWifiOnly(context: Context): Boolean = value(context).updateWifiOnly
+    fun showPageButton(context: Context): Boolean = value(context).showPageButton
+    fun showFindArchiveButton(context: Context): Boolean = value(context).showFindArchiveButton
+    fun autoFindArchives(context: Context): Boolean = value(context).autoFindArchives
 
     fun save(context: Context, baseFolder: String, authorFolder: Boolean, devTools: Boolean, darkTheme: Boolean, askPath: Boolean, wifiOnly: Boolean, unpack: Boolean, updateWifiOnly: Boolean, showPage: Boolean, showFind: Boolean, autoArchives: Boolean) {
-        prefs(context).edit().putString(BASE, baseFolder.trim().trim('/')).putBoolean(AUTHOR, authorFolder).putBoolean(DEV, devTools).putBoolean(DARK, darkTheme).putBoolean(ASK, askPath).putBoolean(WIFI, wifiOnly).putBoolean(UNPACK, unpack).putBoolean(UPDATE_WIFI, updateWifiOnly).putBoolean(SHOW_PAGE, showPage).putBoolean(SHOW_FIND, showFind).putBoolean(AUTO_ARCHIVES, autoArchives).apply()
+        AppSettingsStore.save(
+            context,
+            ModernSettings(
+                baseFolder = baseFolder,
+                authorFolder = authorFolder,
+                devTools = devTools,
+                darkTheme = darkTheme,
+                askPath = askPath,
+                wifiOnly = wifiOnly,
+                unpack = unpack,
+                updateWifiOnly = updateWifiOnly,
+                showPageButton = showPage,
+                showFindArchiveButton = showFind,
+                autoFindArchives = autoArchives
+            )
+        )
     }
 }
 
@@ -171,7 +173,7 @@ private fun SettingsScreen(activity: ComponentActivity) {
 
                 SectionTitle("Інше")
                 SettingCard("Перевіряти оновлення", if (updateWifi) "Лише по Wi‑Fi" else "Будь-яка мережа") { Switch(checked = updateWifi, onCheckedChange = { updateWifi = it; save() }) }
-                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("Про додаток"); Text("Audoiboo Tracker 1.1.3-dev", style = MaterialTheme.typography.bodySmall) } }
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("Про додаток"); Text("Audoiboo Tracker 1.1.4-dev", style = MaterialTheme.typography.bodySmall) } }
 
                 SectionTitle("Розробка")
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { SettingRow("Інструменти налагодження", "DOM-діагностика") { Switch(checked = dev, onCheckedChange = { dev = it; save() }) }; if (dev) OutlinedButton(onClick = { activity.startActivity(Intent(activity, DiagnosticActivity::class.java)) }) { Text("Відкрити DOM-діагностику") } } }

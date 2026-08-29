@@ -61,6 +61,8 @@ class AudoibooApp : Application() {
         appScope.launch {
             // Tracking series are the only existing user data that still needs legacy import support.
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
+            // Rebind stale MediaStore/SAF URIs after reboot, provider changes or an app restore.
+            runCatching { LibraryUriRecovery.recover(this@AudoibooApp) }
             runCatching { RoomCoverSync.enqueueAll(this@AudoibooApp) }
         }
     }

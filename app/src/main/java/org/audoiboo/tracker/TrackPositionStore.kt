@@ -2,6 +2,7 @@ package org.audoiboo.tracker
 
 import android.content.Context
 import android.net.Uri
+import androidx.room.withTransaction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,7 +32,7 @@ object TrackPositionStore {
             val dao = AudoibooDatabase.get(app).libraryDao()
             val room = dao.trackPositions().associate { it.uri to it.positionMs.coerceAtLeast(0L) }
             val pendingSnapshot = synchronized(pending) { pending.toMap() }
-            positions.value = room + pendingSnapshot
+            positions.value = TrackPositionSnapshotPolicy.merge(room, positions.value, pendingSnapshot)
             if (pendingSnapshot.isNotEmpty()) {
                 dao.upsertTrackPositions(pendingSnapshot.map { (uri, value) -> TrackPositionEntity(uri, value.coerceAtLeast(0L)) })
                 synchronized(pending) {
@@ -62,11 +63,12 @@ object TrackPositionStore {
     }
 
     suspend fun exportJson(context: Context): JSONObject {
-        val out = JSONObject()
-        AudoibooDatabase.get(context.applicationContext).libraryDao().trackPositions().forEach { row ->
-            if (TrackPositionPolicy.validKey(row.uri)) out.put(row.uri, row.positionMs.coerceAtLeast(0L))
-        }
-        return out
+        val dao = AudoibooDatabase.get(context.applicationContext).libraryDao()
+        val room = dao.trackPositions().associate { it.uri to it.positionMs }
+        val cached = positions.value
+        val pendingSnapshot = synchronized(pending) { pending.toMap() }
+        val snapshot = TrackPositionSnapshotPolicy.merge(room, cached, pendingSnapshot)
+        return JSONObject().apply { snapshot.forEach { (uri, value) -> put(uri, value) } }
     }
 
     suspend fun restoreJson(context: Context, json: JSONObject?) {
@@ -84,8 +86,10 @@ object TrackPositionStore {
         val app = context.applicationContext
         val db = AudoibooDatabase.get(app)
         val dao = db.libraryDao()
-        db.openHelper.writableDatabase.execSQL("DELETE FROM track_positions")
-        if (rows.isNotEmpty()) dao.upsertTrackPositions(rows)
+        db.withTransaction {
+            db.openHelper.writableDatabase.execSQL("DELETE FROM track_positions")
+            if (rows.isNotEmpty()) dao.upsertTrackPositions(rows)
+        }
         synchronized(pending) { pending.clear() }
         positions.value = rows.associate { it.uri to it.positionMs }
         initialized = true

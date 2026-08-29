@@ -14,19 +14,22 @@ import androidx.work.WorkerParameters
 import java.util.concurrent.TimeUnit
 
 internal object SeriesAutomationPrefs {
-    private const val PREFS = "series_automation"
-    private const val ENABLED = "enabled"
-    private const val AUTO_DOWNLOAD = "auto_download"
-    private const val WIFI_ONLY = "wifi_only"
     private const val WORK = "audoiboo-series-watch"
 
-    fun enabled(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(ENABLED, false)
-    fun autoDownload(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(AUTO_DOWNLOAD, false)
-    fun wifiOnly(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(WIFI_ONLY, true)
+    fun enabled(context: Context) = AppSettingsStore.current(context).seriesAutomationEnabled
+    fun autoDownload(context: Context) = AppSettingsStore.current(context).seriesAutoDownload
+    fun wifiOnly(context: Context) = AppSettingsStore.current(context).seriesWifiOnly
 
     fun save(context: Context, enabled: Boolean, autoDownload: Boolean, wifiOnly: Boolean) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putBoolean(ENABLED, enabled).putBoolean(AUTO_DOWNLOAD, autoDownload).putBoolean(WIFI_ONLY, wifiOnly).apply()
+        val current = AppSettingsStore.current(context)
+        AppSettingsStore.save(
+            context,
+            current.copy(
+                seriesAutomationEnabled = enabled,
+                seriesAutoDownload = autoDownload,
+                seriesWifiOnly = wifiOnly
+            )
+        )
         schedule(context)
     }
 

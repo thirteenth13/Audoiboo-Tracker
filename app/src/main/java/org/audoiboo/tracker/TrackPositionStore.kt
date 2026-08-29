@@ -28,16 +28,19 @@ object TrackPositionStore {
             initialized = true
         }
         val app = context.applicationContext
-        scope.launch {
-            val dao = AudoibooDatabase.get(app).libraryDao()
-            val room = dao.trackPositions().associate { it.uri to it.positionMs.coerceAtLeast(0L) }
-            val pendingSnapshot = synchronized(pending) { pending.toMap() }
-            positions.value = TrackPositionSnapshotPolicy.merge(room, positions.value, pendingSnapshot)
-            if (pendingSnapshot.isNotEmpty()) {
-                dao.upsertTrackPositions(pendingSnapshot.map { (uri, value) -> TrackPositionEntity(uri, value.coerceAtLeast(0L)) })
-                synchronized(pending) {
-                    pendingSnapshot.forEach { (uri, value) -> if (pending[uri] == value) pending.remove(uri) }
-                }
+        scope.launch { refresh(app) }
+    }
+
+    suspend fun refresh(context: Context) {
+        val app = context.applicationContext
+        val dao = AudoibooDatabase.get(app).libraryDao()
+        val room = dao.trackPositions().associate { it.uri to it.positionMs.coerceAtLeast(0L) }
+        val pendingSnapshot = synchronized(pending) { pending.toMap() }
+        positions.value = TrackPositionSnapshotPolicy.merge(room, positions.value, pendingSnapshot)
+        if (pendingSnapshot.isNotEmpty()) {
+            dao.upsertTrackPositions(pendingSnapshot.map { (uri, value) -> TrackPositionEntity(uri, value.coerceAtLeast(0L)) })
+            synchronized(pending) {
+                pendingSnapshot.forEach { (uri, value) -> if (pending[uri] == value) pending.remove(uri) }
             }
         }
     }

@@ -40,7 +40,6 @@ def redirect_target(response_url: str, status: int, headers: dict[str, str]) -> 
 
 
 def extract_embedded_urls(text: str, page_url: str) -> tuple[list[str], list[str]]:
-    """Find public resolver/media URLs already embedded in player markup or JS."""
     cleaned = (text or "").replace("\\/", "/").replace("&amp;", "&")
     resolvers: list[str] = []
     media: list[str] = []
@@ -56,7 +55,6 @@ def extract_embedded_urls(text: str, page_url: str) -> tuple[list[str], list[str
 
 
 def _player_snapshot(page) -> dict:
-    """Return bounded, non-cookie diagnostics from the visible player and scripts."""
     return page.evaluate(r"""() => {
         const norm = s => (s || '').replace(/\s+/g, ' ').trim();
         const rows = Array.from(document.querySelectorAll('body *')).filter(el => /^\d{2}$/.test(norm(el.innerText || el.textContent)));
@@ -67,39 +65,47 @@ def _player_snapshot(page) -> dict:
             for (const a of el.attributes || []) {
                 if (/^(data-|href|src|onclick|id|class)/i.test(a.name)) attrs[a.name] = String(a.value).slice(0, 500);
             }
-            unique.push({text:norm(el.innerText || el.textContent), tag:el.tagName, attrs, html:el.outerHTML.slice(0, 1200)});
-            if (unique.length >= 12) break;
+            unique.push({text:norm(el.innerText || el.textContent), tag:el.tagName, attrs, html:el.outerHTML.slice(0, 1600)});
+            if (unique.length >= 20) break;
         }
-        const scripts = Array.from(document.scripts).map(s => s.textContent || '').filter(t => /\/files\/|\.mp3|playlist|track|audio/i.test(t)).map(t => t.slice(0, 12000)).slice(0, 12);
-        const audio = Array.from(document.querySelectorAll('audio,source')).map(el => ({tag:el.tagName, src:el.src || el.getAttribute('src') || '', html:el.outerHTML.slice(0,800)})).slice(0,12);
-        return {rows:unique, scripts, audio, html:document.documentElement.outerHTML};
+        const scripts = Array.from(document.scripts).map(s => s.textContent || '').filter(t => /\/files\/|\.mp3|playlist|track|audio/i.test(t)).map(t => t.slice(0, 16000)).slice(0, 12);
+        const audio = Array.from(document.querySelectorAll('audio,source')).map(el => ({tag:el.tagName, src:el.src || el.getAttribute('src') || '', currentSrc:el.currentSrc || '', html:el.outerHTML.slice(0,1200)})).slice(0,12);
+        const storage = {};
+        try { for (let i=0;i<localStorage.length;i++) { const k=localStorage.key(i); if (/track|audio|play|file/i.test(k)) storage['local:'+k]=String(localStorage.getItem(k)).slice(0,2000); } } catch(e) {}
+        try { for (let i=0;i<sessionStorage.length;i++) { const k=sessionStorage.key(i); if (/track|audio|play|file/i.test(k)) storage['session:'+k]=String(sessionStorage.getItem(k)).slice(0,2000); } } catch(e) {}
+        return {rows:unique, scripts, audio, storage, html:document.documentElement.outerHTML};
     }""")
+
+
+def _snapshot_urls(snapshot: dict, page_url: str) -> tuple[list[str], list[str]]:
+    chunks = [snapshot.get("html", ""), *snapshot.get("scripts", [])]
+    for audio in snapshot.get("audio", []):
+        chunks.extend([audio.get("src", ""), audio.get("currentSrc", ""), audio.get("html", "")])
+    chunks.extend(snapshot.get("storage", {}).values())
+    return extract_embedded_urls("\n".join(chunks), page_url)
 
 
 def _click_track(page, label: str) -> bool:
     try:
-        return bool(page.evaluate(
-            r"""label => {
-                const norm = s => (s || '').replace(/\s+/g, ' ').trim();
-                const candidates = Array.from(document.querySelectorAll('body *')).filter(el => {
-                    if (norm(el.innerText || el.textContent) !== label) return false;
-                    return !Array.from(el.children).some(c => norm(c.innerText || c.textContent) === label);
-                });
-                if (!candidates.length) return false;
-                candidates.sort((a, b) => {
-                    const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
-                    return (ar.width * ar.height) - (br.width * br.height);
-                });
-                const el = candidates[0];
-                const clickable = el.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]') || el;
-                clickable.scrollIntoView({block: 'center'});
-                clickable.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window}));
-                clickable.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window}));
-                clickable.click();
-                return true;
-            }""",
-            label,
-        ))
+        return bool(page.evaluate(r"""label => {
+            const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+            const candidates = Array.from(document.querySelectorAll('body *')).filter(el => {
+                if (norm(el.innerText || el.textContent) !== label) return false;
+                return !Array.from(el.children).some(c => norm(c.innerText || c.textContent) === label);
+            });
+            if (!candidates.length) return false;
+            candidates.sort((a, b) => {
+                const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+                return (ar.width * ar.height) - (br.width * br.height);
+            });
+            const el = candidates[0];
+            const clickable = el.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]') || el;
+            clickable.scrollIntoView({block: 'center'});
+            clickable.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window}));
+            clickable.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window}));
+            clickable.click();
+            return true;
+        }""", label))
     except Exception:
         return False
 
@@ -115,10 +121,7 @@ def resolve(page_url: str, max_tracks: int = 60, timeout_ms: int = 30000) -> Bro
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36",
-            locale="ru-RU",
-        )
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36", locale="ru-RU")
         page = context.new_page()
         page.set_default_timeout(1500)
 
@@ -128,95 +131,67 @@ def resolve(page_url: str, max_tracks: int = 60, timeout_ms: int = 30000) -> Bro
                 route.abort()
             else:
                 route.continue_()
-
         page.route("**/*", route_handler)
 
         def remember_resolver(url: str) -> None:
             if url not in seen_resolvers:
-                seen_resolvers.add(url)
-                resolver_urls.append(url)
-
+                seen_resolvers.add(url); resolver_urls.append(url)
         def remember_media(url: str) -> None:
             if url not in seen_media:
-                seen_media.add(url)
-                media.append(url)
+                seen_media.add(url); media.append(url)
 
         def on_request(request) -> None:
             try:
                 u = str(request.url)
                 if "poleknig.com" in (urlsplit(u).hostname or "") and urlsplit(u).path.startswith("/files/"):
                     remember_resolver(u)
-            except Exception:
-                pass
+            except Exception: pass
 
         def on_response(response) -> None:
             nonlocal redirects
             try:
-                response_url = str(response.url)
-                status = int(response.status)
-                headers = dict(response.headers or {})
-                path = urlsplit(response_url).path
-                if "poleknig.com" in (urlsplit(response_url).hostname or "") and path.startswith("/files/"):
-                    remember_resolver(response_url)
-                    target = redirect_target(response_url, status, headers)
+                u = str(response.url); status = int(response.status); headers = dict(response.headers or {}); path = urlsplit(u).path
+                if "poleknig.com" in (urlsplit(u).hostname or "") and path.startswith("/files/"):
+                    remember_resolver(u); target = redirect_target(u, status, headers)
                     diagnostics.append(f"{path}:{status}:location={'yes' if headers.get('location') else 'no'}")
-                    if target:
-                        redirects += 1
-                        remember_media(target)
-                elif _is_audio_url(response_url) and "poleknig.com/storage/" in response_url:
-                    remember_media(response_url)
-            except Exception as exc:
-                diagnostics.append(f"response-error:{type(exc).__name__}")
+                    if target: redirects += 1; remember_media(target)
+                elif _is_audio_url(u) and "poleknig.com/storage/" in u: remember_media(u)
+            except Exception as exc: diagnostics.append(f"response-error:{type(exc).__name__}")
 
-        page.on("request", on_request)
-        page.on("response", on_response)
-        page.goto(page_url, wait_until="domcontentloaded", timeout=timeout_ms)
-        page.wait_for_timeout(1000)
+        page.on("request", on_request); page.on("response", on_response)
+        page.goto(page_url, wait_until="domcontentloaded", timeout=timeout_ms); page.wait_for_timeout(1000)
 
-        # Inspect the actual player state before trying playback. This catches
-        # resolver URLs hidden in data attributes/inline JS even when headless
-        # Chromium refuses to initiate media playback.
         try:
             snapshot = _player_snapshot(page)
-            embedded_text = "\n".join([snapshot.get("html", ""), *snapshot.get("scripts", [])])
-            embedded_resolvers, embedded_media = extract_embedded_urls(embedded_text, page_url)
-            for u in embedded_resolvers:
-                remember_resolver(u)
-            for u in embedded_media:
-                remember_media(u)
-            diagnostics.append(f"state-rows={len(snapshot.get('rows', []))}")
-            diagnostics.append(f"state-scripts={len(snapshot.get('scripts', []))}")
-            diagnostics.append(f"state-audio={len(snapshot.get('audio', []))}")
-            diagnostics.append(f"state-resolvers={len(embedded_resolvers)}")
-            diagnostics.append(f"state-media={len(embedded_media)}")
-            for row in snapshot.get("rows", [])[:8]:
-                attrs = row.get("attrs", {})
-                safe_attrs = {k:v for k,v in attrs.items() if k.lower() not in {"cookie", "authorization"}}
-                diagnostics.append(f"row={row.get('text')}:{row.get('tag')}:{str(safe_attrs)[:500]}")
-        except Exception as exc:
-            diagnostics.append(f"state-error:{type(exc).__name__}")
+            rs, ms = _snapshot_urls(snapshot, page_url)
+            for u in rs: remember_resolver(u)
+            for u in ms: remember_media(u)
+            diagnostics += [f"state-rows={len(snapshot.get('rows', []))}", f"state-scripts={len(snapshot.get('scripts', []))}", f"state-audio={len(snapshot.get('audio', []))}", f"state-resolvers={len(rs)}", f"state-media={len(ms)}"]
+            for row in snapshot.get("rows", [])[:8]: diagnostics.append(f"row={row.get('text')}:{row.get('tag')}:{str(row.get('attrs', {}))[:500]}")
+            for a in snapshot.get("audio", [])[:3]: diagnostics.append(f"audio-before=src:{a.get('src','')[:700]} current:{a.get('currentSrc','')[:700]}")
+        except Exception as exc: diagnostics.append(f"state-error:{type(exc).__name__}")
 
         misses = 0
         for number in range(1, max_tracks + 1):
-            label = f"{number:02d}"
-            before_resolvers = len(resolver_urls)
-            before_media = len(media)
+            label = f"{number:02d}"; before_r = len(resolver_urls); before_m = len(media)
             if not _click_track(page, label):
                 misses += 1
-                if misses >= 3:
-                    break
+                if misses >= 3: break
                 continue
-            clicks += 1
-            misses = 0
+            clicks += 1; misses = 0; page.wait_for_timeout(250)
+            try:
+                snap = _player_snapshot(page); rs, ms = _snapshot_urls(snap, page_url)
+                for u in rs: remember_resolver(u)
+                for u in ms: remember_media(u)
+                audio_srcs = [a.get('currentSrc') or a.get('src') or '' for a in snap.get('audio', [])]
+                diagnostics.append(f"after-{label}:resolvers={len(rs)} media={len(ms)} audio={str(audio_srcs)[:900]}")
+                new_rs = [u for u in rs if u not in seen_resolvers]
+                if new_rs: diagnostics.append(f"after-{label}:new={str(new_rs)[:1200]}")
+            except Exception as exc: diagnostics.append(f"after-{label}:snapshot-error:{type(exc).__name__}")
             waited = 0
-            while waited < 700 and len(media) == before_media and len(resolver_urls) == before_resolvers:
-                page.wait_for_timeout(100)
-                waited += 100
+            while waited < 450 and len(media) == before_m and len(resolver_urls) == before_r:
+                page.wait_for_timeout(100); waited += 100
 
-        diagnostics.insert(0, f"clicks={clicks}")
-        diagnostics.insert(1, f"resolvers={len(resolver_urls)}")
-        diagnostics.insert(2, f"redirects={redirects}")
-        context.close()
-        browser.close()
-
+        diagnostics.insert(0, f"clicks={clicks}"); diagnostics.insert(1, f"resolvers={len(resolver_urls)}"); diagnostics.insert(2, f"redirects={redirects}")
+        context.close(); browser.close()
     return BrowserResolveResult(clicks=clicks, redirects=redirects, media=media, resolver_urls=resolver_urls, diagnostics=diagnostics)

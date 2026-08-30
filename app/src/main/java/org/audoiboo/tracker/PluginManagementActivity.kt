@@ -38,6 +38,9 @@ import org.audoiboo.tracker.plugin.PluginInstallResult
 import org.audoiboo.tracker.plugin.PluginOrigin
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 import org.audoiboo.tracker.plugin.PluginState
+import org.audoiboo.tracker.plugin.PluginUpdate
+import org.audoiboo.tracker.plugin.PluginUpdateCheckResult
+import org.audoiboo.tracker.plugin.PluginUpdateService
 import org.audoiboo.tracker.plugin.SourcePluginRegistration
 import java.io.File
 import java.io.InputStream
@@ -57,8 +60,10 @@ class PluginManagementActivity : ComponentActivity() {
 private fun PluginManagementScreen(activity: ComponentActivity) {
     var revision by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
+    var updates by remember { mutableStateOf<List<PluginUpdate>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val maxImportBytes = remember { PluginArchiveLimits().maxCompressedBytes }
+    val updateService = remember { PluginUpdateService() }
 
     fun toast(message: String) = Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
     fun refresh() { revision++ }
@@ -69,6 +74,50 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
             val ok = withContext(Dispatchers.IO) { runCatching(block).getOrDefault(false) }
             busy = false
             toast(if (ok) success else failure)
+            refresh()
+        }
+    }
+
+    fun checkUpdates() {
+        if (busy) return
+        scope.launch {
+            busy = true
+            val result = withContext(Dispatchers.IO) {
+                updateService.check(PluginPackageRuntime.registrations)
+            }
+            busy = false
+            when (result) {
+                is PluginUpdateCheckResult.Success -> {
+                    updates = result.updates
+                    toast(if (updates.isEmpty()) "Оновлень плагінів немає" else "Знайдено оновлень: ${updates.size}")
+                }
+                is PluginUpdateCheckResult.Failed -> toast("Не вдалося перевірити оновлення: ${result.reason}")
+            }
+        }
+    }
+
+    fun installUpdate(update: PluginUpdate) {
+        if (busy) return
+        scope.launch {
+            busy = true
+            val result = withContext(Dispatchers.IO) {
+                val packageFile = updateService.downloadVerified(update, activity.cacheDir)
+                    .getOrElse { return@withContext PluginInstallResult.Failed(it.message ?: "Не вдалося завантажити оновлення", it) }
+                try {
+                    PluginPackageRuntime.installPackage(packageFile)
+                } finally {
+                    packageFile.delete()
+                }
+            }
+            busy = false
+            when (result) {
+                is PluginInstallResult.Installed -> {
+                    updates = updates.filterNot { it.entry.id == update.entry.id }
+                    toast("${result.registration.displayName} оновлено до v${result.registration.descriptor?.version ?: update.entry.version}")
+                }
+                is PluginInstallResult.Rejected -> toast("Оновлення відхилено: ${result.reason}")
+                is PluginInstallResult.Failed -> toast("Помилка оновлення: ${result.reason}")
+            }
             refresh()
         }
     }
@@ -109,6 +158,7 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
     }
     val quarantinedIds = revision.let { PluginPackageRuntime.store?.quarantinedPluginIds().orEmpty() }
     val visibleIds = (registrations.map { it.packageId } + quarantinedIds).distinct().sorted()
+    val updatesById = updates.associateBy { it.entry.id }
 
     Scaffold(
         topBar = {
@@ -137,6 +187,13 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
                 }
                 Text(if (busy) "Обробка…" else "Імпортувати .abplugin")
             }
+            OutlinedButton(
+                onClick = ::checkUpdates,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !busy
+            ) {
+                Text("Перевірити оновлення плагінів")
+            }
 
             if (visibleIds.isEmpty()) {
                 Card(Modifier.fillMaxWidth()) {
@@ -154,6 +211,8 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
                     pluginId = pluginId,
                     hasQuarantine = pluginId in quarantinedIds,
                     busy = busy,
+                    update = updatesById[pluginId],
+                    onUpdate = ::installUpdate,
                     onToggle = { enabled ->
                         runOperation(
                             block = { if (enabled) PluginPackageRuntime.enablePackage(pluginId) else PluginPackageRuntime.disablePackage(pluginId) },
@@ -194,6 +253,8 @@ private fun PluginCard(
     pluginId: String,
     hasQuarantine: Boolean,
     busy: Boolean,
+    update: PluginUpdate?,
+    onUpdate: (PluginUpdate) -> Unit,
     onToggle: (Boolean) -> Unit,
     onQuarantine: () -> Unit,
     onRestore: () -> Unit,
@@ -246,6 +307,21 @@ private fun PluginCard(
             }
             registration?.failureReason?.takeIf { it.isNotBlank() }?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+
+            if (update != null) {
+                Text(
+                    "Доступне оновлення: v${update.entry.version}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Button(
+                    onClick = { onUpdate(update) },
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Оновити до v${update.entry.version}")
+                }
             }
 
             Spacer(Modifier.height(2.dp))

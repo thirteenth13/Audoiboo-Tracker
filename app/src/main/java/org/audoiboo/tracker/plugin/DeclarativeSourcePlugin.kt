@@ -56,20 +56,26 @@ class DeclarativeSourcePlugin(
 
             // Some catalog pages lag behind the site's search index. When a declarative source can
             // both search and resolve books, use matching search hits as a conservative completeness
-            // pass. A hit is accepted only when BOOK_LOOKUP independently declares the exact series.
+            // pass. Besides the plain series title, ask explicitly for the next likely volume. This
+            // covers sites that expose "volume N+1" in search while their series page is still cached
+            // at N. A hit is accepted only when BOOK_LOOKUP independently declares the exact series.
             val canSearchForMissing = canLookup &&
                 SourceCapability.SERIES_SEARCH in manifest.capabilities &&
                 manifest.entrypoints.containsKey("seriesSearch")
             val supplemental = if (canSearchForMissing) {
                 val expected = SourceIdentityMatcher.normalizeTitle(series.title)
-                runtime.searchSeries(manifest, packageDir, SeriesSearchQuery(series.title))
+                seriesCompletionQueries(series.title, direct)
                     .asSequence()
+                    .flatMap { query ->
+                        runtime.searchSeries(manifest, packageDir, SeriesSearchQuery(query)).asSequence()
+                    }
                     .mapNotNull { candidate ->
                         runCatching { runtime.resolveBook(manifest, packageDir, candidate.series.url) }.getOrNull()
                     }
                     .filter { book ->
                         book.seriesTitle?.let(SourceIdentityMatcher::normalizeTitle) == expected
                     }
+                    .distinctBy { SourceKeys.normalizeUrl(it.url) }
                     .toList()
             } else emptyList()
 
@@ -107,4 +113,20 @@ class DeclarativeSourcePlugin(
             throw t
         }
     }
+}
+
+internal fun seriesCompletionQueries(title: String, directBooks: List<SourceBook>): List<String> {
+    val explicitMax = directBooks.mapNotNull { it.seriesNumber?.toInt() }.maxOrNull()
+    val inferredMax = directBooks.mapNotNull { book ->
+        Regex("(?<!\\d)(\\d{1,3})(?!\\d)")
+            .findAll(book.title)
+            .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
+            .lastOrNull()
+    }.maxOrNull()
+    val currentMax = listOfNotNull(explicitMax, inferredMax, directBooks.size.takeIf { it > 0 }).maxOrNull()
+
+    return buildList {
+        add(title)
+        currentMax?.let { add("$title ${it + 1}") }
+    }.distinct()
 }

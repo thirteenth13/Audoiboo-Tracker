@@ -1,0 +1,8 @@
+{
+  "operation": "downloadResolution",
+  "type": "DIRECT_FILE",
+  "items": {
+    "item": "audio[src], source[src], a[href$='.mp3']",
+    "link": "@src"
+  }
+}

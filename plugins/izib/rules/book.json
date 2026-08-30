@@ -1,0 +1,10 @@
+{
+  "operation": "bookLookup",
+  "book": {
+    "title": "h1, .book-title, .title",
+    "author": "a[href*='/author']",
+    "seriesTitle": "a[href*='/serie'], a[href*='/series']",
+    "coverUrl": "meta[property='og:image']@content",
+    "description": "meta[name='description']@content"
+  }
+}

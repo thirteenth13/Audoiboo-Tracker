@@ -47,6 +47,35 @@ class DeclarativePluginRuntimeTest {
     }
 
     @Test
+    fun followsCanonicalSeriesLinkFromBookPageAndCleansTitle() = withTempDir { root ->
+        File(root, "series.rule").writeText("series")
+        val manifest = manifest(entrypoints = mapOf("seriesLookup" to "series.rule"))
+        val decoder = DeclarativeEntrypointDecoder {
+            DeclarativeEntrypoint.SeriesLookup(
+                title = "h1",
+                followLink = "a.series@href",
+                titleRegex = "(?i)series\\s+[\"«]?(.+?)[\"»]?\\s+listen",
+                books = RepeatedFields(item = "h2 a.book", title = "@text", link = "@href")
+            )
+        }
+        val sandbox = PluginSandbox(PluginHttpTransport { request, _ ->
+            val body = when (request.url) {
+                "https://example.org/book/10" -> "<h1>Book Ten</h1><a class='series' href='/series/star-blood'>Star Blood</a>"
+                "https://example.org/series/star-blood" -> "<h1>Series \"Star Blood\" listen online</h1><h2><a class='book' href='/book/10'>Book Ten</a></h2>"
+                else -> error("unexpected ${request.url}")
+            }
+            PluginHttpResponse(200, request.url, body)
+        })
+        val runtime = DeclarativePluginRuntime(sandbox, decoder)
+
+        val series = runtime.resolveSeries(manifest, root, "https://example.org/book/10")!!
+
+        assertEquals("Star Blood", series.title)
+        assertEquals("https://example.org/series/star-blood", series.url)
+        assertEquals(listOf("https://example.org/book/10"), series.books.map { it.url })
+    }
+
+    @Test
     fun resolvesBookMetadataFromSelectorsInsideSandbox() = withTempDir { root ->
         File(root, "book.rule").writeText("book")
         val manifest = manifest(
@@ -56,7 +85,7 @@ class DeclarativePluginRuntimeTest {
         val runtime = runtime(
             body = """
                 <html><body>
-                  <h1>Book One</h1>
+                  <h1>Book One - Author A author Author A</h1>
                   <a class='author'>Author A</a>
                   <a class='series'>Star Blood</a>
                   <span class='number'>3</span>
@@ -71,7 +100,8 @@ class DeclarativePluginRuntimeTest {
                     seriesTitle = ".series",
                     seriesNumber = ".number",
                     coverUrl = ".cover@src",
-                    description = ".desc"
+                    description = ".desc",
+                    titleRegex = "^(.+?)(?=\\s+-\\s+.+?\\s+author\\b)"
                 )
             }
         )

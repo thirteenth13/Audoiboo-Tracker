@@ -34,6 +34,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.audoiboo.tracker.plugin.PluginArchiveLimits
+import org.audoiboo.tracker.plugin.PluginCatalogEntry
 import org.audoiboo.tracker.plugin.PluginInstallResult
 import org.audoiboo.tracker.plugin.PluginOrigin
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
@@ -61,6 +62,8 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
     var revision by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var updates by remember { mutableStateOf<List<PluginUpdate>>(emptyList()) }
+    var installable by remember { mutableStateOf<List<PluginCatalogEntry>>(emptyList()) }
+    var catalogLoaded by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val maxImportBytes = remember { PluginArchiveLimits().maxCompressedBytes }
     val updateService = remember { PluginUpdateService() }
@@ -78,7 +81,7 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
         }
     }
 
-    fun checkUpdates() {
+    fun checkCatalog(showToast: Boolean = true) {
         if (busy) return
         scope.launch {
             busy = true
@@ -89,10 +92,48 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
             when (result) {
                 is PluginUpdateCheckResult.Success -> {
                     updates = result.updates
-                    toast(if (updates.isEmpty()) "Оновлень плагінів немає" else "Знайдено оновлень: ${updates.size}")
+                    installable = result.installable
+                    catalogLoaded = true
+                    if (showToast) {
+                        val total = updates.size + installable.size
+                        toast(
+                            when {
+                                total == 0 -> "Каталог перевірено — нових плагінів та оновлень немає"
+                                installable.isNotEmpty() && updates.isNotEmpty() -> "Нових плагінів: ${installable.size} • оновлень: ${updates.size}"
+                                installable.isNotEmpty() -> "Доступно нових плагінів: ${installable.size}"
+                                else -> "Знайдено оновлень: ${updates.size}"
+                            }
+                        )
+                    }
                 }
-                is PluginUpdateCheckResult.Failed -> toast("Не вдалося перевірити оновлення: ${result.reason}")
+                is PluginUpdateCheckResult.Failed -> toast("Не вдалося завантажити каталог: ${result.reason}")
             }
+        }
+    }
+
+    fun installCatalogEntry(entry: PluginCatalogEntry) {
+        if (busy) return
+        scope.launch {
+            busy = true
+            val result = withContext(Dispatchers.IO) {
+                val packageFile = updateService.downloadVerified(entry, activity.cacheDir)
+                    .getOrElse { return@withContext PluginInstallResult.Failed(it.message ?: "Не вдалося завантажити плагін", it) }
+                try {
+                    PluginPackageRuntime.installPackage(packageFile)
+                } finally {
+                    packageFile.delete()
+                }
+            }
+            busy = false
+            when (result) {
+                is PluginInstallResult.Installed -> {
+                    installable = installable.filterNot { it.id == entry.id }
+                    toast("${result.registration.displayName} v${result.registration.descriptor?.version ?: entry.version} встановлено. Увімкни плагін перемикачем.")
+                }
+                is PluginInstallResult.Rejected -> toast("Плагін відхилено: ${result.reason}")
+                is PluginInstallResult.Failed -> toast("Помилка встановлення: ${result.reason}")
+            }
+            refresh()
         }
     }
 
@@ -100,11 +141,18 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
         if (busy) return
         scope.launch {
             busy = true
+            val wasEnabled = PluginPackageRuntime.registrations
+                .firstOrNull { it.packageId == update.entry.id }
+                ?.state == PluginState.ENABLED
             val result = withContext(Dispatchers.IO) {
                 val packageFile = updateService.downloadVerified(update, activity.cacheDir)
                     .getOrElse { return@withContext PluginInstallResult.Failed(it.message ?: "Не вдалося завантажити оновлення", it) }
                 try {
-                    PluginPackageRuntime.installPackage(packageFile)
+                    val installed = PluginPackageRuntime.installPackage(packageFile)
+                    if (installed is PluginInstallResult.Installed && wasEnabled) {
+                        PluginPackageRuntime.enablePackage(update.entry.id)
+                    }
+                    installed
                 } finally {
                     packageFile.delete()
                 }
@@ -177,7 +225,7 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
                 style = MaterialTheme.typography.bodyMedium
             )
             Button(
-                onClick = { importer.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                onClick = { checkCatalog() },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !busy
             ) {
@@ -185,21 +233,37 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                 }
-                Text(if (busy) "Обробка…" else "Імпортувати .abplugin")
+                Text(if (busy) "Обробка…" else "Каталог плагінів")
             }
             OutlinedButton(
-                onClick = ::checkUpdates,
+                onClick = { importer.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !busy
             ) {
-                Text("Перевірити оновлення плагінів")
+                Text("Імпортувати .abplugin з файлу")
             }
 
-            if (visibleIds.isEmpty()) {
+            if (installable.isNotEmpty()) {
+                Text("Доступні плагіни", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                installable.forEach { entry ->
+                    CatalogPluginCard(entry = entry, busy = busy, onInstall = ::installCatalogEntry)
+                }
+            } else if (catalogLoaded && visibleIds.isEmpty()) {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("У каталозі немає нових плагінів", fontWeight = FontWeight.SemiBold)
+                        Text("Можна також імпортувати сумісний .abplugin з файлу.", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+
+            if (visibleIds.isNotEmpty()) {
+                Text("Встановлені плагіни", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            } else if (!catalogLoaded) {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         Text("Зовнішніх плагінів ще немає", fontWeight = FontWeight.SemiBold)
-                        Text("Імпортуй файл .abplugin, після перевірки він з’явиться тут вимкненим.", style = MaterialTheme.typography.bodySmall)
+                        Text("Відкрий каталог або імпортуй файл .abplugin.", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -242,6 +306,28 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
                         )
                     }
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CatalogPluginCard(
+    entry: PluginCatalogEntry,
+    busy: Boolean,
+    onInstall: (PluginCatalogEntry) -> Unit
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(entry.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("${entry.id} • v${entry.version} • API ${entry.apiVersion}", style = MaterialTheme.typography.bodySmall)
+            entry.description?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            Button(
+                onClick = { onInstall(entry) },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Встановити")
             }
         }
     }

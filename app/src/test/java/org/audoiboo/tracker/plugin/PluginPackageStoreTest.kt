@@ -85,6 +85,21 @@ class PluginPackageStoreTest {
     }
 
     @Test
+    fun quarantineIdsAreVisibleForManagementUi() = withTempDir { root ->
+        writeVersion(root, "source-b", 1, validManifest("source-b", 1))
+        writeVersion(root, "source-a", 1, validManifest("source-a", 1))
+        File(root, "installed/source-b/active-version").writeText("1")
+        File(root, "installed/source-a/active-version").writeText("1")
+        val store = testStore(root, SourcePluginManager(emptyList()), clockMillis = { 42L })
+        store.scanInstalled()
+
+        assertTrue(store.quarantineActive("source-b", "manual"))
+        assertTrue(store.quarantineActive("source-a", "manual"))
+
+        assertEquals(listOf("source-a", "source-b"), store.quarantinedPluginIds())
+    }
+
+    @Test
     fun quarantinedVersionCanBeRestored() = withTempDir { root ->
         writeVersion(root, "source", 1, validManifest("source", 1))
         File(root, "installed/source/active-version").writeText("1")

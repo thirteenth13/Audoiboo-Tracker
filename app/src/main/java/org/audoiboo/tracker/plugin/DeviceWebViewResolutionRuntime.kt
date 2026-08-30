@@ -12,31 +12,42 @@ object DeviceWebViewResolutionRuntime {
         appContext = context.applicationContext
     }
 
-    fun supports(url: String): Boolean = KnigavuheWebViewMediaCapture.isAllowedPage(url)
+    fun supports(url: String): Boolean =
+        KnigavuheWebViewMediaCapture.isAllowedPage(url) || BazaKnigWebViewMediaCapture.isAllowedPage(url)
 
     suspend fun resolve(book: SourceBook): List<DownloadCandidate> {
         val context = appContext ?: return emptyList()
         if (!supports(book.url)) return emptyList()
         return suspendCancellableCoroutine { continuation ->
-            KnigavuheWebViewMediaCapture(context).capture(book.url) { result ->
-                if (!continuation.isActive) return@capture
-                val candidates = result.mediaUrls
-                    .distinct()
-                    .mapIndexed { index, url ->
-                        DownloadCandidate(
-                            type = DownloadType.STREAM,
-                            url = url,
-                            fileName = fileName(url),
-                            quality = "device-webview",
-                            priority = 200 - index
-                        )
-                    }
+            fun complete(urls: List<String>, quality: String) {
+                if (!continuation.isActive) return
+                val candidates = urls.distinct().mapIndexed { index, url ->
+                    DownloadCandidate(
+                        type = DownloadType.STREAM,
+                        url = url,
+                        fileName = fileName(url),
+                        quality = quality,
+                        priority = 200 - index
+                    )
+                }
                 continuation.resume(candidates)
+            }
+
+            when {
+                KnigavuheWebViewMediaCapture.isAllowedPage(book.url) ->
+                    KnigavuheWebViewMediaCapture(context).capture(book.url) { result ->
+                        complete(result.mediaUrls, "device-webview-knigavuhe")
+                    }
+                BazaKnigWebViewMediaCapture.isAllowedPage(book.url) ->
+                    BazaKnigWebViewMediaCapture(context).capture(book.url) { result ->
+                        complete(result.mediaUrls, "device-webview-baza-knig")
+                    }
+                else -> continuation.resume(emptyList())
             }
         }
     }
 
     private fun fileName(url: String): String? = runCatching {
-        android.net.Uri.parse(url).lastPathSegment?.takeIf { it.isNotBlank() }
+        java.net.URI(url).path.substringAfterLast('/').takeIf { it.isNotBlank() }
     }.getOrNull()
 }

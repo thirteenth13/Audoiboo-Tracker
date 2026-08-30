@@ -44,6 +44,7 @@ object JsonPluginManifestDecoder : PluginManifestDecoder {
         val permissionsJson = root.optJSONObject("permissions")
         val permissions = PluginPermissions(
             networkHosts = permissionsJson?.optJSONArray("networkHosts").toStringSet(),
+            downloadHosts = permissionsJson?.optJSONArray("downloadHosts").toStringSet(),
             cookies = permissionsJson?.optBoolean("cookies", false) ?: false,
             javascript = permissionsJson?.optBoolean("javascript", false) ?: false
         )
@@ -80,7 +81,10 @@ object JsonPluginManifestDecoder : PluginManifestDecoder {
 
 /**
  * Validates and installs .abplugin ZIP packages into app-owned storage.
- * Package code is never executed here; activation is handled separately by the sandbox runtime.
+ *
+ * Package code is never executed here. A successful external package remains DISABLED until a
+ * sandbox runtime is introduced. Installation is staged and the active-version pointer is only
+ * swapped after every archive entry has been validated and extracted.
  */
 class PluginPackageInstaller(
     private val pluginRoot: File,
@@ -127,7 +131,6 @@ class PluginPackageInstaller(
                 if (!contentsValidation.valid) {
                     return PluginInstallResult.Rejected(contentsValidation.errors.joinToString("; "))
                 }
-
                 val versionDir = File(pluginRoot, "installed/${manifest.id}/versions/${manifest.version}")
                 versionDir.parentFile?.mkdirs()
                 if (versionDir.exists() && !versionDir.deleteRecursively()) {

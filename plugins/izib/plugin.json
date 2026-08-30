@@ -1,0 +1,33 @@
+{
+  "id": "izib",
+  "name": "Izib",
+  "version": 1,
+  "apiVersion": 1,
+  "runtime": "DECLARATIVE",
+  "hosts": [
+    "pda.izib.uk",
+    "izib.uk"
+  ],
+  "capabilities": [
+    "SERIES_LOOKUP",
+    "BOOK_LOOKUP",
+    "DOWNLOAD_RESOLUTION"
+  ],
+  "permissions": {
+    "networkHosts": [
+      "pda.izib.uk",
+      "izib.uk"
+    ],
+    "downloadHosts": [
+      "pda.izib.uk",
+      "izib.uk"
+    ],
+    "cookies": false,
+    "javascript": false
+  },
+  "entrypoints": {
+    "seriesLookup": "rules/series.json",
+    "bookLookup": "rules/book.json",
+    "downloadResolution": "rules/download.json"
+  }
+}

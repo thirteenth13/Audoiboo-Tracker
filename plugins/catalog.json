@@ -36,6 +36,15 @@
       "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/lis10book-1.abplugin",
       "sha256": "5bed31341f4d732d85f9639b078ebd77687b66fb1b7920366a653150593e2a3d",
       "description": "Книги й цикли Lis10book; device-side WebView активує динамічний плеєр і збирає аудіотреки/HLS."
+    },
+    {
+      "id": "izib",
+      "name": "Izib",
+      "version": 1,
+      "apiVersion": 1,
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/izib-1.abplugin",
+      "sha256": "839b7631561f46906b33bcb032b1f2ecc5b140aaafdf1773515ad5058609231d",
+      "description": "Книги й серії Izib/PDA; device-side WebView збирає фактичні аудіозапити зі сторінок art<id>."
     }
   ]
 }

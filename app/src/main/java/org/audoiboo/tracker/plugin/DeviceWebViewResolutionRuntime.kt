@@ -16,7 +16,8 @@ object DeviceWebViewResolutionRuntime {
         KnigavuheWebViewMediaCapture.isAllowedPage(url) ||
             BazaKnigWebViewMediaCapture.isAllowedPage(url) ||
             PoleknigWebViewMediaCapture.isAllowedPage(url) ||
-            Lis10BookWebViewMediaCapture.isAllowedPage(url)
+            Lis10BookWebViewMediaCapture.isAllowedPage(url) ||
+            IzibWebViewMediaCapture.isAllowedPage(url)
 
     suspend fun resolve(book: SourceBook): List<DownloadCandidate> {
         val context = appContext ?: return emptyList()
@@ -52,6 +53,10 @@ object DeviceWebViewResolutionRuntime {
                 Lis10BookWebViewMediaCapture.isAllowedPage(book.url) ->
                     Lis10BookWebViewMediaCapture(context).capture(book.url) { result ->
                         complete(result.mediaUrls, "device-webview-lis10book")
+                    }
+                IzibWebViewMediaCapture.isAllowedPage(book.url) ->
+                    IzibWebViewMediaCapture(context).capture(book.url) { result ->
+                        complete(result.mediaUrls, "device-webview-izib")
                     }
                 else -> continuation.resume(emptyList())
             }

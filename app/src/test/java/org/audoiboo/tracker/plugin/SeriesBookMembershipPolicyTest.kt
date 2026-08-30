@@ -24,6 +24,18 @@ class SeriesBookMembershipPolicyTest {
     }
 
     @Test
+    fun titleWithoutParentSeriesPrefixIsAcceptedWhenDeclaredSeriesMatches() {
+        val book = SourceBook(
+            sourceId = "audioboo",
+            url = "https://audioboo.org/book-11",
+            title = "Колония Альфа - Прокофьев Роман",
+            seriesTitle = "Звездная Кровь"
+        )
+
+        assertTrue(SeriesBookMembershipPolicy.belongsTo(series, book))
+    }
+
+    @Test
     fun explicitlyDifferentRelatedSeriesIsRejected() {
         val book = SourceBook(
             sourceId = "baza-knig",

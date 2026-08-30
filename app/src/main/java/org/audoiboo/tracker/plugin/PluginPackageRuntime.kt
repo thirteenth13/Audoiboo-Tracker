@@ -10,6 +10,7 @@ object PluginPackageRuntime {
     @Volatile private var installerRef: PluginPackageInstaller? = null
     @Volatile private var lastScanRef: PluginStoreScanResult? = null
     @Volatile private var declarativeRuntimeRef: DeclarativePluginRuntime? = null
+    @Volatile private var runtimeHealthRef: PluginRuntimeHealth? = null
 
     val store: PluginPackageStore?
         get() = storeRef
@@ -36,6 +37,7 @@ object PluginPackageRuntime {
         storeRef = store
         installerRef = PluginPackageInstaller(root, manager)
         declarativeRuntimeRef = runtime
+        runtimeHealthRef = PluginRuntimeHealth(File(root, "runtime-health"))
         initialized = true
         rescanAndActivate(manager, store, runtime)
     }
@@ -44,6 +46,7 @@ object PluginPackageRuntime {
         val installer = installerRef ?: return PluginInstallResult.Failed("Plugin runtime is not initialized")
         val result = installer.install(packageFile)
         if (result is PluginInstallResult.Installed) {
+            runtimeHealthRef?.clear(result.registration.packageId, result.registration.descriptor?.version)
             rescanCurrent()
         }
         result
@@ -54,6 +57,7 @@ object PluginPackageRuntime {
         val runtime = declarativeRuntimeRef ?: return false
         val manager = BuiltInSourcePluginManager.instance
         val registration = manager.packageRegistration(pluginId) ?: return false
+        registration.descriptor?.version?.let { runtimeHealthRef?.clear(pluginId, it) }
         if (!store.enable(pluginId)) return false
         val enabled = activateRegistration(manager, registration, runtime)
         if (!enabled) store.disable(pluginId)
@@ -70,8 +74,10 @@ object PluginPackageRuntime {
 
     fun quarantinePackage(pluginId: String, reason: String = "Quarantined by user"): Boolean = synchronized(this) {
         val store = storeRef ?: return false
+        val activeVersion = store.readActiveVersion(pluginId)
         val moved = store.quarantineActive(pluginId, reason)
         if (moved) {
+            if (activeVersion != null) runtimeHealthRef?.clear(pluginId, activeVersion)
             rescanCurrent()
         }
         moved
@@ -81,6 +87,7 @@ object PluginPackageRuntime {
         val store = storeRef ?: return false
         val restored = store.restoreLatestQuarantined(pluginId)
         if (restored) {
+            store.readActiveVersion(pluginId)?.let { runtimeHealthRef?.clear(pluginId, it) }
             rescanCurrent()
         }
         restored
@@ -90,6 +97,7 @@ object PluginPackageRuntime {
         val installer = installerRef ?: return false
         val rolledBack = installer.rollback(pluginId)
         if (rolledBack) {
+            storeRef?.readActiveVersion(pluginId)?.let { runtimeHealthRef?.clear(pluginId, it) }
             rescanCurrent()
         }
         rolledBack
@@ -125,8 +133,44 @@ object PluginPackageRuntime {
         if (manifest.runtime != PluginRuntime.DECLARATIVE) return false
         val packageDir = File(path)
         if (!packageDir.isDirectory) return false
-        val plugin = runCatching { DeclarativeSourcePlugin(manifest, packageDir, runtime) }.getOrNull() ?: return false
+        val plugin = runCatching {
+            DeclarativeSourcePlugin(
+                manifest = manifest,
+                packageDir = packageDir,
+                runtime = runtime,
+                onRuntimeSuccess = ::handleRuntimeSuccess,
+                onRuntimeFailure = ::handleRuntimeFailure
+            )
+        }.getOrNull() ?: return false
         return manager.enablePackagePlugin(registration.packageId, plugin) != null
+    }
+
+    private fun handleRuntimeSuccess(pluginId: String, version: Int) {
+        runtimeHealthRef?.recordSuccess(pluginId, version)
+    }
+
+    private fun handleRuntimeFailure(pluginId: String, version: Int, failure: Throwable) = synchronized(this) {
+        val health = runtimeHealthRef ?: return@synchronized
+        val reason = failure.message ?: failure::class.java.simpleName
+        val state = runCatching { health.recordFailure(pluginId, version, reason) }.getOrNull() ?: return@synchronized
+        if (!health.shouldQuarantine(state)) return@synchronized
+
+        val store = storeRef ?: return@synchronized
+        if (store.readActiveVersion(pluginId) != version) {
+            health.clear(pluginId, version)
+            return@synchronized
+        }
+
+        val wasEnabled = store.isEnabled(pluginId)
+        val quarantineReason = "Automatic quarantine after ${state.failures} runtime failures: ${state.lastReason}"
+        if (!store.quarantineActive(pluginId, quarantineReason)) return@synchronized
+        health.clear(pluginId, version)
+
+        // A valid previous version is activated automatically so one bad update does not disable the source.
+        if (wasEnabled && store.readActiveVersion(pluginId) != null) {
+            store.enable(pluginId)
+        }
+        rescanCurrent()
     }
 
     private fun refreshSnapshot(manager: SourcePluginManager) {

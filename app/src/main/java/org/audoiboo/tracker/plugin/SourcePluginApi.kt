@@ -137,6 +137,9 @@ class SourcePluginRegistry(
 
     fun forUrl(url: String): SourcePlugin? = plugins.firstOrNull { it.supports(url) }
 
+    fun forUrl(url: String, capability: SourceCapability): SourcePlugin? =
+        plugins.firstOrNull { capability in it.descriptor.capabilities && it.supports(url) }
+
     fun withCapability(capability: SourceCapability): List<SourcePlugin> =
         plugins.filter { capability in it.descriptor.capabilities }
 }

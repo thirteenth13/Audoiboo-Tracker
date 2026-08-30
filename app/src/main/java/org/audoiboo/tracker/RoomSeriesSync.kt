@@ -202,10 +202,19 @@ internal object RoomSeriesSync {
                 additions += entity
                 links += CanonicalSourceBookLink(entity.id, source, confidence)
             }
+
+            val retainedIds = if (directSeries != null) {
+                PrimarySourceBookRetentionPolicy.keepIds(
+                    existingBooks = existingBooks,
+                    incomingIds = additions.map { it.id },
+                    ownedByCurrentSource = plugin::supports
+                ).also { dao.deleteMissingBooks(canonicalSeriesId, it) }
+            } else {
+                (existingBooks.map { it.id } + additions.map { it.id }).distinct()
+            }
             dao.upsertBooks(additions)
 
-            val totalBooks = (existingBooks.map { it.id } + additions.map { it.id }).distinct().size
-            RoomSeriesSyncResult(canonicalSeriesId, seriesEntity.name, totalBooks)
+            RoomSeriesSyncResult(canonicalSeriesId, seriesEntity.name, retainedIds.size)
         }
 
         val autoSeriesConfidence = seriesMatch

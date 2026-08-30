@@ -80,10 +80,7 @@ object JsonPluginManifestDecoder : PluginManifestDecoder {
 
 /**
  * Validates and installs .abplugin ZIP packages into app-owned storage.
- *
- * Package code is never executed here. A successful external package remains DISABLED until a
- * sandbox runtime is introduced. Installation is staged and the active-version pointer is only
- * swapped after every archive entry has been validated and extracted.
+ * Package code is never executed here; activation is handled separately by the sandbox runtime.
  */
 class PluginPackageInstaller(
     private val pluginRoot: File,
@@ -126,6 +123,11 @@ class PluginPackageInstaller(
                 }
 
                 extractValidated(zip, entries, staging)
+                val contentsValidation = PluginPackageContentsPolicy.validate(manifest, staging)
+                if (!contentsValidation.valid) {
+                    return PluginInstallResult.Rejected(contentsValidation.errors.joinToString("; "))
+                }
+
                 val versionDir = File(pluginRoot, "installed/${manifest.id}/versions/${manifest.version}")
                 versionDir.parentFile?.mkdirs()
                 if (versionDir.exists() && !versionDir.deleteRecursively()) {

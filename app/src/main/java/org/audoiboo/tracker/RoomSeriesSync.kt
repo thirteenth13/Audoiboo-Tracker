@@ -17,14 +17,38 @@ import org.audoiboo.tracker.plugin.SourceKeys
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
 import java.util.UUID
 
-internal data class RoomSeriesSyncResult(val seriesId: String, val name: String, val books: Int)
+internal data class RoomSeriesMatchReview(
+    val candidateSeriesId: String,
+    val candidateName: String,
+    val incomingName: String,
+    val confidence: Float,
+    val evidence: List<String>
+)
+
+internal data class RoomSeriesReviewResolution(
+    val candidateSeriesId: String,
+    val accept: Boolean,
+    val confidence: Float
+)
+
+internal data class RoomSeriesSyncResult(
+    val seriesId: String?,
+    val name: String,
+    val books: Int,
+    val review: RoomSeriesMatchReview? = null
+)
 
 /**
  * Room-native add/update path routed through the active source plugin registry.
  * High-confidence cross-source matches reuse canonical series/books instead of creating duplicates.
+ * Ambiguous matches are returned to the UI for an explicit accept/reject decision before mutation.
  */
 internal object RoomSeriesSync {
-    suspend fun sync(context: Context, inputUrl: String): RoomSeriesSyncResult? = withContext(Dispatchers.IO) {
+    suspend fun sync(
+        context: Context,
+        inputUrl: String,
+        reviewResolution: RoomSeriesReviewResolution? = null
+    ): RoomSeriesSyncResult? = withContext(Dispatchers.IO) {
         PluginPackageRuntime.initialize(context.filesDir)
         val plugin = PluginPackageRuntime.registry.forUrl(inputUrl, SourceCapability.SERIES_LOOKUP) ?: return@withContext null
         val provider = plugin as? SeriesProvider ?: return@withContext null
@@ -38,27 +62,70 @@ internal object RoomSeriesSync {
         val db = AudoibooDatabase.get(context)
         val dao = db.libraryDao()
         val library = dao.library()
+        val decisions = SourceMetadataRepository.seriesMatchDecisions(context, resolved)
+
+        if (reviewResolution != null) {
+            SourceMetadataRepository.recordSeriesMatchDecision(
+                context = context,
+                canonicalSeriesId = reviewResolution.candidateSeriesId,
+                series = resolved,
+                decision = if (reviewResolution.accept) "USER_ACCEPTED" else "USER_REJECTED",
+                relationship = "SAME_SERIES",
+                confidence = reviewResolution.confidence
+            )
+        }
 
         val mappedSeriesId = SourceMetadataRepository.canonicalSeriesIdForSource(context, resolved)
         val mappedSeries = mappedSeriesId?.let { id -> library.firstOrNull { it.series.id == id } }
         val directSeries = library.firstOrNull {
             SourceKeys.normalizeUrl(it.series.url) == SourceKeys.normalizeUrl(resolved.url)
         }
+        val acceptedDecisionSeries = decisions
+            .firstOrNull { it.decision == "USER_ACCEPTED" }
+            ?.canonicalSeriesId
+            ?.let { id -> library.firstOrNull { it.series.id == id } }
+        val forcedAcceptedSeries = reviewResolution
+            ?.takeIf { it.accept }
+            ?.candidateSeriesId
+            ?.let { id -> library.firstOrNull { it.series.id == id } }
 
-        val seriesMatch = if (mappedSeries == null && directSeries == null) {
+        val rejectedSeriesIds = buildSet {
+            decisions.filter { it.decision == "USER_REJECTED" }.forEach { add(it.canonicalSeriesId) }
+            reviewResolution?.takeIf { !it.accept }?.let { add(it.candidateSeriesId) }
+        }
+
+        val seriesMatch = if (mappedSeries == null && directSeries == null && acceptedDecisionSeries == null && forcedAcceptedSeries == null) {
             SourceIdentityMatcher.bestSeriesMatch(
                 incoming = resolved,
                 incomingBooks = sourceBooks,
-                candidates = library.map(::canonicalSeriesInput)
+                candidates = library
+                    .filterNot { it.series.id in rejectedSeriesIds }
+                    .map(::canonicalSeriesInput)
             )
         } else null
+
+        if (seriesMatch?.disposition == MatchDisposition.REVIEW) {
+            return@withContext RoomSeriesSyncResult(
+                seriesId = null,
+                name = resolved.title,
+                books = sourceBooks.size,
+                review = RoomSeriesMatchReview(
+                    candidateSeriesId = seriesMatch.value.id,
+                    candidateName = seriesMatch.value.title,
+                    incomingName = resolved.title,
+                    confidence = seriesMatch.confidence,
+                    evidence = seriesMatch.evidence
+                )
+            )
+        }
+
         val autoMatchedSeries = seriesMatch
             ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
             ?.value
             ?.id
             ?.let { id -> library.firstOrNull { it.series.id == id } }
 
-        val selected = mappedSeries ?: directSeries ?: autoMatchedSeries
+        val selected = mappedSeries ?: directSeries ?: forcedAcceptedSeries ?: acceptedDecisionSeries ?: autoMatchedSeries
         val canonicalSeriesId = selected?.series?.id ?: UUID.randomUUID().toString()
         val existingBooks = selected?.books.orEmpty()
         val existingBookById = existingBooks.associateBy { it.id }
@@ -138,19 +205,24 @@ internal object RoomSeriesSync {
         val autoSeriesConfidence = seriesMatch
             ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT && autoMatchedSeries != null }
             ?.confidence
+        val userAcceptedConfidence = reviewResolution
+            ?.takeIf { it.accept && forcedAcceptedSeries != null }
+            ?.confidence
+            ?: decisions.firstOrNull { it.decision == "USER_ACCEPTED" && it.canonicalSeriesId == canonicalSeriesId }?.confidence
+
         SourceMetadataRepository.recordSeriesSnapshot(
             context = context,
-            canonicalSeriesId = result.seriesId,
+            canonicalSeriesId = canonicalSeriesId,
             series = resolved,
             books = links,
             relationship = "SAME_SERIES",
-            confidence = autoSeriesConfidence ?: 1f,
-            userVerified = autoSeriesConfidence == null
+            confidence = userAcceptedConfidence ?: autoSeriesConfidence ?: 1f,
+            userVerified = userAcceptedConfidence != null || (autoSeriesConfidence == null && selected != null)
         )
         if (autoSeriesConfidence != null) {
             SourceMetadataRepository.recordSeriesMatchDecision(
                 context = context,
-                canonicalSeriesId = result.seriesId,
+                canonicalSeriesId = canonicalSeriesId,
                 series = resolved,
                 decision = "AUTO_ACCEPTED",
                 relationship = "SAME_SERIES",

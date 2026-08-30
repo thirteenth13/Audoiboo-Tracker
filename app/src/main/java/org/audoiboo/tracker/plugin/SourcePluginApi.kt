@@ -8,6 +8,7 @@ enum class SourceCapability {
     BOOK_SEARCH,
     SERIES_SEARCH,
     SERIES_DISCOVERY,
+    METADATA_ENRICHMENT,
     DOWNLOAD_RESOLUTION,
     STREAM_RESOLUTION,
     TORRENT_RESOLUTION
@@ -82,6 +83,18 @@ data class SeriesCandidate(
     val sourceScore: Float? = null
 )
 
+data class BookMetadata(
+    val providerId: String,
+    val remoteId: String,
+    val title: String,
+    val authors: List<String> = emptyList(),
+    val coverUrl: String? = null,
+    val description: String? = null,
+    val firstPublishYear: Int? = null,
+    val isbn: String? = null,
+    val confidence: Float
+)
+
 enum class DownloadType {
     DIRECT_FILE,
     ARCHIVE,
@@ -117,6 +130,10 @@ interface BookProvider {
 
 interface SeriesSearchProvider {
     suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate>
+}
+
+interface MetadataProvider {
+    suspend fun enrichBook(book: SourceBook): BookMetadata?
 }
 
 interface DownloadResolver {

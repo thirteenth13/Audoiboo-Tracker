@@ -4,9 +4,9 @@ import argparse
 import json
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
-from service import _dynamic, _http
+from service import _dynamic, _dynamic_interactive, _http
 
 
 TARGETS = [
@@ -17,7 +17,6 @@ TARGETS = [
     ("izib", "https://pda.izib.uk/art141591"),
 ]
 
-# Capture likely player/media/API traffic instead of every advertising XHR.
 CAPTURE_XHR = r"(?i).*(audio|media|player|playlist|stream|track|api|m3u8|mp3|m4b|m4a|aac|opus|ogg|flac|zip|rar).*"
 SITE_TIMEOUT_SECONDS = 75
 
@@ -32,6 +31,11 @@ class ProbeResult:
     dynamic_media: int = 0
     dynamic_xhr: int = 0
     dynamic_added_media: int = 0
+    interactive_status: int | None = None
+    interactive_media: int = 0
+    interactive_xhr: int = 0
+    interactive_added_media: int = 0
+    media_urls: list[str] = field(default_factory=list)
     timed_out: bool = False
     error: str | None = None
 
@@ -39,6 +43,8 @@ class ProbeResult:
 def run_one(name: str, url: str) -> ProbeResult:
     result = ProbeResult(name=name, url=url)
     http_urls: set[str] = set()
+    dynamic_urls: set[str] = set()
+
     try:
         http = _http(url)
         result.http_status = http.status
@@ -48,7 +54,7 @@ def run_one(name: str, url: str) -> ProbeResult:
         result.error = f"http:{type(exc).__name__}:{exc}"
 
     try:
-        dynamic = _dynamic(url, CAPTURE_XHR, 1500)
+        dynamic = _dynamic(url, CAPTURE_XHR, 1200)
         result.dynamic_status = dynamic.status
         result.dynamic_media = len(dynamic.media)
         result.dynamic_xhr = dynamic.xhr_count
@@ -57,6 +63,22 @@ def run_one(name: str, url: str) -> ProbeResult:
     except Exception as exc:
         suffix = f"dynamic:{type(exc).__name__}:{exc}"
         result.error = f"{result.error}; {suffix}" if result.error else suffix
+
+    all_urls = set(http_urls) | set(dynamic_urls)
+    if not dynamic_urls and name in {"knigavuhe", "izib"}:
+        try:
+            interactive = _dynamic_interactive(url, CAPTURE_XHR, 1200)
+            result.interactive_status = interactive.status
+            result.interactive_media = len(interactive.media)
+            result.interactive_xhr = interactive.xhr_count
+            interactive_urls = {item["url"] for item in interactive.media}
+            result.interactive_added_media = len(interactive_urls - all_urls)
+            all_urls |= interactive_urls
+        except Exception as exc:
+            suffix = f"interactive:{type(exc).__name__}:{exc}"
+            result.error = f"{result.error}; {suffix}" if result.error else suffix
+
+    result.media_urls = sorted(all_urls)
     return result
 
 
@@ -92,10 +114,14 @@ def run_isolated(name: str, url: str) -> ProbeResult:
     print(
         f"DONE {name} http={result.http_status}/{result.http_media} "
         f"dynamic={result.dynamic_status}/{result.dynamic_media} "
-        f"xhr={result.dynamic_xhr} added={result.dynamic_added_media} "
+        f"interactive={result.interactive_status}/{result.interactive_media} "
+        f"xhr={result.dynamic_xhr}+{result.interactive_xhr} "
+        f"added={result.dynamic_added_media}+{result.interactive_added_media} "
         f"error={result.error or '-'}",
         flush=True,
     )
+    for media_url in result.media_urls:
+        print(f"MEDIA {name} {media_url}", flush=True)
     return result
 
 
@@ -121,16 +147,24 @@ def main() -> int:
     print("SUMMARY")
     print(json.dumps([asdict(row) for row in rows], ensure_ascii=False, indent=2))
 
-    reachable = [row for row in rows if row.http_status or row.dynamic_status]
+    reachable = [row for row in rows if row.http_status or row.dynamic_status or row.interactive_status]
     if not reachable:
         print("No target was reachable", file=sys.stderr)
         return 2
 
-    useful = [row for row in rows if row.dynamic_xhr > 0 or row.dynamic_added_media > 0]
+    media_useful = [
+        row for row in rows
+        if row.dynamic_added_media > 0 or row.interactive_added_media > 0
+    ]
+    xhr_observed = [
+        row for row in rows
+        if row.dynamic_xhr > 0 or row.interactive_xhr > 0
+    ]
     timed_out = [row.name for row in rows if row.timed_out]
     print(
         f"reachable={len(reachable)}/{len(rows)} "
-        f"dynamic_useful={len(useful)}/{len(rows)} "
+        f"media_useful={len(media_useful)}/{len(rows)} "
+        f"xhr_observed={len(xhr_observed)}/{len(rows)} "
         f"timeouts={','.join(timed_out) if timed_out else '-'}"
     )
     return 0

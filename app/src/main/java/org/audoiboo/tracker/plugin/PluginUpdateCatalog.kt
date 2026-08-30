@@ -42,8 +42,37 @@ fun interface PluginCatalogFetcher {
     fun fetch(url: String, maxBytes: Long): String
 }
 
+fun interface PluginCatalogDecoder {
+    fun decode(json: String): List<PluginCatalogEntry>
+}
+
 fun interface PluginUpdateDownloader {
     fun download(url: String, target: File, maxBytes: Long): Long
+}
+
+object AndroidJsonPluginCatalogDecoder : PluginCatalogDecoder {
+    override fun decode(json: String): List<PluginCatalogEntry> {
+        val root = JSONObject(json)
+        val formatVersion = root.optInt("formatVersion", 0)
+        require(formatVersion == PLUGIN_CATALOG_FORMAT_VERSION) { "Unsupported plugin catalog format" }
+        val array = root.optJSONArray("plugins") ?: error("Plugin catalog has no plugins array")
+        return buildList {
+            for (index in 0 until array.length()) {
+                val item = array.getJSONObject(index)
+                add(
+                    PluginCatalogEntry(
+                        id = item.getString("id"),
+                        name = item.optString("name", item.getString("id")),
+                        version = item.getInt("version"),
+                        apiVersion = item.getInt("apiVersion"),
+                        packageUrl = item.getString("url"),
+                        sha256 = item.getString("sha256").lowercase(),
+                        description = item.optString("description").takeIf { it.isNotBlank() }
+                    )
+                )
+            }
+        }
+    }
 }
 
 object HostPluginUpdateTransport : PluginCatalogFetcher, PluginUpdateDownloader {
@@ -164,33 +193,15 @@ object PluginUpdatePolicy {
 
 class PluginUpdateService(
     private val catalogFetcher: PluginCatalogFetcher = HostPluginUpdateTransport,
-    private val downloader: PluginUpdateDownloader = HostPluginUpdateTransport
+    private val downloader: PluginUpdateDownloader = HostPluginUpdateTransport,
+    private val catalogDecoder: PluginCatalogDecoder = AndroidJsonPluginCatalogDecoder
 ) {
     fun check(
         registrations: List<SourcePluginRegistration>,
         catalogUrl: String = DEFAULT_PLUGIN_CATALOG_URL
     ): PluginUpdateCheckResult = runCatching {
         val json = catalogFetcher.fetch(catalogUrl, MAX_CATALOG_BYTES)
-        val root = JSONObject(json)
-        val formatVersion = root.optInt("formatVersion", 0)
-        require(formatVersion == PLUGIN_CATALOG_FORMAT_VERSION) { "Unsupported plugin catalog format" }
-        val array = root.optJSONArray("plugins") ?: error("Plugin catalog has no plugins array")
-        val entries = buildList {
-            for (index in 0 until array.length()) {
-                val item = array.getJSONObject(index)
-                add(
-                    PluginCatalogEntry(
-                        id = item.getString("id"),
-                        name = item.optString("name", item.getString("id")),
-                        version = item.getInt("version"),
-                        apiVersion = item.getInt("apiVersion"),
-                        packageUrl = item.getString("url"),
-                        sha256 = item.getString("sha256").lowercase(),
-                        description = item.optString("description").takeIf { it.isNotBlank() }
-                    )
-                )
-            }
-        }
+        val entries = catalogDecoder.decode(json)
         PluginUpdateCheckResult.Success(
             updates = PluginUpdatePolicy.availableUpdates(entries, registrations),
             installable = PluginUpdatePolicy.availableInstalls(entries, registrations),

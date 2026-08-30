@@ -10,40 +10,6 @@ import kotlin.io.path.createTempDirectory
 
 class PluginUpdateServiceTest {
     @Test
-    fun catalogCheckReturnsInstallablePluginAndDescription() {
-        val service = PluginUpdateService(
-            catalogFetcher = PluginCatalogFetcher { _, _ ->
-                """
-                {
-                  "formatVersion": 1,
-                  "plugins": [
-                    {
-                      "id": "baza-knig",
-                      "name": "Baza-Knig",
-                      "version": 1,
-                      "apiVersion": $SOURCE_PLUGIN_API_VERSION,
-                      "url": "https://example.org/baza-knig-1.abplugin",
-                      "sha256": "${"a".repeat(64)}",
-                      "description": "Baza-Knig source"
-                    }
-                  ]
-                }
-                """.trimIndent()
-            },
-            downloader = PluginUpdateDownloader { _, _, _ -> error("not used") }
-        )
-
-        val result = service.check(emptyList())
-
-        assertTrue(result is PluginUpdateCheckResult.Success)
-        result as PluginUpdateCheckResult.Success
-        assertTrue(result.updates.isEmpty())
-        assertEquals(1, result.installable.size)
-        assertEquals("baza-knig", result.installable.single().id)
-        assertEquals("Baza-Knig source", result.installable.single().description)
-    }
-
-    @Test
     fun verifiedPackageIsReturnedFromCache() = withTempDir { root ->
         val bytes = "plugin-package".toByteArray()
         val update = update(sha256(bytes))

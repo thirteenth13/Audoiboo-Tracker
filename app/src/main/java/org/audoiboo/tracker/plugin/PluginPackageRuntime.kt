@@ -1,5 +1,6 @@
 package org.audoiboo.tracker.plugin
 
+import org.json.JSONObject
 import java.io.File
 
 /** Host-owned package runtime and active source registry. */
@@ -14,20 +15,14 @@ object PluginPackageRuntime {
 
     val store: PluginPackageStore?
         get() = storeRef
-
     val lastScan: PluginStoreScanResult?
         get() = lastScanRef
-
     val registry: SourcePluginRegistry
         get() = BuiltInSourcePluginManager.instance.activeRegistry()
-
     val registrations: List<SourcePluginRegistration>
         get() = BuiltInSourcePluginManager.instance.registrations()
 
-    fun initialize(
-        appFilesDir: File,
-        transport: PluginHttpTransport = HostPluginHttpTransport
-    ): PluginStoreScanResult = synchronized(this) {
+    fun initialize(appFilesDir: File, transport: PluginHttpTransport = HostPluginHttpTransport): PluginStoreScanResult = synchronized(this) {
         if (initialized) return lastScanRef ?: PluginStoreScanResult(emptyList(), emptyList(), emptyList(), emptyList())
         val root = File(appFilesDir, "plugins")
         val manager = BuiltInSourcePluginManager.instance
@@ -109,30 +104,22 @@ object PluginPackageRuntime {
         return rescanAndActivate(BuiltInSourcePluginManager.instance, store, runtime)
     }
 
-    private fun rescanAndActivate(
-        manager: SourcePluginManager,
-        store: PluginPackageStore,
-        runtime: DeclarativePluginRuntime
-    ): PluginStoreScanResult {
+    private fun rescanAndActivate(manager: SourcePluginManager, store: PluginPackageStore, runtime: DeclarativePluginRuntime): PluginStoreScanResult {
         val result = store.scanInstalled()
-        result.registrations
-            .filter { store.isEnabled(it.packageId) }
-            .forEach { registration -> activateRegistration(manager, registration, runtime) }
-        return result.copy(
-            registrations = manager.registrations().filter { it.origin == PluginOrigin.PACKAGE }
-        ).also { lastScanRef = it }
+        result.registrations.filter { store.isEnabled(it.packageId) }.forEach { registration ->
+            activateRegistration(manager, registration, runtime)
+        }
+        return result.copy(registrations = manager.registrations().filter { it.origin == PluginOrigin.PACKAGE })
+            .also { lastScanRef = it }
     }
 
-    private fun activateRegistration(
-        manager: SourcePluginManager,
-        registration: SourcePluginRegistration,
-        runtime: DeclarativePluginRuntime
-    ): Boolean {
+    private fun activateRegistration(manager: SourcePluginManager, registration: SourcePluginRegistration, runtime: DeclarativePluginRuntime): Boolean {
         val manifest = registration.manifest ?: return false
         val path = registration.packagePath ?: return false
         if (manifest.runtime != PluginRuntime.DECLARATIVE) return false
-        val packageDir = File(path)
-        if (!packageDir.isDirectory) return false
+        val installedDir = File(path)
+        if (!installedDir.isDirectory) return false
+        val packageDir = runtimeCompatiblePackageDir(manifest, installedDir)
         val plugin = runCatching {
             DeclarativeSourcePlugin(
                 manifest = manifest,
@@ -145,6 +132,30 @@ object PluginPackageRuntime {
         return manager.enablePackagePlugin(registration.packageId, plugin) != null
     }
 
+    /**
+     * Compatibility fixes live in a disposable runtime copy, never inside the installed package.
+     * Izib v1 follows a series link even when the input is already /serie<id>; that turns a valid
+     * series page into an unrelated navigation target. Removing followLink restores direct parsing.
+     */
+    private fun runtimeCompatiblePackageDir(manifest: PluginPackageManifest, installedDir: File): File {
+        if (manifest.id != "izib" || manifest.version > 1) return installedDir
+        val root = pluginRootRef ?: return installedDir
+        val patched = File(root, "runtime-patches/${manifest.id}-${manifest.version}")
+        runCatching {
+            if (patched.exists()) patched.deleteRecursively()
+            installedDir.copyRecursively(patched, overwrite = true)
+            val relative = manifest.entrypoints["seriesLookup"] ?: return@runCatching
+            val rule = File(patched, relative)
+            val json = JSONObject(rule.readText())
+            json.getJSONObject("series").remove("followLink")
+            rule.writeText(json.toString(2))
+        }.onFailure {
+            patched.deleteRecursively()
+            return installedDir
+        }
+        return patched.takeIf { it.isDirectory } ?: installedDir
+    }
+
     private fun handleRuntimeSuccess(pluginId: String, version: Int) {
         runtimeHealthRef?.recordSuccess(pluginId, version)
     }
@@ -154,29 +165,21 @@ object PluginPackageRuntime {
         val reason = failure.message ?: failure::class.java.simpleName
         val state = runCatching { health.recordFailure(pluginId, version, reason) }.getOrNull() ?: return@synchronized
         if (!health.shouldQuarantine(state)) return@synchronized
-
         val store = storeRef ?: return@synchronized
         if (store.readActiveVersion(pluginId) != version) {
             health.clear(pluginId, version)
             return@synchronized
         }
-
         val wasEnabled = store.isEnabled(pluginId)
         val quarantineReason = "Automatic quarantine after ${state.failures} runtime failures: ${state.lastReason}"
         if (!store.quarantineActive(pluginId, quarantineReason)) return@synchronized
         health.clear(pluginId, version)
-
-        // A valid previous version is activated automatically so one bad update does not disable the source.
-        if (wasEnabled && store.readActiveVersion(pluginId) != null) {
-            store.enable(pluginId)
-        }
+        if (wasEnabled && store.readActiveVersion(pluginId) != null) store.enable(pluginId)
         rescanCurrent()
     }
 
     private fun refreshSnapshot(manager: SourcePluginManager) {
         val current = lastScanRef ?: PluginStoreScanResult(emptyList(), emptyList(), emptyList(), emptyList())
-        lastScanRef = current.copy(
-            registrations = manager.registrations().filter { it.origin == PluginOrigin.PACKAGE }
-        )
+        lastScanRef = current.copy(registrations = manager.registrations().filter { it.origin == PluginOrigin.PACKAGE })
     }
 }

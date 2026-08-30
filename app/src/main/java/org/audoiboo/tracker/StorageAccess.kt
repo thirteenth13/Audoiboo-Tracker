@@ -96,6 +96,17 @@ internal object StorageAccess {
         return dir.findFile(fileName)?.takeIf { it.isFile }
     }
 
+    fun delete(context: Context, relativeDir: String, fileName: String): Boolean {
+        if (!StoragePathPolicy.validFileName(fileName)) return false
+        val safeDir = StoragePathPolicy.normalizeRelativeDir(relativeDir) ?: return false
+        var dir = root(context) ?: return false
+        for (name in safeDir.split('/').filter { it.isNotBlank() }) {
+            dir = dir.findFile(name)?.takeIf { it.isDirectory } ?: return false
+        }
+        val file = dir.findFile(fileName)?.takeIf { it.isFile } ?: return true
+        return file.delete()
+    }
+
     /**
      * Opens a temporary SAF file and promotes it to the requested final name only after commit().
      * Interrupted copies can therefore be aborted without leaving a partial final file behind.

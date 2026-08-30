@@ -7,6 +7,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 
 from cdp_media_capture import capture as capture_cdp
+from knigavuhe_probe import capture as capture_knigavuhe
 from poleknig_browser import resolve as resolve_poleknig_browser
 from poleknig_fast import resolve as resolve_poleknig_http
 from service import _dynamic, _http
@@ -22,7 +23,7 @@ TARGETS = [
 CAPTURE_XHR = r"(?i).*(audio|media|player|playlist|stream|track|api|m3u8|mp3|m4b|m4a|aac|opus|ogg|flac|zip|rar).*"
 SITE_TIMEOUT_SECONDS = 100
 MEDIA_FIRST = {"knigavuhe", "izib"}
-CDP_SITES = {"poleknig", "knigavuhe", "izib"}
+CDP_SITES = {"poleknig", "izib"}
 KNIGAVUHE_MOBILE_FALLBACK = "https://m.knigavuhe.org/book/igra-kota-kniga-vtoraja/"
 
 @dataclass
@@ -49,6 +50,19 @@ def _run_cdp(result, name, url, all_urls, label: str | None = None):
         result.diagnostics.extend(f"{prefix}cdp-resolver={u}" for u in cdp.resolvers[:12])
     except Exception as exc: _add_error(result,f"{label or 'cdp'}",exc)
 
+def _run_knigavuhe(result, url, all_urls, label):
+    try:
+        probe = capture_knigavuhe(url, max_tracks=40)
+        result.traversal_responses += probe.requests
+        before = len(all_urls)
+        all_urls.update(probe.media)
+        result.traversal_added_media += len(all_urls) - before
+        result.traversal_media = len(all_urls)
+        result.diagnostics.append(f"{label}:probe-url={url}")
+        result.diagnostics.extend(f"{label}:{x}" for x in probe.diagnostics[:40])
+    except Exception as exc:
+        _add_error(result, f"knigavuhe-{label}", exc)
+
 def run_one(name, url):
     result=ProbeResult(name=name,url=url); all_urls=set()
     if name == "poleknig":
@@ -65,10 +79,13 @@ def run_one(name, url):
         result.traversal_media=len(all_urls); result.media_urls=sorted(all_urls); return result
 
     if name == "knigavuhe":
-        _run_cdp(result,name,url,all_urls,label="desktop")
+        _run_knigavuhe(result, url, all_urls, "desktop")
         if not all_urls:
-            result.diagnostics.append("desktop-no-media:trying-mobile-fallback")
-            _run_cdp(result,name,KNIGAVUHE_MOBILE_FALLBACK,all_urls,label="mobile")
+            result.diagnostics.append("desktop-no-book-audio:trying-mobile-fallback")
+            _run_knigavuhe(result, KNIGAVUHE_MOBILE_FALLBACK, all_urls, "mobile")
+        result.traversal_media = len(all_urls)
+        result.media_urls = sorted(all_urls)
+        return result
     elif name in CDP_SITES:
         _run_cdp(result,name,url,all_urls)
 

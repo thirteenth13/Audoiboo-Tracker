@@ -6,19 +6,20 @@
     "followLink": "a[href*='/series-'], a[href*='/xfsearch/cikl/']@href",
     "description": "meta[name='description']@content",
     "books": {
-      "item": "article.card",
-      "title": "h2.card__title a[href]",
-      "link": "h2.card__title a[href]@href",
+      "item": "article, .short, .item",
+      "title": "h2 a, h3 a, .title a",
+      "link": "h2 a, h3 a, .title a@href",
       "author": "a[href*='/avtor-'], a[href*='/xfsearch/autor/']"
     },
     "supplement": {
       "startLink": "a[href*='/avtor-'], a[href*='/xfsearch/autor/']@href",
-      "maxPages": 1,
+      "maxPages": 5,
+      "nextPage": "a[rel='next'], .navigation a.next@href",
       "seriesTitle": "a[href*='/series-'], a[href*='/xfsearch/cikl/']",
       "items": {
-        "item": "article.card",
-        "title": "h2.card__title a[href]",
-        "link": "h2.card__title a[href]@href",
+        "item": "article, .short, .item",
+        "title": "h2 a, h3 a, .title a",
+        "link": "h2 a, h3 a, .title a@href",
         "author": "a[href*='/avtor-'], a[href*='/xfsearch/autor/']"
       }
     }

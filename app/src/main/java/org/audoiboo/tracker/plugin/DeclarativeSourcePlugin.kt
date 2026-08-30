@@ -31,7 +31,20 @@ class DeclarativeSourcePlugin(
 
     override suspend fun resolveSeries(url: String): SourceSeries? {
         if (!supports(url)) return null
-        return guarded { runtime.resolveSeries(manifest, packageDir, url) }
+        return guarded {
+            if (manifest.id != "izib") {
+                runtime.resolveSeries(manifest, packageDir, url)
+            } else {
+                val primary = tryRuntime { runtime.resolveSeries(manifest, packageDir, url) }
+                if (primary?.books?.isNotEmpty() == true) {
+                    primary
+                } else {
+                    val alternate = alternateIzibUrl(url)
+                        ?.let { alternateUrl -> tryRuntime { runtime.resolveSeries(manifest, packageDir, alternateUrl) } }
+                    alternate?.takeIf { it.books.isNotEmpty() } ?: alternate ?: primary
+                }
+            }
+        }
     }
 
     override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> {
@@ -54,16 +67,12 @@ class DeclarativeSourcePlugin(
                     }
                     if (!canLookup) return@mapNotNull fallback
 
-                    val resolved = runCatching {
-                        runtime.resolveBook(manifest, packageDir, ref.url)
-                    }.getOrNull() ?: return@mapNotNull fallback
+                    val resolved = tryRuntime {
+                        if (manifest.id == "izib") loadIzibBookWithFallback(ref.url)
+                        else runtime.resolveBook(manifest, packageDir, ref.url)
+                    } ?: return@mapNotNull fallback
 
-                    resolved.copy(
-                        remoteId = resolved.remoteId ?: ref.remoteId,
-                        authors = resolved.authors.ifEmpty { series.authors },
-                        seriesTitle = resolved.seriesTitle?.takeIf { it.isNotBlank() } ?: series.title,
-                        seriesNumber = resolved.seriesNumber ?: ref.number
-                    )
+                    mergeResolvedWithFallback(resolved, fallback, series, ref)
                 }
 
             // Some catalog pages lag behind the site's search index. When a declarative source can
@@ -80,7 +89,10 @@ class DeclarativeSourcePlugin(
                         runtime.searchSeries(manifest, packageDir, SeriesSearchQuery(query)).asSequence()
                     }
                     .mapNotNull { candidate ->
-                        runCatching { runtime.resolveBook(manifest, packageDir, candidate.series.url) }.getOrNull()
+                        tryRuntime {
+                            if (manifest.id == "izib") loadIzibBookWithFallback(candidate.series.url)
+                            else runtime.resolveBook(manifest, packageDir, candidate.series.url)
+                        }
                     }
                     .filter { book ->
                         book.seriesTitle?.let(SourceIdentityMatcher::normalizeTitle) == expected
@@ -96,7 +108,10 @@ class DeclarativeSourcePlugin(
 
     override suspend fun loadBook(url: String): SourceBook? {
         if (!supports(url)) return null
-        return guarded { runtime.resolveBook(manifest, packageDir, url) }
+        return guarded {
+            if (manifest.id == "izib") loadIzibBookWithFallback(url)
+            else runtime.resolveBook(manifest, packageDir, url)
+        }
     }
 
     override suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate> {
@@ -111,6 +126,42 @@ class DeclarativeSourcePlugin(
                 manifest,
                 runtime.resolveDownloads(manifest, packageDir, book.url)
             )
+        }
+    }
+
+    private fun loadIzibBookWithFallback(url: String): SourceBook? {
+        val primary = tryRuntime { runtime.resolveBook(manifest, packageDir, url) }
+        if (primary != null && !isGenericCatalogLabel(primary.title)) return primary
+        val alternate = alternateIzibUrl(url)
+            ?.let { alternateUrl -> tryRuntime { runtime.resolveBook(manifest, packageDir, alternateUrl) } }
+        return alternate ?: primary
+    }
+
+    private fun mergeResolvedWithFallback(
+        resolved: SourceBook,
+        fallback: SourceBook?,
+        series: SourceSeries,
+        ref: SourceBookRef
+    ): SourceBook {
+        val title = if (isGenericCatalogLabel(resolved.title)) fallback?.title ?: resolved.title else resolved.title
+        return resolved.copy(
+            remoteId = resolved.remoteId ?: ref.remoteId,
+            title = title,
+            authors = resolved.authors.ifEmpty { fallback?.authors ?: series.authors },
+            seriesTitle = resolved.seriesTitle
+                ?.takeIf { it.isNotBlank() && !isGenericCatalogLabel(it) }
+                ?: fallback?.seriesTitle
+                ?: series.title,
+            seriesNumber = resolved.seriesNumber ?: fallback?.seriesNumber ?: ref.number
+        )
+    }
+
+    private inline fun <T> tryRuntime(block: () -> T): T? {
+        return try {
+            block()
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            null
         }
     }
 
@@ -135,6 +186,29 @@ class DeclarativeSourcePlugin(
         )
     }
 }
+
+internal fun alternateIzibUrl(url: String): String? = runCatching {
+    val uri = URI(url)
+    val host = uri.host?.lowercase().orEmpty()
+    val path = uri.rawPath?.takeIf { it.isNotBlank() } ?: "/"
+    val rawQuery = uri.rawQuery.orEmpty()
+    when (host) {
+        "pda.izib.uk" -> {
+            val query = buildList {
+                if (rawQuery.isNotBlank()) add(rawQuery)
+                if (!rawQuery.split('&').any { it.substringBefore('=').equals("keepversion", true) }) add("keepversion=1")
+            }.joinToString("&")
+            "https://izib.uk$path${query.takeIf { it.isNotBlank() }?.let { "?$it" }.orEmpty()}"
+        }
+        "izib.uk" -> {
+            val query = rawQuery.split('&')
+                .filter { it.isNotBlank() && !it.substringBefore('=').equals("keepversion", true) }
+                .joinToString("&")
+            "https://pda.izib.uk$path${query.takeIf { it.isNotBlank() }?.let { "?$it" }.orEmpty()}"
+        }
+        else -> null
+    }
+}.getOrNull()
 
 internal fun seriesCompletionQueries(title: String, directBooks: List<SourceBook>): List<String> {
     val explicitMax = directBooks.mapNotNull { it.seriesNumber?.toInt() }.maxOrNull()

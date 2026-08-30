@@ -27,10 +27,12 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
             val foundPaths = Collections.synchronizedSet(LinkedHashSet<String>())
             val diagnostics = mutableListOf<String>()
             val finished = AtomicBoolean(false)
+            val armed = AtomicBoolean(false)
             val handler = Handler(Looper.getMainLooper())
             val webView = WebView(context)
 
             fun remember(raw: String?) {
+                if (!armed.get()) return
                 val url = raw?.trim().orEmpty()
                 if (!isBookAudio(url)) return
                 val key = runCatching {
@@ -84,11 +86,28 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
                     if (!isAllowedPage(url)) return
                     diagnostics += "loaded:${Uri.parse(url).host}"
                     view.evaluateJavascript(INSTALL_HOOKS, null)
-                    handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(ACTIVATE_PLAYER, null) }, 900L)
-                    listOf(2_500L, 6_500L, 10_000L).forEach { delay ->
+
+                    // Knigavuhe may initially expose the short-fragment playlist and replace it after
+                    // the "large segments" switch changes. Do not collect anything until that switch
+                    // has settled, otherwise both playlists are mixed into one download queue.
+                    handler.postDelayed({
+                        if (!finished.get()) view.evaluateJavascript(PREPARE_PLAYER, null)
+                    }, 700L)
+                    handler.postDelayed({
+                        if (!finished.get()) {
+                            synchronized(found) {
+                                found.clear()
+                                foundPaths.clear()
+                            }
+                            armed.set(true)
+                            diagnostics += "capture-armed"
+                            view.evaluateJavascript(ACTIVATE_TRACKS, null)
+                        }
+                    }, 2_200L)
+                    listOf(3_500L, 6_500L, 9_500L, 12_500L).forEach { delay ->
                         handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(SCAN_PLAYER, null) }, delay)
                     }
-                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("captured") }, 13_500L)
+                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("captured-large-segments") }, 15_500L)
                 }
             }
 
@@ -99,7 +118,7 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
 
     companion object {
         private const val BRIDGE = "AudoibooMediaCapture"
-        private const val MAX_MEDIA_URLS = 120
+        private const val MAX_MEDIA_URLS = 100
         private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac")
         private val TRACK_LABEL = Regex("""(?ix)^\s*(?:\d{1,3}(?:[\s._:)-]+.+)?|.+_\d+)(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*$""")
 
@@ -135,38 +154,65 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
               const NativeAudio = window.Audio;
               window.Audio = function(src) { const a = new NativeAudio(src); emit(src); return a; };
               window.Audio.prototype = NativeAudio.prototype;
-              document.querySelectorAll('audio[src],source[src]').forEach(e => emit(e.src));
               return 'installed';
             })();
         """.trimIndent()
 
-        private val ACTIVATE_PLAYER = """
+        private val PREPARE_PLAYER = """
+            (() => {
+              const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+              const visible = e => { const r=e.getBoundingClientRect(); const s=getComputedStyle(e); return r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none'; };
+              const all = [...document.querySelectorAll('button,a,div,span,li,label,input')].filter(visible);
+              const full = all.find(e => /слушать полностью/i.test(norm(e.innerText || e.value)));
+              if (full) { try { full.click(); AudoibooMediaCapture.event('clicked-full'); } catch (_) {} }
+
+              const largeLabel = all.find(e => /большие отрезки/i.test(norm(e.innerText || e.value)));
+              const checkbox = largeLabel && largeLabel.matches('input[type=checkbox]') ? largeLabel :
+                ((largeLabel && largeLabel.querySelector('input[type=checkbox]')) ||
+                 document.querySelector('input[type=checkbox][name*=large i],input[type=checkbox][id*=large i]'));
+              if (checkbox && !checkbox.checked) {
+                try {
+                  checkbox.click();
+                  checkbox.dispatchEvent(new Event('change', {bubbles:true}));
+                  AudoibooMediaCapture.event('enabled-large-segments');
+                } catch (_) {}
+              } else if (checkbox && checkbox.checked) {
+                AudoibooMediaCapture.event('large-segments-already-enabled');
+              } else {
+                AudoibooMediaCapture.event('large-segments-switch-not-found');
+              }
+              return true;
+            })();
+        """.trimIndent()
+
+        private val ACTIVATE_TRACKS = """
             (() => {
               const norm = s => (s || '').replace(/\s+/g, ' ').trim();
               const visible = e => { const r=e.getBoundingClientRect(); const s=getComputedStyle(e); return r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none'; };
               const all = [...document.querySelectorAll('button,a,div,span,li,label')].filter(visible);
-              const full = all.find(e => /слушать полностью/i.test(norm(e.innerText)));
-              if (full) { try { full.click(); AudoibooMediaCapture.event('clicked-full'); } catch (_) {} }
-              const largeLabel = all.find(e => /большие отрезки/i.test(norm(e.innerText)));
-              if (largeLabel) {
-                const checkbox = largeLabel.matches('input[type=checkbox]') ? largeLabel :
-                  (largeLabel.querySelector('input[type=checkbox]') || document.querySelector('input[type=checkbox][name*=large i],input[type=checkbox][id*=large i]'));
-                if (checkbox && !checkbox.checked) { try { checkbox.click(); checkbox.dispatchEvent(new Event('change',{bubbles:true})); AudoibooMediaCapture.event('enabled-large-segments'); } catch (_) {} }
-              }
-              const leaf = e => ![...e.children].some(c => { const t=norm(c.innerText||c.textContent); return t && t.length<=180 && (/^\d{1,3}(?:[\s._:)-]+.+)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(t) || /_\d+(?:\s|$)/.test(t)); });
-              const tracks = all.filter(e => { const t=norm(e.innerText||e.textContent); return t && t.length<=180 && leaf(e) && (/^\d{1,3}(?:[\s._:)-]+.+)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(t) || /_\d+(?:\s|$)/.test(t)); }).slice(0, 100);
-              tracks.forEach((t,i) => setTimeout(() => { try { t.click(); } catch (_) {} }, i*180));
-              AudoibooMediaCapture.event('track-candidates='+tracks.length); return tracks.length;
+              const leaf = e => ![...e.children].some(c => {
+                const t=norm(c.innerText||c.textContent);
+                return t && t.length<=180 && (/^\d{1,3}(?:[\s._:)-]+.+)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(t) || /_\d+(?:\s|$)/.test(t));
+              });
+              const tracks = all.filter(e => {
+                const t=norm(e.innerText||e.textContent);
+                return t && t.length<=180 && leaf(e) &&
+                  (/^\d{1,3}(?:[\s._:)-]+.+)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(t) || /_\d+(?:\s|$)/.test(t));
+              }).slice(0, 90);
+              tracks.forEach((t,i) => setTimeout(() => { try { t.click(); } catch (_) {} }, i*140));
+              AudoibooMediaCapture.event('large-track-candidates='+tracks.length);
+              return tracks.length;
             })();
         """.trimIndent()
 
         // Deliberately inspect only the active player DOM. Broad performance/HTML scans pulled
-        // audio belonging to recommendations and other books on the page.
+        // audio belonging to recommendations and alternate fragment modes on the same page.
         private val SCAN_PLAYER = """
             (() => {
               const emit = u => { try { if (u) AudoibooMediaCapture.media(String(u)); } catch (_) {} };
-              document.querySelectorAll('audio[src],audio source[src],source[src]').forEach(e => emit(e.src));
-              return document.querySelectorAll('audio[src],audio source[src],source[src]').length;
+              const nodes = document.querySelectorAll('audio[src],audio source[src],source[src]');
+              nodes.forEach(e => emit(e.src));
+              return nodes.length;
             })();
         """.trimIndent()
     }

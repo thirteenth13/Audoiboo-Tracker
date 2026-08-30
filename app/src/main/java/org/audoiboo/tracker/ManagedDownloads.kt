@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Environment
 import java.io.File
+import java.net.URI
 import java.util.UUID
 
 internal enum class ManagedDownloadState { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED, CANCELLED, EXTRACTING }
@@ -50,13 +51,17 @@ internal object ManagedDownloads {
         parts += cleanPath(series)
         val relativeDir = parts.joinToString("/")
         val bookDir = cleanPath(title).take(120)
-        val fileName = fileNameHint
-            ?.substringAfterLast('/')
-            ?.substringBefore('?')
-            ?.takeIf { it.isNotBlank() }
-            ?.let(::cleanPath)
-            ?.take(180)
-            ?: (bookDir + DownloadFilePolicy.extension(archiveUrl))
+        val fileName = if (isAudiobooArchiveRedirect(bookUrl, archiveUrl)) {
+            "$bookDir.zip"
+        } else {
+            fileNameHint
+                ?.substringAfterLast('/')
+                ?.substringBefore('?')
+                ?.takeIf { it.isNotBlank() }
+                ?.let(::cleanPath)
+                ?.take(180)
+                ?: (bookDir + DownloadFilePolicy.extension(archiveUrl))
+        }
         val record = ManagedDownloadRecord(
             UUID.randomUUID().toString(), title, series, author, bookUrl, archiveUrl,
             relativeDir, bookDir, fileName, ManagedDownloadState.QUEUED
@@ -127,6 +132,16 @@ internal object ManagedDownloads {
         val intent = Intent(context, ManagedDownloadService::class.java).setAction(action).putExtra(ManagedDownloadService.EXTRA_ID, id)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
     }
+
+    internal fun isAudiobooArchiveRedirect(bookUrl: String, archiveUrl: String): Boolean = runCatching {
+        val bookHost = URI(bookUrl).host?.lowercase().orEmpty()
+        val archive = URI(archiveUrl)
+        val archiveHost = archive.host?.lowercase().orEmpty()
+        val archivePath = archive.path?.lowercase().orEmpty()
+        val audiobooBook = bookHost == "audioboo.org" || bookHost.endsWith(".audioboo.org")
+        val audiobooArchive = archiveHost == "audioboo.org" || archiveHost.endsWith(".audioboo.org")
+        audiobooBook && audiobooArchive && (archivePath == "/go.php" || archivePath.endsWith("/go.php"))
+    }.getOrDefault(false)
 
     internal fun cleanPath(v: String) = v.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
 }

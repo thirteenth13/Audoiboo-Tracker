@@ -76,28 +76,28 @@ jobs:
 
       - name: Rename APK
         if: github.event_name != 'pull_request'
-        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.1.5-dev.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.1.6-dev.apk
 
       - name: Upload workflow artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: Audoiboo-Tracker-1.1.5-dev
-          path: Audoiboo-Tracker-1.1.5-dev.apk
+          name: Audoiboo-Tracker-1.1.6-dev
+          path: Audoiboo-Tracker-1.1.6-dev.apk
 
       - name: Publish dev prerelease
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RELEASE_NOTES="Source parser reliability batch: safer multi-track capture, complete declarative series fallback, cross-source discovery improvements, per-book download folders, bulk stop/clear controls, and Open Library metadata enrichment."
+          RELEASE_NOTES="Source repair batch: Audioboo go.php archives are recognized as ZIPs and unpacked into the book folder; Knigavuhe metadata/folder names and large-segment capture are corrected; Baza-Knig series pagination and dynamic playlist capture are expanded; Izib retries PDA/desktop mirrors with repaired direct-series rules."
           if gh release view dev-player >/dev/null 2>&1; then
             git tag -f dev-player "$GITHUB_SHA"
             git push origin refs/tags/dev-player --force
-            gh release upload dev-player Audoiboo-Tracker-1.1.5-dev.apk --clobber
-            gh release edit dev-player --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.5-dev" --prerelease --notes "$RELEASE_NOTES"
+            gh release upload dev-player Audoiboo-Tracker-1.1.6-dev.apk --clobber
+            gh release edit dev-player --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.6-dev" --prerelease --notes "$RELEASE_NOTES"
           else
-            gh release create dev-player Audoiboo-Tracker-1.1.5-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.5-dev" --prerelease --notes "$RELEASE_NOTES"
+            gh release create dev-player Audoiboo-Tracker-1.1.6-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.6-dev" --prerelease --notes "$RELEASE_NOTES"
           fi
 
       - name: Remove signing key

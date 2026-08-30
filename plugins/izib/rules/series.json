@@ -1,7 +1,8 @@
 {
   "operation": "seriesLookup",
   "series": {
-    "title": "h1, .book-title, .title",
+    "title": "h1, h2, .book-title, .title",
+    "titleRegex": "(?i)^(?:серия|серія|серії)\\s*[«\"“]?(.+?)[»\"”]?\\s*$",
     "books": {
       "item": "a[href*='/art']",
       "title": "@text",

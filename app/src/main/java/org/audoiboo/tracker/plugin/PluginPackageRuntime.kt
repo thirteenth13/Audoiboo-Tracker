@@ -134,26 +134,101 @@ object PluginPackageRuntime {
 
     /**
      * Compatibility fixes live in a disposable runtime copy, never inside the installed package.
-     * Izib v1 follows a series link even when the input is already /serie<id>; that turns a valid
-     * series page into an unrelated navigation target. Removing followLink restores direct parsing.
+     * This lets an APK repair already-installed plugin packages without forcing the user to delete
+     * and reinstall them first.
      */
     private fun runtimeCompatiblePackageDir(manifest: PluginPackageManifest, installedDir: File): File {
-        if (manifest.id != "izib" || manifest.version > 1) return installedDir
+        if (!needsRuntimePatch(manifest)) return installedDir
         val root = pluginRootRef ?: return installedDir
         val patched = File(root, "runtime-patches/${manifest.id}-${manifest.version}")
         runCatching {
             if (patched.exists()) patched.deleteRecursively()
             installedDir.copyRecursively(patched, overwrite = true)
-            val relative = manifest.entrypoints["seriesLookup"] ?: return@runCatching
-            val rule = File(patched, relative)
-            val json = JSONObject(rule.readText())
-            json.getJSONObject("series").remove("followLink")
-            rule.writeText(json.toString(2))
+            when (manifest.id) {
+                "izib" -> patchIzibRules(manifest, patched)
+                "knigavuhe" -> patchKnigavuheRules(manifest, patched)
+                "baza-knig" -> patchBazaKnigRules(manifest, patched)
+            }
         }.onFailure {
             patched.deleteRecursively()
             return installedDir
         }
         return patched.takeIf { it.isDirectory } ?: installedDir
+    }
+
+    private fun needsRuntimePatch(manifest: PluginPackageManifest): Boolean = when (manifest.id) {
+        "izib" -> manifest.version <= 1
+        "knigavuhe" -> manifest.version <= 2
+        "baza-knig" -> manifest.version <= 4
+        else -> false
+    }
+
+    private fun patchIzibRules(manifest: PluginPackageManifest, packageDir: File) {
+        patchJsonRule(manifest, packageDir, "seriesLookup") { root ->
+            val series = root.getJSONObject("series")
+            // v1 could jump away from a valid /serie<id> page. Direct series pages are the common
+            // entry path in the source browser, so parse them in place and retry the desktop mirror
+            // from DeclarativeSourcePlugin when PDA markup is incomplete.
+            series.remove("followLink")
+            series.put("title", "h1, h2, .book-title, .title")
+            series.put("titleRegex", "(?i)^(?:серия|серія|серії)\\s*[«\\\"“]?(.+?)[»\\\"”]?\\s*$")
+            series.optJSONObject("books")?.apply {
+                put("item", "a[href*='/art']")
+                put("title", "@text")
+                put("link", "@href")
+            }
+        }
+    }
+
+    private fun patchKnigavuheRules(manifest: PluginPackageManifest, packageDir: File) {
+        patchJsonRule(manifest, packageDir, "seriesLookup") { root ->
+            root.getJSONObject("series").apply {
+                put("title", "h1")
+                put("titleRegex", "(?i)^цикл\\s*[«\\\"“]?(.+?)[»\\\"”]?\\s*(?:-|—|автор\\b|$)")
+                put("followLink", "a[href*='/serie/']@href")
+            }
+        }
+        patchJsonRule(manifest, packageDir, "bookLookup") { root ->
+            root.getJSONObject("book").apply {
+                put("title", "meta[property='og:title']@content")
+                put("titleRegex", "(?i)^(.+?)(?=\\s*\\(|\\s+-\\s+автор\\b|$)")
+                put("seriesTitle", "a[href*='/serie/']")
+            }
+        }
+    }
+
+    private fun patchBazaKnigRules(manifest: PluginPackageManifest, packageDir: File) {
+        patchJsonRule(manifest, packageDir, "seriesLookup") { root ->
+            val series = root.getJSONObject("series")
+            series.optJSONObject("books")?.apply {
+                put("item", "article, .short, .item")
+                put("title", "h2 a, h3 a, .title a")
+                put("link", "h2 a, h3 a, .title a@href")
+            }
+            series.optJSONObject("supplement")?.apply {
+                put("maxPages", 5)
+                put("nextPage", "a[rel='next'], .navigation a.next@href")
+                optJSONObject("items")?.apply {
+                    put("item", "article, .short, .item")
+                    put("title", "h2 a, h3 a, .title a")
+                    put("link", "h2 a, h3 a, .title a@href")
+                }
+            }
+        }
+    }
+
+    private fun patchJsonRule(
+        manifest: PluginPackageManifest,
+        packageDir: File,
+        entrypoint: String,
+        mutate: (JSONObject) -> Unit
+    ) {
+        val relative = manifest.entrypoints[entrypoint] ?: return
+        val rule = File(packageDir, relative)
+        if (!rule.isFile) return
+        val json = JSONObject(rule.readText())
+        mutate(json)
+        rule.writeText(json.toString(2))
     }
 
     private fun handleRuntimeSuccess(pluginId: String, version: Int) {

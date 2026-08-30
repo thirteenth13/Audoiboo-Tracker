@@ -58,6 +58,9 @@ class DeclarativeSourcePlugin(
 
     override suspend fun resolveDownloads(book: SourceBook): List<DownloadCandidate> {
         if (book.sourceId != manifest.id || !supports(book.url)) return emptyList()
-        return runtime.resolveDownloads(manifest, packageDir, book.url)
+        return PluginDownloadPolicy.filter(
+            manifest,
+            runtime.resolveDownloads(manifest, packageDir, book.url)
+        )
     }
 }

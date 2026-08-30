@@ -85,7 +85,7 @@ object SourceMetadataRepository {
                 remoteTitle = series.title,
                 relationship = existingSeries?.relationship ?: relationship,
                 confidence = existingSeries?.confidence ?: confidence.coerceIn(0f, 1f),
-                userVerified = existingSeries?.userVerified ?: userVerified,
+                userVerified = SourceMetadataMergePolicy.userVerified(existingSeries?.userVerified, userVerified),
                 firstSeenAt = existingSeries?.firstSeenAt ?: now,
                 lastSeenAt = now,
                 lastCheckedAt = now

@@ -13,4 +13,4 @@ Supported operations:
 
 The package contains only JSON rules. It does not execute JavaScript, Dex/Jar/APK/native code, access Android APIs, or open network connections directly.
 
-Build output should be named `baza-knig-1.abplugin` with `plugin.json` at ZIP root and the `rules/` directory beside it.
+The distributable package is stored at `plugins/packages/baza-knig-1.abplugin` and published through `plugins/catalog.json`. Its catalog SHA-256 is checked before installation/update.

@@ -4,8 +4,9 @@ import org.jsoup.Connection
 import org.jsoup.Jsoup
 
 /**
- * Production transport used by the plugin sandbox. It intentionally performs one HTTP hop only;
- * PluginSandboxSession validates every redirect target before another request is made.
+ * Production transport used by the plugin sandbox. It performs exactly one HTTP hop and never
+ * follows redirects itself; PluginSandboxSession validates every redirect target before another
+ * request is made. This keeps undeclared hosts unreachable even through server redirects.
  */
 object HostPluginHttpTransport : PluginHttpTransport {
     private const val USER_AGENT = "Mozilla/5.0 (Android) AudoibooTracker/PluginHost"

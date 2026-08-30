@@ -10,6 +10,7 @@ import org.audoiboo.tracker.plugin.CanonicalSeriesMatchInput
 import org.audoiboo.tracker.plugin.CanonicalSourceBookLink
 import org.audoiboo.tracker.plugin.MatchDisposition
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
+import org.audoiboo.tracker.plugin.SeriesBookMembershipPolicy
 import org.audoiboo.tracker.plugin.SeriesDecisionPolicy
 import org.audoiboo.tracker.plugin.SeriesProvider
 import org.audoiboo.tracker.plugin.SourceBook
@@ -60,9 +61,12 @@ internal object RoomSeriesSync {
         val provider = plugin as? SeriesProvider ?: return@withContext null
         val resolved = provider.resolveSeries(inputUrl) ?: return@withContext null
         if (resolved.sourceId != plugin.descriptor.id) return@withContext null
-        val sourceBooks = provider.loadSeriesBooks(resolved)
-            .filter { it.sourceId == plugin.descriptor.id }
-            .distinctBy { SourceKeys.normalizeUrl(it.url) }
+        val sourceBooks = SeriesBookMembershipPolicy.filter(
+            resolved,
+            provider.loadSeriesBooks(resolved)
+                .filter { it.sourceId == plugin.descriptor.id }
+                .distinctBy { SourceKeys.normalizeUrl(it.url) }
+        )
         if (sourceBooks.isEmpty()) return@withContext null
 
         val db = AudoibooDatabase.get(context)

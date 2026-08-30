@@ -14,10 +14,7 @@ class PluginPackageInstallerTest {
     fun validPackageIsStagedAndActivatedButNotExecuted() {
         withTempDir { root ->
             val packageFile = File(root, "baza.abplugin")
-            writeZip(packageFile, mapOf(
-                "plugin.json" to "{}".toByteArray(),
-                "scripts/series.js" to "return [];".toByteArray()
-            ))
+            writeZip(packageFile, validEntries())
             val manager = SourcePluginManager(listOf(AudiobooSourcePlugin))
             val installer = PluginPackageInstaller(
                 pluginRoot = File(root, "plugins"),
@@ -62,7 +59,7 @@ class PluginPackageInstallerTest {
             val packageFile = File(root, "large.abplugin")
             writeZip(packageFile, mapOf(
                 "plugin.json" to "{}".toByteArray(),
-                "resources/data.txt" to ByteArray(1024) { 1 }
+                "scripts/series.js" to ByteArray(1024) { 1 }
             ))
             val installer = PluginPackageInstaller(
                 File(root, "plugins"),
@@ -82,10 +79,48 @@ class PluginPackageInstallerTest {
     }
 
     @Test
+    fun missingDeclaredEntrypointIsRejectedBeforeActivation() {
+        withTempDir { root ->
+            val packageFile = File(root, "missing.abplugin")
+            writeZip(packageFile, mapOf("plugin.json" to "{}".toByteArray()))
+            val installer = PluginPackageInstaller(
+                File(root, "plugins"),
+                SourcePluginManager(emptyList()),
+                PluginManifestDecoder { manifest("missing-source", 1) }
+            )
+
+            val result = installer.install(packageFile)
+
+            assertTrue(result is PluginInstallResult.Rejected)
+            assertTrue((result as PluginInstallResult.Rejected).reason.contains("Missing entrypoint file"))
+            assertEquals(null, installer.activeVersion("missing-source"))
+        }
+    }
+
+    @Test
+    fun executablePayloadIsRejectedBeforeActivation() {
+        withTempDir { root ->
+            val packageFile = File(root, "native.abplugin")
+            writeZip(packageFile, validEntries() + ("lib/arm64-v8a/plugin.so" to byteArrayOf(1, 2, 3)))
+            val installer = PluginPackageInstaller(
+                File(root, "plugins"),
+                SourcePluginManager(emptyList()),
+                PluginManifestDecoder { manifest("native-source", 1) }
+            )
+
+            val result = installer.install(packageFile)
+
+            assertTrue(result is PluginInstallResult.Rejected)
+            assertTrue((result as PluginInstallResult.Rejected).reason.contains("Executable plugin payload"))
+            assertEquals(null, installer.activeVersion("native-source"))
+        }
+    }
+
+    @Test
     fun updateKeepsPreviousVersionAndCanRollbackPointer() {
         withTempDir { root ->
             val packageFile = File(root, "source.abplugin")
-            writeZip(packageFile, mapOf("plugin.json" to "{}".toByteArray()))
+            writeZip(packageFile, validEntries())
             var version = 1
             val installer = PluginPackageInstaller(
                 File(root, "plugins"),
@@ -106,7 +141,7 @@ class PluginPackageInstallerTest {
     fun downgradeIsRejected() {
         withTempDir { root ->
             val packageFile = File(root, "source.abplugin")
-            writeZip(packageFile, mapOf("plugin.json" to "{}".toByteArray()))
+            writeZip(packageFile, validEntries())
             var version = 2
             val installer = PluginPackageInstaller(
                 File(root, "plugins"),
@@ -129,6 +164,11 @@ class PluginPackageInstallerTest {
         capabilities = setOf(SourceCapability.SERIES_LOOKUP),
         permissions = PluginPermissions(networkHosts = setOf("example.org")),
         entrypoints = mapOf("series" to "scripts/series.js")
+    )
+
+    private fun validEntries(): Map<String, ByteArray> = mapOf(
+        "plugin.json" to "{}".toByteArray(),
+        "scripts/series.js" to "return [];".toByteArray()
     )
 
     private fun writeZip(file: File, entries: Map<String, ByteArray>) {

@@ -16,13 +16,14 @@ TARGETS = [
     ("baza-knig", "https://baza-knig.info/audio-115251-zvezdnaja-krov-10-prozrachnye-dorogi-roman-prokofev"),
     ("poleknig", "https://poleknig.com/books/212841"),
     ("lis10book", "https://lis10book.com/audio/dlan-sistemy-kniga-3/"),
-    ("knigavuhe", "https://m.knigavuhe.org/book/igra-kota-kniga-vtoraja/"),
+    ("knigavuhe", "https://knigavuhe.org/book/igra-kota-kniga-vtoraja/"),
     ("izib", "https://pda.izib.uk/art141591"),
 ]
 CAPTURE_XHR = r"(?i).*(audio|media|player|playlist|stream|track|api|m3u8|mp3|m4b|m4a|aac|opus|ogg|flac|zip|rar).*"
 SITE_TIMEOUT_SECONDS = 100
 MEDIA_FIRST = {"knigavuhe", "izib"}
 CDP_SITES = {"poleknig", "knigavuhe", "izib"}
+KNIGAVUHE_MOBILE_FALLBACK = "https://m.knigavuhe.org/book/igra-kota-kniga-vtoraja/"
 
 @dataclass
 class ProbeResult:
@@ -36,15 +37,17 @@ class ProbeResult:
 def _add_error(result, stage, exc):
     suffix=f"{stage}:{type(exc).__name__}:{exc}"; result.error=f"{result.error}; {suffix}" if result.error else suffix
 
-def _run_cdp(result, name, url, all_urls):
+def _run_cdp(result, name, url, all_urls, label: str | None = None):
     try:
         cdp = capture_cdp(url, name, max_tracks=30)
         result.traversal_responses += cdp.requests
         before=len(all_urls); all_urls.update(cdp.media)
         result.traversal_media=len(all_urls); result.traversal_added_media += len(all_urls)-before
-        result.diagnostics.extend(cdp.diagnostics[:30])
-        result.diagnostics.extend(f"cdp-resolver={u}" for u in cdp.resolvers[:12])
-    except Exception as exc: _add_error(result,"cdp",exc)
+        prefix = f"{label}:" if label else ""
+        result.diagnostics.append(f"{prefix}cdp-url={url}")
+        result.diagnostics.extend(f"{prefix}{x}" for x in cdp.diagnostics[:30])
+        result.diagnostics.extend(f"{prefix}cdp-resolver={u}" for u in cdp.resolvers[:12])
+    except Exception as exc: _add_error(result,f"{label or 'cdp'}",exc)
 
 def run_one(name, url):
     result=ProbeResult(name=name,url=url); all_urls=set()
@@ -61,8 +64,14 @@ def run_one(name, url):
             except Exception as exc: _add_error(result,"poleknig-fast",exc)
         result.traversal_media=len(all_urls); result.media_urls=sorted(all_urls); return result
 
-    if name in CDP_SITES:
+    if name == "knigavuhe":
+        _run_cdp(result,name,url,all_urls,label="desktop")
+        if not all_urls:
+            result.diagnostics.append("desktop-no-media:trying-mobile-fallback")
+            _run_cdp(result,name,KNIGAVUHE_MOBILE_FALLBACK,all_urls,label="mobile")
+    elif name in CDP_SITES:
         _run_cdp(result,name,url,all_urls)
+
     if name in MEDIA_FIRST and not all_urls:
         try:
             responses,urls=traverse(url,CAPTURE_XHR,max_steps=28); result.traversal_responses += responses; result.traversal_media=len(urls); result.traversal_added_media += len(urls); all_urls.update(urls)

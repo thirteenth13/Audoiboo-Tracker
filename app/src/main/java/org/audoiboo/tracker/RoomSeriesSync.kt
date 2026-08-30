@@ -265,8 +265,9 @@ internal object RoomSeriesSync {
 
         findings.forEach { finding ->
             val decisions = SourceMetadataRepository.seriesMatchDecisions(context, finding.series)
+            val acceptedReview = SeriesDecisionPolicy.isUserAccepted(canonicalSeriesId, decisions)
 
-            if (finding.disposition == MatchDisposition.REVIEW) {
+            if (finding.disposition == MatchDisposition.REVIEW && !acceptedReview) {
                 if (SeriesDecisionPolicy.shouldQueueReview(canonicalSeriesId, decisions)) {
                     SourceMetadataRepository.recordSeriesMatchDecision(
                         context = context,
@@ -280,7 +281,7 @@ internal object RoomSeriesSync {
                 return@forEach
             }
 
-            if (finding.disposition != MatchDisposition.AUTO_ACCEPT) return@forEach
+            if (finding.disposition != MatchDisposition.AUTO_ACCEPT && !acceptedReview) return@forEach
             if (!SeriesDecisionPolicy.allowsAutomaticLink(canonicalSeriesId, decisions)) return@forEach
 
             val canonicalBooks = canonical.books
@@ -301,13 +302,13 @@ internal object RoomSeriesSync {
                 books = links,
                 relationship = "SAME_SERIES",
                 confidence = finding.confidence,
-                userVerified = false
+                userVerified = acceptedReview
             )
             SourceMetadataRepository.recordSeriesMatchDecision(
                 context = context,
                 canonicalSeriesId = canonicalSeriesId,
                 series = finding.series,
-                decision = "AUTO_ACCEPTED",
+                decision = if (acceptedReview) "USER_ACCEPTED" else "AUTO_ACCEPTED",
                 relationship = "SAME_SERIES",
                 confidence = finding.confidence
             )

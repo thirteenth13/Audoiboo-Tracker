@@ -23,15 +23,19 @@ data class InferredSeries(
 
 /** Conservative fallback for catalog records that do not expose an explicit series field. */
 object CatalogSeriesHeuristics {
-    private val numberedSuffix = Regex(
-        pattern = """^(.+?)[\s:,.-–—]*(?:(?:книга|кн|том|часть|частина|book|volume|vol)\.?\s*)?#?([0-9]{1,3}(?:[.,][0-9]+)?)$""",
-        option = RegexOption.IGNORE_CASE
+    private val labeledSuffix = Regex(
+        "^(.+?)[\\s:,._\\-–—]*(?:книга|кн|том|часть|частина|book|volume|vol)\\.?\\s*#?([0-9]{1,3}(?:[.,][0-9]+)?)$",
+        RegexOption.IGNORE_CASE
+    )
+    private val numericSuffix = Regex(
+        "^(.+?)[\\s:,._\\-–—]+#?([0-9]{1,3}(?:[.,][0-9]+)?)$",
+        RegexOption.IGNORE_CASE
     )
 
     fun infer(title: String): InferredSeries? {
         val cleaned = title.trim().replace(Regex("\\s+"), " ")
-        val match = numberedSuffix.matchEntire(cleaned) ?: return null
-        val base = match.groupValues[1].trim(' ', ':', ',', '.', '-', '–', '—')
+        val match = labeledSuffix.matchEntire(cleaned) ?: numericSuffix.matchEntire(cleaned) ?: return null
+        val base = match.groupValues[1].trim(' ', ':', ',', '.', '_', '-', '–', '—')
         if (base.length < 3 || base.all(Char::isDigit)) return null
         val number = match.groupValues[2].replace(',', '.').toDoubleOrNull() ?: return null
         return InferredSeries(base, number)

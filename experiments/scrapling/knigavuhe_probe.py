@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import sync_playwright
 
 AUDIO_RE = re.compile(r"https?://[^\"'<>\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac)(?:\?[^\"'<>\s]*)?", re.I)
+REL_AUDIO_RE = re.compile(r"(?:https?:)?//[^\"'<>\s]+/audio/[^\"'<>\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac)(?:\?[^\"'<>\s]*)?|/[^\"'<>\s]*/audio/[^\"'<>\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac)(?:\?[^\"'<>\s]*)?", re.I)
+BOOK_ID_RE = re.compile(r"(?:/covers/|/play/id/)(\d+)", re.I)
 
 
 @dataclass
@@ -50,6 +52,73 @@ def _click_box(page, box: dict) -> None:
     page.mouse.up()
 
 
+def _book_id(page) -> str | None:
+    try:
+        html = page.content()
+    except Exception:
+        return None
+    m = BOOK_ID_RE.search(html)
+    return m.group(1) if m else None
+
+
+def _probe_play_endpoint(page, page_url: str, diagnostics: list[str], remember) -> None:
+    book_id = _book_id(page)
+    if not book_id:
+        diagnostics.append("kv-play:book-id-miss")
+        return
+    endpoint = urljoin(page_url, f"/play/id/{book_id}")
+    diagnostics.append(f"kv-play:id={book_id}")
+
+    for method in ("GET", "POST"):
+        try:
+            result = page.evaluate(
+                r"""async ({url, method}) => {
+                    try {
+                        const r = await fetch(url, {
+                            method,
+                            credentials: 'include',
+                            headers: {
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'Accept': 'application/json,text/plain,*/*'
+                            }
+                        });
+                        const text = await r.text();
+                        return {ok:true, status:r.status, type:r.headers.get('content-type') || '', text};
+                    } catch (e) {
+                        return {ok:false, error:String(e)};
+                    }
+                }""",
+                {"url": endpoint, "method": method},
+            )
+        except Exception as exc:
+            diagnostics.append(f"kv-play-{method.lower()}:eval-error:{type(exc).__name__}")
+            continue
+
+        if not result.get("ok"):
+            diagnostics.append(f"kv-play-{method.lower()}:fetch-error:{result.get('error','')[:180]}")
+            continue
+
+        text = str(result.get("text", "")).replace("\\/", "/").replace("&amp;", "&")
+        compact = re.sub(r"\s+", " ", text).strip()
+        diagnostics.append(
+            f"kv-play-{method.lower()}:{result.get('status')}:ctype={result.get('type','')}:len={len(text)}:body={compact[:1400]}"
+        )
+
+        found = 0
+        for match in REL_AUDIO_RE.finditer(text):
+            raw = match.group(0)
+            if raw.startswith("//"):
+                raw = "https:" + raw
+            elif raw.startswith("/"):
+                raw = urljoin(page_url, raw)
+            before = len(getattr(remember, "_seen", [])) if hasattr(remember, "_seen") else None
+            remember(raw, f"play-{method.lower()}")
+            found += 1
+        if found:
+            diagnostics.append(f"kv-play-{method.lower()}-audio-candidates={found}")
+            return
+
+
 def capture(page_url: str, max_tracks: int = 40, timeout_ms: int = 30000) -> KnigavuheProbeResult:
     media: list[str] = []
     seen: set[str] = set()
@@ -71,8 +140,6 @@ def capture(page_url: str, max_tracks: int = 40, timeout_ms: int = 30000) -> Kni
         )
         page = context.new_page()
 
-        # Observe media assignments before site JavaScript runs. This does not alter
-        # playback; it only records public URLs assigned to HTMLMediaElement/src.
         page.add_init_script(r"""() => {
             window.__oaiMedia = [];
             const add = v => { try { if (typeof v === 'string' && /^https?:/i.test(v) && !window.__oaiMedia.includes(v)) window.__oaiMedia.push(v); } catch(e) {} };
@@ -95,20 +162,26 @@ def capture(page_url: str, max_tracks: int = 40, timeout_ms: int = 30000) -> Kni
             req = params.get("request") or {}
             url = str(req.get("url", ""))
             typ = str(params.get("type", ""))
+            if "/play/id/" in url:
+                diagnostics.append(f"kv-network-play:{typ}:{url}")
             if typ.lower() == "media" or "/audio/" in url:
                 remember(url, "cdp")
 
         session.on("Network.requestWillBeSent", on_request)
         page.goto(page_url, wait_until="domcontentloaded", timeout=timeout_ms)
-        page.wait_for_timeout(2500)
+        page.wait_for_timeout(2200)
 
-        # Desktop usually exposes the playlist immediately. Mobile may require expansion.
+        # First call the same public player endpoint observed in a normal browser,
+        # from inside the page so same-origin cookies/headers are preserved.
+        _probe_play_endpoint(page, page_url, diagnostics, remember)
+        page.wait_for_timeout(500)
+
         try:
             button = page.get_by_text(re.compile("Слушать полностью", re.I)).first
             if button.count() and button.is_visible():
                 button.click(force=True, timeout=2000)
                 diagnostics.append("kv-expand:playwright-click")
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(1200)
         except Exception as exc:
             diagnostics.append(f"kv-expand:{type(exc).__name__}")
 
@@ -129,7 +202,6 @@ def capture(page_url: str, max_tracks: int = 40, timeout_ms: int = 30000) -> Kni
         except Exception as exc:
             diagnostics.append(f"kv-hook-error:{type(exc).__name__}")
 
-        # Last fallback: inspect the live DOM and scripts for already-materialized MP3 URLs.
         try:
             html = page.content().replace("\\/", "/")
             found = 0

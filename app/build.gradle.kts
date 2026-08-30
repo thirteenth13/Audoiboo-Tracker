@@ -12,8 +12,8 @@ android {
         applicationId = "org.audoiboo.tracker"
         minSdk = 23
         targetSdk = 37
-        versionCode = 114
-        versionName = "1.1.4-dev"
+        versionCode = 115
+        versionName = "1.1.5-dev"
     }
 
     val releaseStoreFile = providers.gradleProperty("AUDOIBOO_STORE_FILE").orNull

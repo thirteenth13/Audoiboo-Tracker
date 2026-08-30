@@ -6,17 +6,17 @@ import org.junit.Test
 
 class SeriesBookMembershipPolicyTest {
     private val series = SourceSeries(
-        sourceId = "baza-knig",
-        url = "https://baza-knig.info/series-1-zvezdnaya-krov",
+        sourceId = "audioboo",
+        url = "https://audioboo.org/series/zvezdnaya-krov",
         title = "Звездная Кровь"
     )
 
     @Test
     fun sameSeriesIsAccepted() {
         val book = SourceBook(
-            sourceId = "baza-knig",
-            url = "https://baza-knig.info/audio-1",
-            title = "Звёздная Кровь 08. Истинный",
+            sourceId = "audioboo",
+            url = "https://audioboo.org/book-8",
+            title = "Прокофьев Роман - Звёздная Кровь 08. Истинный",
             seriesTitle = "Звёздная Кровь"
         )
 
@@ -24,7 +24,7 @@ class SeriesBookMembershipPolicyTest {
     }
 
     @Test
-    fun relatedWhiteDevilSeriesIsRejected() {
+    fun explicitlyDifferentRelatedSeriesIsRejected() {
         val book = SourceBook(
             sourceId = "baza-knig",
             url = "https://baza-knig.info/audio-2",
@@ -33,6 +33,52 @@ class SeriesBookMembershipPolicyTest {
         )
 
         assertFalse(SeriesBookMembershipPolicy.belongsTo(series, book))
+    }
+
+    @Test
+    fun flattenedWhiteDevilSeriesIsRejectedFromParent() {
+        val book = SourceBook(
+            sourceId = "audioboo",
+            url = "https://audioboo.org/book-white-devil-2",
+            title = "Прокофьев Роман - Звездная Кровь. Белый Дьявол 02. Лед-Кузнец",
+            seriesTitle = "Звездная Кровь"
+        )
+
+        assertFalse(SeriesBookMembershipPolicy.belongsTo(series, book))
+    }
+
+    @Test
+    fun anotherNamedSubseriesBeforeVolumeNumberIsRejectedGenerically() {
+        val book = SourceBook(
+            sourceId = "source",
+            url = "https://example.org/book",
+            title = "Основная серия. Побочная ветка 03. Название",
+            seriesTitle = "Основная серия"
+        )
+        val parent = SourceSeries(
+            sourceId = "source",
+            url = "https://example.org/series",
+            title = "Основная серия"
+        )
+
+        assertFalse(SeriesBookMembershipPolicy.belongsTo(parent, book))
+    }
+
+    @Test
+    fun ordinarySubtitleWithoutNestedVolumeNumberIsNotDropped() {
+        val book = SourceBook(
+            sourceId = "source",
+            url = "https://example.org/book",
+            title = "Основная серия. Финал",
+            seriesTitle = "Основная серия"
+        )
+        val parent = SourceSeries(
+            sourceId = "source",
+            url = "https://example.org/series",
+            title = "Основная серия"
+        )
+
+        assertTrue(SeriesBookMembershipPolicy.belongsTo(parent, book))
     }
 
     @Test

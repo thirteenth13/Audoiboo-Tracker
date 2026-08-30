@@ -6,6 +6,7 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 
+from poleknig_fast import resolve as resolve_poleknig
 from service import _dynamic, _http
 from track_traversal import traverse
 
@@ -20,7 +21,7 @@ TARGETS = [
 
 CAPTURE_XHR = r"(?i).*(audio|media|player|playlist|stream|track|api|m3u8|mp3|m4b|m4a|aac|opus|ogg|flac|zip|rar).*"
 SITE_TIMEOUT_SECONDS = 100
-MEDIA_FIRST = {"poleknig", "knigavuhe", "izib"}
+MEDIA_FIRST = {"knigavuhe", "izib"}
 
 
 @dataclass
@@ -50,8 +51,18 @@ def run_one(name: str, url: str) -> ProbeResult:
     result = ProbeResult(name=name, url=url)
     all_urls: set[str] = set()
 
-    # The three difficult sites expose audiobook files as browser Media requests,
-    # so do not waste most of the per-site budget on HTTP/XHR fallbacks first.
+    if name == "poleknig":
+        try:
+            requests, urls = resolve_poleknig(url, limit=40)
+            result.traversal_responses = requests
+            result.traversal_media = len(urls)
+            result.traversal_added_media = len(urls)
+            all_urls.update(urls)
+        except Exception as exc:
+            _add_error(result, "poleknig-fast", exc)
+        result.media_urls = sorted(all_urls)
+        return result
+
     if name in MEDIA_FIRST:
         try:
             responses, urls = traverse(url, CAPTURE_XHR, max_steps=28)
@@ -94,7 +105,6 @@ def run_one(name: str, url: str) -> ProbeResult:
         except Exception as exc:
             _add_error(result, "traversal", exc)
 
-    # blob: URLs are browser-local handles, not reusable audiobook file URLs.
     all_urls = {u for u in all_urls if not u.lower().startswith("blob:")}
     result.media_urls = sorted(all_urls)
     return result

@@ -15,41 +15,63 @@ data class ResolvedDownloadCandidate(
 class DownloadResolutionPlanner(
     private val registry: SourcePluginRegistry
 ) {
-    suspend fun resolve(sources: List<SourceBook>): ResolvedDownloadCandidate? {
+    /**
+     * Returns every downloadable part from the first source that can resolve the book.
+     * This is important for sites where one book is exposed as many MP3/M4A tracks.
+     */
+    suspend fun resolveAll(sources: List<SourceBook>): List<ResolvedDownloadCandidate> {
         sources
             .distinctBy { it.sourceId to SourceKeys.normalizeUrl(it.url) }
             .forEach { book ->
-                // Knigavuhe can return a trial-only player to datacenter/headless clients while
-                // exposing the real public playlist to the user's Android browser. Resolve it on
-                // device before asking source plugins to fall back to HTTP-only extraction.
+                // Device WebView capture intentionally returns all media requests produced by the
+                // player. Do not collapse that list to the highest-priority item: those candidates
+                // are usually consecutive tracks of the same audiobook.
                 if (DeviceWebViewResolutionRuntime.supports(book.url)) {
-                    val deviceCandidate = try {
+                    val deviceCandidates = try {
                         DeviceWebViewResolutionRuntime.resolve(book)
-                            .maxByOrNull { it.priority }
+                            .distinctBy { SourceKeys.normalizeUrl(it.url) }
+                            .sortedByDescending { it.priority }
                     } catch (t: Throwable) {
                         if (t is CancellationException) throw t
-                        null
+                        emptyList()
                     }
-                    if (deviceCandidate != null) return ResolvedDownloadCandidate(book, deviceCandidate)
+                    if (deviceCandidates.isNotEmpty()) {
+                        return deviceCandidates.map { ResolvedDownloadCandidate(book, it) }
+                    }
                 }
 
                 val plugin = registry.byId(book.sourceId) ?: return@forEach
                 if (SourceCapability.DOWNLOAD_RESOLUTION !in plugin.descriptor.capabilities) return@forEach
                 if (!plugin.supports(book.url)) return@forEach
                 val resolver = plugin as? DownloadResolver ?: return@forEach
-                val candidate = try {
+                val candidates = try {
                     resolver.resolveDownloads(book)
                         .filter { it.type == DownloadType.ARCHIVE || it.type == DownloadType.DIRECT_FILE }
-                        .maxWithOrNull(
-                            compareBy<DownloadCandidate> { it.priority }
-                                .thenBy { it.type == DownloadType.ARCHIVE }
+                        .distinctBy { SourceKeys.normalizeUrl(it.url) }
+                        .sortedWith(
+                            compareByDescending<DownloadCandidate> { it.priority }
+                                .thenByDescending { it.type == DownloadType.ARCHIVE }
                         )
                 } catch (t: Throwable) {
                     if (t is CancellationException) throw t
-                    null
+                    emptyList()
                 }
-                if (candidate != null) return ResolvedDownloadCandidate(book, candidate)
+                if (candidates.isNotEmpty()) {
+                    // An archive represents the whole book and should stay a single job. When the
+                    // winning payload is a direct file, keep all direct files from this source.
+                    val winner = candidates.first()
+                    val selected = if (winner.type == DownloadType.ARCHIVE) {
+                        listOf(winner)
+                    } else {
+                        candidates.filter { it.type == DownloadType.DIRECT_FILE }
+                    }
+                    return selected.map { ResolvedDownloadCandidate(book, it) }
+                }
             }
-        return null
+        return emptyList()
     }
+
+    /** Backwards-compatible single-payload API for callers that genuinely need one candidate. */
+    suspend fun resolve(sources: List<SourceBook>): ResolvedDownloadCandidate? =
+        resolveAll(sources).firstOrNull()
 }

@@ -47,6 +47,46 @@ class DeclarativePluginRuntimeTest {
     }
 
     @Test
+    fun resolvesBookMetadataFromSelectorsInsideSandbox() = withTempDir { root ->
+        File(root, "book.rule").writeText("book")
+        val manifest = manifest(
+            capabilities = setOf(SourceCapability.BOOK_LOOKUP),
+            entrypoints = mapOf("bookLookup" to "book.rule")
+        )
+        val runtime = runtime(
+            body = """
+                <html><body>
+                  <h1>Book One</h1>
+                  <a class='author'>Author A</a>
+                  <a class='series'>Star Blood</a>
+                  <span class='number'>3</span>
+                  <img class='cover' src='/covers/one.jpg'>
+                  <div class='desc'>Book description</div>
+                </body></html>
+            """.trimIndent(),
+            decoder = DeclarativeEntrypointDecoder {
+                DeclarativeEntrypoint.BookLookup(
+                    title = "h1",
+                    author = ".author",
+                    seriesTitle = ".series",
+                    seriesNumber = ".number",
+                    coverUrl = ".cover@src",
+                    description = ".desc"
+                )
+            }
+        )
+
+        val book = runtime.resolveBook(manifest, root, "https://example.org/book/1")!!
+
+        assertEquals("Book One", book.title)
+        assertEquals(listOf("Author A"), book.authors.map { it.name })
+        assertEquals("Star Blood", book.seriesTitle)
+        assertEquals(3.0, book.seriesNumber)
+        assertEquals("https://example.org/covers/one.jpg", book.coverUrl)
+        assertEquals("Book description", book.description)
+    }
+
+    @Test
     fun resolvesArchiveCandidatesAndDeduplicatesUrls() = withTempDir { root ->
         File(root, "download.rule").writeText("downloads")
         val manifest = manifest(

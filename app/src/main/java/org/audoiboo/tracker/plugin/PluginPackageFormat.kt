@@ -1,5 +1,7 @@
 package org.audoiboo.tracker.plugin
 
+import java.net.URI
+
 const val PLUGIN_PACKAGE_EXTENSION = "abplugin"
 const val PLUGIN_MANIFEST_FILE = "plugin.json"
 
@@ -10,9 +12,14 @@ enum class PluginRuntime {
 
 data class PluginPermissions(
     val networkHosts: Set<String> = emptySet(),
+    val downloadHosts: Set<String> = emptySet(),
     val cookies: Boolean = false,
     val javascript: Boolean = false
-)
+) {
+    /** Backward-compatible default: existing packages may download only from their network hosts. */
+    val effectiveDownloadHosts: Set<String>
+        get() = downloadHosts.ifEmpty { networkHosts }
+}
 
 data class PluginPackageManifest(
     val id: String,
@@ -48,6 +55,9 @@ object PluginPackagePolicy {
             }
             manifest.permissions.networkHosts.forEach { host ->
                 if (!isValidHost(host)) add("Invalid network permission host: $host")
+            }
+            manifest.permissions.downloadHosts.forEach { host ->
+                if (!isValidHost(host)) add("Invalid download permission host: $host")
             }
             if (!manifest.permissions.networkHosts.containsAll(manifest.hosts)) {
                 add("All source hosts must be included in networkHosts permissions")
@@ -85,4 +95,22 @@ object PluginPackagePolicy {
             !normalized.endsWith('.') &&
             !normalized.contains("..")
     }
+}
+
+/** Validates URLs returned by an untrusted plugin before they can reach the download layer. */
+object PluginDownloadPolicy {
+    fun isAllowed(manifest: PluginPackageManifest, candidate: DownloadCandidate): Boolean {
+        val uri = runCatching { URI(candidate.url.trim()) }.getOrNull() ?: return false
+        if (candidate.type == DownloadType.MAGNET) {
+            return uri.scheme.equals("magnet", ignoreCase = true) && candidate.url.startsWith("magnet:?", ignoreCase = true)
+        }
+        val scheme = uri.scheme?.lowercase() ?: return false
+        if (scheme != "http" && scheme != "https") return false
+        if (uri.userInfo != null) return false
+        val host = uri.host?.lowercase()?.trimEnd('.') ?: return false
+        return host in manifest.permissions.effectiveDownloadHosts
+    }
+
+    fun filter(manifest: PluginPackageManifest, candidates: List<DownloadCandidate>): List<DownloadCandidate> =
+        candidates.filter { isAllowed(manifest, it) }
 }

@@ -1,0 +1,14 @@
+{
+  "operation": "seriesLookup",
+  "series": {
+    "title": "h1",
+    "titleRegex": "(?i)^цикл\\s*[«\"“]?(.+?)[»\"”]?\\s+автор\\b",
+    "followLink": "a[href*='/series/']@href",
+    "books": {
+      "item": "a[href*='/book/']",
+      "title": "@text",
+      "link": "@href",
+      "author": "a[href*='/author/']"
+    }
+  }
+}

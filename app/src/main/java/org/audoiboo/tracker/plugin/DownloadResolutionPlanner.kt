@@ -19,6 +19,20 @@ class DownloadResolutionPlanner(
         sources
             .distinctBy { it.sourceId to SourceKeys.normalizeUrl(it.url) }
             .forEach { book ->
+                // Knigavuhe can return a trial-only player to datacenter/headless clients while
+                // exposing the real public playlist to the user's Android browser. Resolve it on
+                // device before asking source plugins to fall back to HTTP-only extraction.
+                if (DeviceWebViewResolutionRuntime.supports(book.url)) {
+                    val deviceCandidate = try {
+                        DeviceWebViewResolutionRuntime.resolve(book)
+                            .maxByOrNull { it.priority }
+                    } catch (t: Throwable) {
+                        if (t is CancellationException) throw t
+                        null
+                    }
+                    if (deviceCandidate != null) return ResolvedDownloadCandidate(book, deviceCandidate)
+                }
+
                 val plugin = registry.byId(book.sourceId) ?: return@forEach
                 if (SourceCapability.DOWNLOAD_RESOLUTION !in plugin.descriptor.capabilities) return@forEach
                 if (!plugin.supports(book.url)) return@forEach

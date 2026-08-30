@@ -262,10 +262,25 @@ internal object RoomSeriesSync {
     ) {
         val findings = SourceDiscoveryEngine(PluginPackageRuntime.registry)
             .discoverSeries(canonical, excludeSourceId)
-            .filter { it.disposition == MatchDisposition.AUTO_ACCEPT }
 
         findings.forEach { finding ->
             val decisions = SourceMetadataRepository.seriesMatchDecisions(context, finding.series)
+
+            if (finding.disposition == MatchDisposition.REVIEW) {
+                if (SeriesDecisionPolicy.shouldQueueReview(canonicalSeriesId, decisions)) {
+                    SourceMetadataRepository.recordSeriesMatchDecision(
+                        context = context,
+                        canonicalSeriesId = canonicalSeriesId,
+                        series = finding.series,
+                        decision = "REVIEW_PENDING",
+                        relationship = "SAME_SERIES",
+                        confidence = finding.confidence
+                    )
+                }
+                return@forEach
+            }
+
+            if (finding.disposition != MatchDisposition.AUTO_ACCEPT) return@forEach
             if (!SeriesDecisionPolicy.allowsAutomaticLink(canonicalSeriesId, decisions)) return@forEach
 
             val canonicalBooks = canonical.books

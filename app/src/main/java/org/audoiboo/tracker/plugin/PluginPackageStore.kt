@@ -2,7 +2,6 @@ package org.audoiboo.tracker.plugin
 
 import java.io.File
 import java.io.IOException
-import java.time.Instant
 
 /** Snapshot produced while rebuilding package state from disk after process/app restart. */
 data class PluginStoreScanResult(
@@ -40,6 +39,7 @@ class PluginPackageStore(
                 val pluginId = pluginDir.name
                 val versions = availableVersions(pluginId)
                 if (versions.isEmpty()) {
+                    activeVersionFile(pluginId).delete()
                     errors += "$pluginId: no installed versions"
                     return@forEach
                 }
@@ -55,14 +55,15 @@ class PluginPackageStore(
                 for (version in candidates) {
                     when (val loaded = loadInstalledVersion(pluginId, version)) {
                         is LoadResult.Valid -> {
-                            registration = manager.registerPackageManifest(loaded.manifest, loaded.directory.absolutePath)
-                            if (registration!!.state == PluginState.QUARANTINED || registration!!.state == PluginState.INCOMPATIBLE) {
-                                errors += "$pluginId@$version: ${registration!!.failureReason ?: "package rejected"}"
-                                quarantineVersion(pluginId, version, registration!!.failureReason ?: "package rejected")
+                            val candidate = manager.registerPackageManifest(loaded.manifest, loaded.directory.absolutePath)
+                            if (candidate.state == PluginState.QUARANTINED || candidate.state == PluginState.INCOMPATIBLE) {
+                                val reason = candidate.failureReason ?: "package rejected"
+                                errors += "$pluginId@$version: $reason"
+                                quarantineVersion(pluginId, version, reason)
                                 quarantined += "$pluginId@$version"
-                                registration = null
                                 continue
                             }
+                            registration = candidate
                             selectedVersion = version
                             break
                         }
@@ -75,12 +76,13 @@ class PluginPackageStore(
                 }
 
                 if (registration == null || selectedVersion == null) {
+                    activeVersionFile(pluginId).delete()
                     manager.markPackageState(pluginId, PluginState.QUARANTINED, "No valid installed version")
                     return@forEach
                 }
 
                 if (requestedActive != selectedVersion) {
-                    writeActiveVersionAtomically(pluginId, selectedVersion!!)
+                    writeActiveVersionAtomically(pluginId, selectedVersion)
                     recovered += pluginId
                 }
             }

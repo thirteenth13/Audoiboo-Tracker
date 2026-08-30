@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import sync_playwright
 
 AUDIO_RE = re.compile(r"\.(?:mp3|m4a|m4b|aac|ogg|opus|flac)(?:$|\?)", re.I)
+AUDIO_URL_RE = re.compile(r"https?://[^\"'<>\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac)(?:\?[^\"'<>\s]*)?", re.I)
 KNIGAVUHE_INTEREST_RE = re.compile(r"(?:/play/|/audio/|18350|book|player|playlist|track)", re.I)
 
 
@@ -23,7 +24,6 @@ def _audio(url: str) -> bool:
 
 
 def _mark_text_target(page, patterns: list[str]) -> dict | None:
-    """Mark a visible element whose compact text matches one of the supplied regexes."""
     try:
         return page.evaluate(
             r"""patterns => {
@@ -79,9 +79,32 @@ def _trusted_action_click(page, patterns: list[str]) -> tuple[bool, str]:
         return False, f"click-error:{type(exc).__name__}"
 
 
+def _visible_track_hints(page, site: str) -> list[str]:
+    try:
+        return page.evaluate(
+            r"""site => {
+                const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+                const out = [];
+                for (const el of Array.from(document.querySelectorAll('body *'))) {
+                    const t = norm(el.innerText || el.textContent);
+                    if (!t || t.length > 220) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 3 || r.height < 3 || r.height > 130) continue;
+                    let likely = false;
+                    if (site === 'knigavuhe') likely = /_\d+(?:\s|$)/.test(t) || /^\d{2}(?:\s+\d{1,2}:\d{2})?$/.test(t);
+                    else likely = /(?:^|\s)\d{2}(?:\s+\d{1,2}:\d{2})?$/.test(t);
+                    if (likely && !out.includes(t)) out.push(t);
+                    if (out.length >= 20) break;
+                }
+                return out;
+            }""",
+            site,
+        )
+    except Exception:
+        return []
+
+
 def _expand_knigavuhe_player(page, diagnostics: list[str]) -> None:
-    """Open the full playlist before looking for individual Knigavuhe tracks."""
-    # A cookie notice can overlap the player on mobile layout. Dismiss it when present.
     ok, info = _trusted_action_click(page, [r"^Понятно$", r"^OK$"])
     if ok:
         diagnostics.append(f"kv-cookie-dismiss:{info}")
@@ -92,15 +115,11 @@ def _expand_knigavuhe_player(page, diagnostics: list[str]) -> None:
         diagnostics.append(f"kv-player-already-expanded:{len(before)}")
         return
 
-    # In headless CI the page initially exposes only the collapsed player and
-    # the explicit 'Слушать полностью' action. A real pointer click is needed.
     ok, info = _trusted_action_click(page, [r"^Слушать полностью$", r"Слушать полностью"])
     diagnostics.append(f"kv-expand:{'hit' if ok else 'miss'}:{info}")
     if not ok:
         return
 
-    # Give the site's player JS time to materialize the playlist. Poll instead
-    # of using a fixed long sleep because the list usually appears quickly.
     for waited in range(0, 5000, 250):
         page.wait_for_timeout(250)
         hints = _visible_track_hints(page, "knigavuhe")
@@ -110,22 +129,62 @@ def _expand_knigavuhe_player(page, diagnostics: list[str]) -> None:
     diagnostics.append(f"kv-expand-timeout:hints={len(_visible_track_hints(page, 'knigavuhe'))}")
 
 
+def _knigavuhe_book_id(page) -> str | None:
+    try:
+        html = page.content()
+    except Exception:
+        return None
+    for pattern in (r"/play/id/(\d+)", r"/covers/(\d+)/", r"book[_-]?id[^0-9]{0,20}(\d{4,})"):
+        m = re.search(pattern, html, re.I)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _probe_knigavuhe_play_api(context, page, page_url: str, diagnostics: list[str], remember) -> int:
+    """Probe the public player endpoint seen in the browser before relying on DOM expansion."""
+    book_id = _knigavuhe_book_id(page)
+    if not book_id:
+        diagnostics.append("kv-play-api:book-id-miss")
+        return 0
+    endpoint = urljoin(page_url, f"/play/id/{book_id}")
+    try:
+        response = context.request.get(
+            endpoint,
+            headers={
+                "Referer": page_url,
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept": "application/json,text/plain,*/*",
+            },
+            timeout=10000,
+        )
+        text = response.text()
+    except Exception as exc:
+        diagnostics.append(f"kv-play-api:error:{type(exc).__name__}")
+        return 0
+
+    cleaned = str(text).replace("\\/", "/").replace("&amp;", "&")
+    urls: list[str] = []
+    for match in AUDIO_URL_RE.finditer(cleaned):
+        url = match.group(0)
+        if url not in urls:
+            urls.append(url)
+            remember(url, "Media", "play-api")
+    ctype = response.headers.get("content-type", "") if response.headers else ""
+    diagnostics.append(f"kv-play-api:{response.status}:id={book_id}:ctype={ctype}:audio={len(urls)}")
+    compact = re.sub(r"\s+", " ", cleaned).strip()
+    if compact:
+        diagnostics.append(f"kv-play-body:{compact[:1800]}")
+    return len(urls)
+
+
 def _mark_track_target(page, site: str, index: int) -> dict | None:
-    """Find a visible player row and mark it without synthesizing a JS click.
-
-    Knigavuhe is deliberately handled in both player layouts:
-    - large segments: `Book title_0`, `_1`, ...
-    - chapter/small segments: `00`, `01`, `02`, ...
-
-    IZIB rows include the full title and a zero-padded suffix (`... 01`).
-    """
     try:
         return page.evaluate(
             r"""({site,index}) => {
                 const norm = s => (s || '').replace(/\s+/g, ' ').trim();
                 const chapter1 = String(index + 1).padStart(2, '0');
                 const chapter0 = String(index).padStart(2, '0');
-
                 const matches = (text) => {
                     const t = norm(text);
                     if (!t) return false;
@@ -138,7 +197,6 @@ def _mark_track_target(page, site: str, index: int) -> dict | None:
                     }
                     return false;
                 };
-
                 const all = Array.from(document.querySelectorAll('body *'));
                 let candidates = all.filter(el => matches(el.innerText || el.textContent));
                 const leaves = candidates.filter(el => !Array.from(el.children).some(c => matches(c.innerText || c.textContent)));
@@ -178,31 +236,6 @@ def _mark_track_target(page, site: str, index: int) -> dict | None:
         return None
 
 
-def _visible_track_hints(page, site: str) -> list[str]:
-    try:
-        return page.evaluate(
-            r"""site => {
-                const norm = s => (s || '').replace(/\s+/g, ' ').trim();
-                const out = [];
-                for (const el of Array.from(document.querySelectorAll('body *'))) {
-                    const t = norm(el.innerText || el.textContent);
-                    if (!t || t.length > 220) continue;
-                    const r = el.getBoundingClientRect();
-                    if (r.width < 3 || r.height < 3 || r.height > 130) continue;
-                    let likely = false;
-                    if (site === 'knigavuhe') likely = /_\d+(?:\s|$)/.test(t) || /^\d{2}(?:\s+\d{1,2}:\d{2})?$/.test(t);
-                    else likely = /(?:^|\s)\d{2}(?:\s+\d{1,2}:\d{2})?$/.test(t);
-                    if (likely && !out.includes(t)) out.push(t);
-                    if (out.length >= 20) break;
-                }
-                return out;
-            }""",
-            site,
-        )
-    except Exception:
-        return []
-
-
 def _trusted_click(page, site: str, index: int) -> tuple[bool, str]:
     target = _mark_track_target(page, site, index)
     if not target:
@@ -236,10 +269,13 @@ def capture(page_url: str, site: str, max_tracks: int = 30, timeout_ms: int = 30
         path = urlsplit(url).path
         host = urlsplit(url).hostname or ""
         if site == "poleknig" and host.endswith("poleknig.com") and path.startswith("/files/") and url not in seen_resolvers:
-            seen_resolvers.add(url); resolvers.append(url)
+            seen_resolvers.add(url)
+            resolvers.append(url)
         if _audio(url) or resource_type.lower() == "media":
             if url.startswith("http") and url not in seen_media:
-                seen_media.add(url); media.append(url); diagnostics.append(f"media-{source}:{resource_type}:{url[:900]}")
+                seen_media.add(url)
+                media.append(url)
+                diagnostics.append(f"media-{source}:{resource_type}:{url[:900]}")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
@@ -251,36 +287,57 @@ def capture(page_url: str, site: str, max_tracks: int = 30, timeout_ms: int = 30
         def request_event(params) -> None:
             nonlocal request_count
             request_count += 1
-            req = params.get("request", {}); url = str(req.get("url", "")); typ = str(params.get("type", ""))
+            req = params.get("request", {})
+            url = str(req.get("url", ""))
+            typ = str(params.get("type", ""))
             remember(url, typ, "request")
-            if site == "knigavuhe" and KNIGAVUHE_INTEREST_RE.search(url): diagnostics.append(f"kv-request:{typ}:{url[:1000]}")
+            if site == "knigavuhe" and KNIGAVUHE_INTEREST_RE.search(url):
+                diagnostics.append(f"kv-request:{typ}:{url[:1000]}")
             redirect = params.get("redirectResponse") or {}
             if redirect:
-                old_url = str(redirect.get("url", "")); headers = redirect.get("headers") or {}; location = headers.get("location") or headers.get("Location")
+                old_url = str(redirect.get("url", ""))
+                headers = redirect.get("headers") or {}
+                location = headers.get("location") or headers.get("Location")
                 if old_url and location and ((site == "poleknig" and "/files/" in old_url) or _audio(str(location))):
                     diagnostics.append(f"redirect:{redirect.get('status')}:{old_url[:500]} -> {str(location)[:700]}")
                     remember(str(location), "Media" if _audio(str(location)) else "", "redirect")
 
         def response_event(params) -> None:
-            response = params.get("response", {}); url = str(response.get("url", "")); typ = str(params.get("type", "")); rid = str(params.get("requestId", "")); mime = str(response.get("mimeType", "")); status = int(response.get("status", 0) or 0)
-            response_meta[rid] = (url, mime, status); remember(url, typ, "response")
-            if site == "knigavuhe" and KNIGAVUHE_INTEREST_RE.search(url): diagnostics.append(f"kv-response:{status}:{typ}:{mime}:{url[:900]}")
+            response = params.get("response", {})
+            url = str(response.get("url", ""))
+            typ = str(params.get("type", ""))
+            rid = str(params.get("requestId", ""))
+            mime = str(response.get("mimeType", ""))
+            status = int(response.get("status", 0) or 0)
+            response_meta[rid] = (url, mime, status)
+            remember(url, typ, "response")
+            if site == "knigavuhe" and KNIGAVUHE_INTEREST_RE.search(url):
+                diagnostics.append(f"kv-response:{status}:{typ}:{mime}:{url[:900]}")
             if site == "poleknig" and urlsplit(url).path.startswith("/files/"):
-                headers = response.get("headers") or {}; location = headers.get("location") or headers.get("Location")
+                headers = response.get("headers") or {}
+                location = headers.get("location") or headers.get("Location")
                 diagnostics.append(f"resolver-response:{status}:location={'yes' if location else 'no'}:{url[:700]}")
-                if location: remember(str(location), "Media" if _audio(str(location)) else "", "location")
+                if location:
+                    remember(str(location), "Media" if _audio(str(location)) else "", "location")
 
         def loading_finished(params) -> None:
-            if site != "knigavuhe": return
-            rid = str(params.get("requestId", "")); meta = response_meta.get(rid)
-            if not meta: return
+            if site != "knigavuhe":
+                return
+            rid = str(params.get("requestId", ""))
+            meta = response_meta.get(rid)
+            if not meta:
+                return
             url, mime, status = meta
-            if not KNIGAVUHE_INTEREST_RE.search(url) or not any(x in mime.lower() for x in ("json", "javascript", "text", "html")): return
-            try: body = session.send("Network.getResponseBody", {"requestId": rid}).get("body", "")
+            if not KNIGAVUHE_INTEREST_RE.search(url) or not any(x in mime.lower() for x in ("json", "javascript", "text", "html")):
+                return
+            try:
+                body = session.send("Network.getResponseBody", {"requestId": rid}).get("body", "")
             except Exception as exc:
-                diagnostics.append(f"kv-body-error:{type(exc).__name__}:{url[:500]}"); return
+                diagnostics.append(f"kv-body-error:{type(exc).__name__}:{url[:500]}")
+                return
             clean = re.sub(r"\s+", " ", str(body)).strip()
-            if clean: diagnostics.append(f"kv-body:{status}:{mime}:{url[:500]}::{clean[:3500]}")
+            if clean:
+                diagnostics.append(f"kv-body:{status}:{mime}:{url[:500]}::{clean[:3500]}")
 
         session.on("Network.requestWillBeSent", request_event)
         session.on("Network.responseReceived", response_event)
@@ -289,7 +346,9 @@ def capture(page_url: str, site: str, max_tracks: int = 30, timeout_ms: int = 30
         page.wait_for_timeout(2200)
 
         if site == "knigavuhe":
-            _expand_knigavuhe_player(page, diagnostics)
+            api_audio = _probe_knigavuhe_play_api(context, page, page_url, diagnostics, remember)
+            if not api_audio:
+                _expand_knigavuhe_player(page, diagnostics)
 
         if site in {"knigavuhe", "izib"}:
             hints = _visible_track_hints(page, site)
@@ -305,23 +364,31 @@ def capture(page_url: str, site: str, max_tracks: int = 30, timeout_ms: int = 30
                     segmentToggle: Array.from(document.querySelectorAll('body *')).map(el => (el.innerText || el.textContent || '').replace(/\s+/g,' ').trim()).filter(t => /Большие отрезки|Больше отрезки|По главам/i.test(t)).slice(0,12)
                 })""")
                 diagnostics.append(f"kv-dom-state:{str(state)[:6000]}")
-            except Exception as exc: diagnostics.append(f"kv-dom-state-error:{type(exc).__name__}")
+            except Exception as exc:
+                diagnostics.append(f"kv-dom-state-error:{type(exc).__name__}")
 
-        clicks = 0; misses = 0
-        for index in range(max_tracks):
-            ok, info = _trusted_click(page, site, index)
-            if not ok:
-                misses += 1
-                if index < 10 or misses <= 2: diagnostics.append(f"target-{index}:miss:{info}")
-                if misses >= 4: break
-                continue
-            clicks += 1; misses = 0
-            if index < 14: diagnostics.append(f"target-{index}:hit:{info}")
-            page.wait_for_timeout(550)
+        clicks = 0
+        misses = 0
+        if not (site == "knigavuhe" and media):
+            for index in range(max_tracks):
+                ok, info = _trusted_click(page, site, index)
+                if not ok:
+                    misses += 1
+                    if index < 10 or misses <= 2:
+                        diagnostics.append(f"target-{index}:miss:{info}")
+                    if misses >= 4:
+                        break
+                    continue
+                clicks += 1
+                misses = 0
+                if index < 14:
+                    diagnostics.append(f"target-{index}:hit:{info}")
+                page.wait_for_timeout(550)
 
         diagnostics.insert(0, f"cdp-clicks={clicks}")
         diagnostics.insert(1, f"cdp-requests={request_count}")
         diagnostics.insert(2, f"cdp-resolvers={len(resolvers)}")
         diagnostics.insert(3, f"cdp-media={len(media)}")
-        context.close(); browser.close()
+        context.close()
+        browser.close()
     return CdpCaptureResult(requests=request_count, media=media, resolvers=resolvers, diagnostics=diagnostics)

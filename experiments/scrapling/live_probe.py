@@ -7,6 +7,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 
 from service import _dynamic, _dynamic_interactive, _dynamic_network, _http
+from track_traversal import traverse
 
 
 TARGETS = [
@@ -18,7 +19,7 @@ TARGETS = [
 ]
 
 CAPTURE_XHR = r"(?i).*(audio|media|player|playlist|stream|track|api|m3u8|mp3|m4b|m4a|aac|opus|ogg|flac|zip|rar).*"
-SITE_TIMEOUT_SECONDS = 90
+SITE_TIMEOUT_SECONDS = 150
 
 
 @dataclass
@@ -39,6 +40,9 @@ class ProbeResult:
     network_media: int = 0
     network_responses: int = 0
     network_added_media: int = 0
+    traversal_responses: int = 0
+    traversal_media: int = 0
+    traversal_added_media: int = 0
     media_urls: list[str] = field(default_factory=list)
     timed_out: bool = False
     error: str | None = None
@@ -96,6 +100,18 @@ def run_one(name: str, url: str) -> ProbeResult:
             suffix = f"network:{type(exc).__name__}:{exc}"
             result.error = f"{result.error}; {suffix}" if result.error else suffix
 
+    if len(all_urls) <= 1 and name != "lis10book":
+        try:
+            responses, traversal_urls = traverse(url, CAPTURE_XHR, max_steps=40)
+            result.traversal_responses = responses
+            result.traversal_media = len(traversal_urls)
+            new_urls = set(traversal_urls) - all_urls
+            result.traversal_added_media = len(new_urls)
+            all_urls |= set(traversal_urls)
+        except Exception as exc:
+            suffix = f"traversal:{type(exc).__name__}:{exc}"
+            result.error = f"{result.error}; {suffix}" if result.error else suffix
+
     result.media_urls = sorted(all_urls)
     return result
 
@@ -134,7 +150,8 @@ def run_isolated(name: str, url: str) -> ProbeResult:
         f"dynamic={result.dynamic_status}/{result.dynamic_media} "
         f"interactive={result.interactive_status}/{result.interactive_media} "
         f"network={result.network_status}/{result.network_media}/{result.network_responses} "
-        f"added={result.dynamic_added_media}+{result.interactive_added_media}+{result.network_added_media} "
+        f"traversal={result.traversal_media}/{result.traversal_responses} "
+        f"added={result.dynamic_added_media}+{result.interactive_added_media}+{result.network_added_media}+{result.traversal_added_media} "
         f"error={result.error or '-'}",
         flush=True,
     )
@@ -172,12 +189,14 @@ def main() -> int:
 
     media_useful = [
         row for row in rows
-        if row.dynamic_added_media > 0 or row.interactive_added_media > 0 or row.network_added_media > 0
+        if row.dynamic_added_media > 0 or row.interactive_added_media > 0 or row.network_added_media > 0 or row.traversal_added_media > 0
     ]
+    traversal_useful = [row for row in rows if row.traversal_added_media > 0]
     timed_out = [row.name for row in rows if row.timed_out]
     print(
         f"reachable={len(reachable)}/{len(rows)} "
         f"media_useful={len(media_useful)}/{len(rows)} "
+        f"traversal_useful={len(traversal_useful)}/{len(rows)} "
         f"timeouts={','.join(timed_out) if timed_out else '-'}"
     )
     return 0

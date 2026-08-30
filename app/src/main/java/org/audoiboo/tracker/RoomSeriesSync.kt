@@ -47,6 +47,9 @@ internal data class RoomSeriesSyncResult(
  * Ambiguous matches are returned to the UI for an explicit accept/reject decision before mutation.
  */
 internal object RoomSeriesSync {
+    private const val DISCOVERY_PREFS = "source_discovery"
+    private const val DISCOVERY_LAST_SUCCESS_PREFIX = "last_success:"
+
     suspend fun sync(
         context: Context,
         inputUrl: String,
@@ -233,20 +236,30 @@ internal object RoomSeriesSync {
             )
         }
 
-        // Discovery is best-effort and runs only after the canonical sync has committed. A broken
-        // alternate source must never roll back or fail the user's primary series update.
-        try {
-            val canonicalSnapshot = dao.library().firstOrNull { it.series.id == canonicalSeriesId }
-            if (canonicalSnapshot != null) {
-                discoverAndPersistAlternates(
-                    context = context,
-                    canonicalSeriesId = canonicalSeriesId,
-                    canonical = canonicalSeriesInput(canonicalSnapshot),
-                    excludeSourceId = plugin.descriptor.id
-                )
+        // Discovery is best-effort and runs only after the canonical sync has committed. Repeated
+        // manual refreshes are throttled, while explicit review resolutions force a fresh pass.
+        val discoveryPrefs = context.getSharedPreferences(DISCOVERY_PREFS, Context.MODE_PRIVATE)
+        val discoveryKey = "$DISCOVERY_LAST_SUCCESS_PREFIX$canonicalSeriesId"
+        val discoveryNow = System.currentTimeMillis()
+        if (SourceDiscoveryThrottle.shouldRun(
+                lastSuccessAt = discoveryPrefs.getLong(discoveryKey, 0L),
+                now = discoveryNow,
+                force = reviewResolution != null
+            )) {
+            try {
+                val canonicalSnapshot = dao.seriesWithBooks(canonicalSeriesId)
+                if (canonicalSnapshot != null) {
+                    discoverAndPersistAlternates(
+                        context = context,
+                        canonicalSeriesId = canonicalSeriesId,
+                        canonical = canonicalSeriesInput(canonicalSnapshot),
+                        excludeSourceId = plugin.descriptor.id
+                    )
+                    discoveryPrefs.edit().putLong(discoveryKey, System.currentTimeMillis()).apply()
+                }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
             }
-        } catch (t: Throwable) {
-            if (t is CancellationException) throw t
         }
 
         LibraryRepository.mirrorLegacy(context)

@@ -28,6 +28,7 @@ object SourceMetadataRepository {
         val now = System.currentTimeMillis()
         val seriesRemoteKey = SourceKeys.remoteKey(series.remoteId, series.url)
         val existingSeries = dao.seriesSource(series.sourceId, seriesRemoteKey)
+            ?: dao.seriesSourceByUrl(series.sourceId, series.url)
         dao.upsertSeriesSource(
             SeriesSourceEntity(
                 canonicalSeriesId = canonicalSeriesId,
@@ -47,8 +48,9 @@ object SourceMetadataRepository {
         books.forEach { link ->
             val book = link.book
             val remoteKey = SourceKeys.remoteKey(book.remoteId, book.url)
-            val key = SourceKeys.bookSourceKey(book.sourceId, remoteKey)
             val existing = dao.bookSource(book.sourceId, remoteKey)
+                ?: dao.bookSourceByUrl(book.sourceId, book.url)
+            val key = existing?.key ?: SourceKeys.bookSourceKey(book.sourceId, remoteKey)
             dao.upsertBookSource(
                 BookSourceEntity(
                     key = key,
@@ -79,23 +81,26 @@ object SourceMetadataRepository {
         val dao = SourceMetadataDatabase.get(context).dao()
         val now = System.currentTimeMillis()
         val remoteKey = SourceKeys.remoteKey(null, bookUrl)
-        val key = SourceKeys.bookSourceKey(sourceId, remoteKey)
         val existingBook = dao.bookSource(sourceId, remoteKey)
-        if (existingBook == null) {
-            dao.upsertBookSource(
-                BookSourceEntity(
-                    key = key,
-                    canonicalBookId = canonicalBookId,
-                    canonicalSeriesId = null,
-                    sourceId = sourceId,
-                    remoteKey = remoteKey,
-                    url = bookUrl,
-                    firstSeenAt = now,
-                    lastSeenAt = now,
-                    lastCheckedAt = now
-                )
+            ?: dao.bookSourceByUrl(sourceId, bookUrl)
+        val key = existingBook?.key ?: SourceKeys.bookSourceKey(sourceId, remoteKey)
+        dao.upsertBookSource(
+            BookSourceEntity(
+                key = key,
+                canonicalBookId = canonicalBookId,
+                canonicalSeriesId = existingBook?.canonicalSeriesId,
+                sourceId = sourceId,
+                remoteKey = existingBook?.remoteKey ?: remoteKey,
+                url = bookUrl,
+                remoteTitle = existingBook?.remoteTitle,
+                remoteAuthor = existingBook?.remoteAuthor,
+                remoteOrder = existingBook?.remoteOrder,
+                confidence = existingBook?.confidence ?: 1f,
+                firstSeenAt = existingBook?.firstSeenAt ?: now,
+                lastSeenAt = now,
+                lastCheckedAt = now
             )
-        }
+        )
         val existingAvailability = dao.availability(key).firstOrNull { it.type == candidate.type.name }
         dao.upsertAvailability(
             SourceAvailabilityEntity(
@@ -119,6 +124,7 @@ object SourceMetadataRepository {
         library.forEach { item ->
             val seriesRemoteKey = SourceKeys.remoteKey(null, item.series.url)
             val existingSeries = dao.seriesSource(AUDIOBOO_SOURCE_ID, seriesRemoteKey)
+                ?: dao.seriesSourceByUrl(AUDIOBOO_SOURCE_ID, item.series.url)
             dao.upsertSeriesSource(
                 SeriesSourceEntity(
                     canonicalSeriesId = item.series.id,
@@ -137,8 +143,9 @@ object SourceMetadataRepository {
 
             item.books.forEach { book ->
                 val remoteKey = SourceKeys.remoteKey(null, book.url)
-                val key = SourceKeys.bookSourceKey(AUDIOBOO_SOURCE_ID, remoteKey)
                 val existingBook = dao.bookSource(AUDIOBOO_SOURCE_ID, remoteKey)
+                    ?: dao.bookSourceByUrl(AUDIOBOO_SOURCE_ID, book.url)
+                val key = existingBook?.key ?: SourceKeys.bookSourceKey(AUDIOBOO_SOURCE_ID, remoteKey)
                 dao.upsertBookSource(
                     BookSourceEntity(
                         key = key,

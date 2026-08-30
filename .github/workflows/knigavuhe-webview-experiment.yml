@@ -16,6 +16,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Validate all plugin packages
+        run: python3 tools/validate_plugins.py
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:

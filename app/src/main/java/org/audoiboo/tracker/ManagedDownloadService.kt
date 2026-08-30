@@ -221,6 +221,7 @@ class ManagedDownloadService : Service() {
 
     private fun finishDownloadedPart(record: ManagedDownloadRecord, part: File, id: String) {
         var current = record.copy(downloaded = part.length())
+        val bookRelativeDir = "${current.relativeDir}/${current.bookDir}"
         if (AppPrefs.unpack(this) && current.fileName.endsWith(".zip", true)) {
             current = current.copy(state = ManagedDownloadState.EXTRACTING)
             update(current)
@@ -234,10 +235,10 @@ class ManagedDownloadService : Service() {
             }
             ensureRunning(id)
             clearBookFolder(current)
-            extractZipToDownloads(part, "${current.relativeDir}/${current.bookDir}", current)
+            extractZipToDownloads(part, bookRelativeDir, current)
             part.delete()
         } else {
-            publishFile(part, current.relativeDir, current.fileName, current)
+            publishFile(part, bookRelativeDir, current.fileName, current)
             part.delete()
         }
         update(current.copy(
@@ -381,45 +382,54 @@ class ManagedDownloadService : Service() {
     private fun publishStream(
         input: InputStream,
         relativeDir: String,
-        nestedName: String,
+        nestedPath: String,
         record: ManagedDownloadRecord,
         budget: ArchiveExtractionBudget
     ) {
-        val sub = nestedName.substringBeforeLast('/', "")
-        val file = nestedName.substringAfterLast('/')
-        val dir = listOf(relativeDir, sub).filter { it.isNotBlank() }.joinToString("/")
-        ensureRunning(record.id)
+        val safePath = ArchiveEntryPolicy.safeRelativePath(nestedPath)
+            ?: throw IOException("Небезпечний шлях у ZIP: $nestedPath")
+        val normalized = safePath.replace('\\', '/')
+        val parent = normalized.substringBeforeLast('/', "")
+        val fileName = normalized.substringAfterLast('/')
+        val dir = if (parent.isBlank()) relativeDir else "$relativeDir/$parent"
         if (StorageAccess.treeUri(this) != null) {
-            val (uri, out) = StorageAccess.openOutput(this, dir, file, mimeFor(file))
-                ?: error("Не вдалося створити $file у SAF-папці")
-            out.use { copyWithBudget(input, it, budget, record.id) }
-            if (isAudio(file)) PlayerLibrary.register(this, uri, file, dir, record.title, record.series, record.author)
+            val (uri, out) = StorageAccess.openOutput(this, dir, fileName, mimeFor(fileName))
+                ?: error("Не вдалося створити файл у вибраній SAF-папці")
+            try {
+                out.use { output -> copyArchiveEntry(input, output, record.id, budget) }
+                if (isAudio(fileName)) PlayerLibrary.register(this, uri, fileName, dir, record.title, record.series, record.author)
+            } catch (e: Exception) {
+                runCatching { StorageAccess.delete(this, dir, fileName) }
+                throw e
+            }
             return
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val collection = if (isAudio(file)) MediaStore.Audio.Media.EXTERNAL_CONTENT_URI else MediaStore.Downloads.EXTERNAL_CONTENT_URI
             val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, file)
-                put(MediaStore.MediaColumns.MIME_TYPE, mimeFor(file))
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/$dir")
-                put(MediaStore.MediaColumns.IS_PENDING, 1)
+                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(MediaStore.Downloads.MIME_TYPE, mimeFor(fileName))
+                put(MediaStore.Downloads.RELATIVE_PATH, "Download/$dir")
+                put(MediaStore.Downloads.IS_PENDING, 1)
             }
-            val uri = contentResolver.insert(collection, values) ?: error("Не вдалося створити $file")
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("Не вдалося створити файл")
             try {
-                contentResolver.openOutputStream(uri)?.use { out -> copyWithBudget(input, out, budget, record.id) }
-                    ?: error("Не вдалося записати $file")
-                values.clear(); values.put(MediaStore.MediaColumns.IS_PENDING, 0); contentResolver.update(uri, values, null, null)
-                if (isAudio(file)) PlayerLibrary.register(this, uri, file, "Download/$dir", record.title, record.series, record.author)
+                contentResolver.openOutputStream(uri)?.use { out -> copyArchiveEntry(input, out, record.id, budget) }
+                    ?: error("Не вдалося відкрити файл")
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                contentResolver.update(uri, values, null, null)
+                if (isAudio(fileName)) PlayerLibrary.register(this, uri, fileName, "Download/$dir", record.title, record.series, record.author)
             } catch (e: Exception) {
                 runCatching { contentResolver.delete(uri, null, null) }
                 throw e
             }
         } else {
-            val base = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), dir).apply { mkdirs() }
-            val target = File(base, file)
+            val targetDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), dir).apply { mkdirs() }
+            val target = File(targetDir, fileName)
             try {
-                FileOutputStream(target).use { out -> copyWithBudget(input, out, budget, record.id) }
-                if (isAudio(file)) PlayerLibrary.register(this, Uri.fromFile(target), file, target.parent.orEmpty(), record.title, record.series, record.author)
+                FileOutputStream(target).use { output -> copyArchiveEntry(input, output, record.id, budget) }
+                if (isAudio(fileName)) PlayerLibrary.register(this, Uri.fromFile(target), fileName, target.parent.orEmpty(), record.title, record.series, record.author)
             } catch (e: Exception) {
                 target.delete()
                 throw e
@@ -427,57 +437,58 @@ class ManagedDownloadService : Service() {
         }
     }
 
+    private fun copyArchiveEntry(input: InputStream, output: OutputStream, id: String, budget: ArchiveExtractionBudget) {
+        val buffer = ByteArray(128 * 1024)
+        while (true) {
+            ensureRunning(id)
+            val read = input.read(buffer)
+            if (read < 0) break
+            budget.addBytes(read)
+            output.write(buffer, 0, read)
+        }
+    }
+
     private fun copyInterruptibly(input: InputStream, output: OutputStream, id: String) {
         val buffer = ByteArray(128 * 1024)
         while (true) {
             ensureRunning(id)
-            val n = input.read(buffer)
-            if (n < 0) break
-            output.write(buffer, 0, n)
-        }
-    }
-
-    private fun copyWithBudget(input: InputStream, output: OutputStream, budget: ArchiveExtractionBudget, id: String) {
-        val buffer = ByteArray(128 * 1024)
-        while (true) {
-            ensureRunning(id)
-            val n = input.read(buffer)
-            if (n < 0) break
-            budget.addBytes(n)
-            output.write(buffer, 0, n)
+            val read = input.read(buffer)
+            if (read < 0) break
+            output.write(buffer, 0, read)
         }
     }
 
     private fun update(record: ManagedDownloadRecord) {
         ManagedDownloads.saveOne(this, record)
-        val pct = if (record.total > 0) ((record.downloaded * 100) / record.total).toInt().coerceIn(0, 100) else null
-        val text = when (record.state) {
-            ManagedDownloadState.EXTRACTING -> "Розпакування: ${record.title}"
-            ManagedDownloadState.DOWNLOADING -> if (pct != null) "${record.title}: $pct%" else record.title
-            ManagedDownloadState.FAILED -> "Помилка: ${record.error.orEmpty()}"
-            else -> record.title
-        }
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, notification("Завантаження", text, pct))
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(record.id.hashCode(), notification(record.title, status(record)))
     }
+
+    private fun status(r: ManagedDownloadRecord): String = when (r.state) {
+        ManagedDownloadState.QUEUED -> "У черзі"
+        ManagedDownloadState.DOWNLOADING -> if (r.total > 0) "${r.downloaded * 100 / r.total}%" else "Завантаження"
+        ManagedDownloadState.PAUSED -> "Призупинено"
+        ManagedDownloadState.EXTRACTING -> "Розпакування"
+        ManagedDownloadState.COMPLETED -> "Готово"
+        ManagedDownloadState.FAILED -> "Помилка: ${r.error.orEmpty()}"
+        ManagedDownloadState.CANCELLED -> "Скасовано"
+    }
+
+    private fun notification(title: String, text: String) = NotificationCompat.Builder(this, CHANNEL)
+        .setSmallIcon(android.R.drawable.stat_sys_download)
+        .setContentTitle(title)
+        .setContentText(text)
+        .setOngoing(true)
+        .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, RoomLibraryActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
+        .build()
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java).createNotificationChannel(
-                NotificationChannel(CHANNEL, "Завантаження Audoiboo", NotificationManager.IMPORTANCE_LOW)
+                NotificationChannel(CHANNEL, "Завантаження аудіокниг", NotificationManager.IMPORTANCE_LOW)
             )
         }
     }
-
-    private fun notification(title: String, text: String, progress: Int? = null) = NotificationCompat.Builder(this, CHANNEL)
-        .setSmallIcon(android.R.drawable.stat_sys_download)
-        .setContentTitle(title)
-        .setContentText(text)
-        .setOnlyAlertOnce(true)
-        .setOngoing(true)
-        .apply { if (progress != null) setProgress(100, progress, false) }
-        .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, RoomLibraryActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
-        .build()
-
-    private class DownloadStoppedException : RuntimeException()
 }
+
+private class DownloadStoppedException : RuntimeException()

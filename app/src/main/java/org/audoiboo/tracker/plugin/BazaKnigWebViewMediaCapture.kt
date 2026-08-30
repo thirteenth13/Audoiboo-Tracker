@@ -90,7 +90,10 @@ class BazaKnigWebViewMediaCapture(private val context: Context) {
 
     companion object {
         private const val BRIDGE = "AudoibooBazaCapture"
-        private val TRACK_LABEL = Regex("""(?ix)^\s*(?:\d{1,3}(?:[\s._:)-]+.*)?|.*(?:трек|глава|часть)\s*\d+).*$""")
+        private val TRACK_LABEL = Regex(
+            """^\s*(?:\d{1,3}(?:[\s._:)-]+.*)?|.*(?:трек|глава|часть)\s*\d+).*$""",
+            RegexOption.IGNORE_CASE
+        )
 
         fun isAllowedPage(url: String): Boolean = runCatching {
             val uri = URI(url.trim())

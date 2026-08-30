@@ -35,6 +35,12 @@ class RoomLibraryActivity : ComponentActivity() {
 
 private enum class RoomLibraryTab { SERIES, BOOKS, DOWNLOADS }
 
+private data class PendingSeriesReview(
+    val url: String,
+    val fallbackToBrowser: Boolean,
+    val review: RoomSeriesMatchReview
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RoomLibraryScreen(activity: ComponentActivity) {
@@ -46,26 +52,34 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
     var addUrl by remember { mutableStateOf("") }
     var syncing by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var pendingReview by remember { mutableStateOf<PendingSeriesReview?>(null) }
     val scope = rememberCoroutineScope()
     val library by LibraryRepository.observe(activity).collectAsState(initial = emptyList())
     val pagingFlow = remember(query, bookFilter) { LibraryRepository.pagedBooks(activity, query, bookFilter) }
     val paged = pagingFlow.collectAsLazyPagingItems()
     val series = library.firstOrNull { it.series.id == selectedSeries }
 
-    fun syncUrl(url: String, fallbackToBrowser: Boolean) {
+    fun syncUrl(url: String, fallbackToBrowser: Boolean, resolution: RoomSeriesReviewResolution? = null) {
         if (url.isBlank() || syncing) return
         syncing = true
         scope.launch {
-            val result = runCatching { RoomSeriesSync.sync(activity, url) }.getOrNull()
+            val result = runCatching { RoomSeriesSync.sync(activity, url, resolution) }.getOrNull()
             syncing = false
-            if (result != null) {
-                selectedSeries = result.seriesId
-                tab = RoomLibraryTab.SERIES
-                Toast.makeText(activity, "${result.name}: ${result.books} книг", Toast.LENGTH_SHORT).show()
-            } else if (fallbackToBrowser) {
-                Toast.makeText(activity, "HTTP parser не пройшов — відкриваю WebView fallback", Toast.LENGTH_LONG).show()
-                activity.startActivity(Intent(activity, MainActivity::class.java))
-            } else Toast.makeText(activity, "Не вдалося оновити серію", Toast.LENGTH_LONG).show()
+            when {
+                result?.review != null -> {
+                    pendingReview = PendingSeriesReview(url, fallbackToBrowser, result.review)
+                }
+                result?.seriesId != null -> {
+                    selectedSeries = result.seriesId
+                    tab = RoomLibraryTab.SERIES
+                    Toast.makeText(activity, "${result.name}: ${result.books} книг", Toast.LENGTH_SHORT).show()
+                }
+                fallbackToBrowser -> {
+                    Toast.makeText(activity, "HTTP parser не пройшов — відкриваю WebView fallback", Toast.LENGTH_LONG).show()
+                    activity.startActivity(Intent(activity, MainActivity::class.java))
+                }
+                else -> Toast.makeText(activity, "Не вдалося оновити серію", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -121,9 +135,48 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
     }
 
     if (showAdd) AlertDialog(onDismissRequest = { showAdd = false }, title = { Text("Додати серію") },
-        text = { OutlinedTextField(addUrl, { addUrl = it }, label = { Text("URL серії або книги Audioboo") }, modifier = Modifier.fillMaxWidth(), singleLine = true) },
+        text = { OutlinedTextField(addUrl, { addUrl = it }, label = { Text("URL серії або книги") }, modifier = Modifier.fillMaxWidth(), singleLine = true) },
         confirmButton = { TextButton(onClick = { val value = addUrl.trim(); showAdd = false; syncUrl(value, true) }, enabled = addUrl.startsWith("http")) { Text("Додати") } },
         dismissButton = { TextButton(onClick = { showAdd = false }) { Text("Скасувати") } })
+
+    pendingReview?.let { pending ->
+        val percent = (pending.review.confidence * 100).toInt()
+        AlertDialog(
+            onDismissRequest = { pendingReview = null },
+            title = { Text("Це та сама серія?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Нове джерело: ${pending.review.incomingName}")
+                    Text("У бібліотеці: ${pending.review.candidateName}")
+                    Text("Впевненість зіставлення: $percent%", style = MaterialTheme.typography.bodySmall)
+                    if (pending.review.evidence.isNotEmpty()) {
+                        Text("Ознаки: ${pending.review.evidence.joinToString(" • ")}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text("Підтвердження прив’яже нове джерело до існуючої серії. Відхилення збереже рішення і не пропонуватиме цей самий збіг повторно.", style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingReview = null
+                    syncUrl(
+                        pending.url,
+                        pending.fallbackToBrowser,
+                        RoomSeriesReviewResolution(pending.review.candidateSeriesId, accept = true, confidence = pending.review.confidence)
+                    )
+                }) { Text("Так, та сама") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingReview = null
+                    syncUrl(
+                        pending.url,
+                        pending.fallbackToBrowser,
+                        RoomSeriesReviewResolution(pending.review.candidateSeriesId, accept = false, confidence = pending.review.confidence)
+                    )
+                }) { Text("Ні, окрема") }
+            }
+        )
+    }
 
     if (confirmDelete && series != null) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("Видалити серію?") },
         text = { Text("${series.series.name}\n\nЗапис серії буде видалено з бібліотеки. Завантажені аудіофайли не видаляються.") },

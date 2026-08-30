@@ -22,26 +22,30 @@ def _audio(url: str) -> bool:
 
 
 def _mark_track_target(page, site: str, index: int) -> dict | None:
-    """Find a player row and mark it without synthesizing a JS click."""
+    """Find a visible player row and mark it without synthesizing a JS click."""
     try:
         return page.evaluate(
             r"""({site,index}) => {
                 const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+                const chapter = String(index + 1).padStart(2, '0');
                 let wanted;
                 if (site === 'poleknig') {
-                    wanted = new RegExp('^' + String(index + 1).padStart(2, '0') + '$');
+                    wanted = new RegExp('^' + chapter + '$');
                 } else if (site === 'izib') {
-                    // Real IZIB rows look like:
-                    // "Звёздная кровь 11. Колония Альфа 02" plus a duration
-                    // in a sibling element. Match the trailing two-digit chapter
-                    // number instead of assuming the entire row text is just "02".
-                    wanted = new RegExp('(?:^|\\s)' + String(index + 1).padStart(2, '0') + '(?:\\s+\\d{1,2}:\\d{2})?$');
+                    // Visible rows are e.g. "Звёздная кровь 11. Колония Альфа 02"
+                    // and the duration may either be inside the row or a sibling.
+                    wanted = new RegExp('(?:^|\\s)' + chapter + '(?:\\s+\\d{1,2}:\\d{2})?$');
                 } else {
-                    wanted = new RegExp('(?:^|\\s)Игра Кота\\. Книга вторая_' + index + '(?:\\s|$)');
+                    // Do not depend on the localized book title. Knigavuhe track
+                    // labels reliably end in _0, _1, _2 ...; duration may follow.
+                    wanted = new RegExp('_' + index + '(?:\\s+\\d{1,2}:\\d{2})?$');
                 }
 
                 const all = Array.from(document.querySelectorAll('body *'));
                 let candidates = all.filter(el => wanted.test(norm(el.innerText || el.textContent)));
+
+                // Prefer the smallest matching descendant so the whole page/player
+                // container cannot win merely because its aggregate text matches.
                 const leaves = candidates.filter(el => !Array.from(el.children).some(c => wanted.test(norm(c.innerText || c.textContent))));
                 if (leaves.length) candidates = leaves;
                 candidates = candidates.filter(el => {
@@ -51,31 +55,32 @@ def _mark_track_target(page, site: str, index: int) -> dict | None:
                 });
                 if (!candidates.length) return null;
 
-                // Prefer a node whose text ends in the requested chapter number.
-                // If the smallest leaf is only an icon, use its closest visible row.
                 candidates.sort((a,b) => {
-                    const at = norm(a.innerText || a.textContent);
-                    const bt = norm(b.innerText || b.textContent);
                     const aa = a.getBoundingClientRect(), bb = b.getBoundingClientRect();
-                    const aScore = (wanted.test(at) ? 0 : 1000000) + aa.width * aa.height;
-                    const bScore = (wanted.test(bt) ? 0 : 1000000) + bb.width * bb.height;
-                    return aScore - bScore;
+                    return aa.width * aa.height - bb.width * bb.height;
                 });
                 let leaf = candidates[0];
-                if (site === 'izib') {
-                    const row = leaf.closest('li,[class*=track],[class*=playlist] > *,[class*=audio] > *,tr');
+
+                // On both sites the click handler can live on a surrounding row.
+                // Climb only to a nearby player-like ancestor, never to a broad
+                // document container.
+                if (site === 'izib' || site === 'knigavuhe') {
+                    const row = leaf.closest('li,tr,[role=row],[class*=track],[class*=playlist] > *,[class*=audio] > *,[class*=item]');
                     if (row) {
                         const rr = row.getBoundingClientRect();
                         const rs = getComputedStyle(row);
-                        if (rr.width > 2 && rr.height > 2 && rs.visibility !== 'hidden' && rs.display !== 'none') leaf = row;
+                        const rowText = norm(row.innerText || row.textContent);
+                        if (rr.width > 2 && rr.height > 2 && rr.height < 140 && rs.visibility !== 'hidden' && rs.display !== 'none' && wanted.test(rowText)) {
+                            leaf = row;
+                        }
                     }
                 }
 
                 document.querySelectorAll('[data-oai-cdp-target]').forEach(el => el.removeAttribute('data-oai-cdp-target'));
                 leaf.setAttribute('data-oai-cdp-target', '1');
                 leaf.scrollIntoView({block:'center', inline:'nearest'});
-                const r=leaf.getBoundingClientRect();
-                const parent=leaf.parentElement;
+                const r = leaf.getBoundingClientRect();
+                const parent = leaf.parentElement;
                 return {
                     text:norm(leaf.innerText || leaf.textContent).slice(0,220),
                     tag:leaf.tagName,
@@ -92,6 +97,30 @@ def _mark_track_target(page, site: str, index: int) -> dict | None:
         return None
 
 
+def _visible_track_hints(page, site: str) -> list[str]:
+    """Bounded diagnostics for selector misses; contains visible text only."""
+    try:
+        return page.evaluate(
+            r"""site => {
+                const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+                const out = [];
+                for (const el of Array.from(document.querySelectorAll('body *'))) {
+                    const t = norm(el.innerText || el.textContent);
+                    if (!t || t.length > 180) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 3 || r.height < 3 || r.height > 120) continue;
+                    const likely = site === 'knigavuhe' ? /_\d+(?:\s|$)/.test(t) : /(?:^|\s)\d{2}(?:\s+\d{1,2}:\d{2})?$/.test(t);
+                    if (likely && !out.includes(t)) out.push(t);
+                    if (out.length >= 12) break;
+                }
+                return out;
+            }""",
+            site,
+        )
+    except Exception:
+        return []
+
+
 def _trusted_click(page, site: str, index: int) -> tuple[bool, str]:
     target = _mark_track_target(page, site, index)
     if not target:
@@ -101,7 +130,8 @@ def _trusted_click(page, site: str, index: int) -> tuple[bool, str]:
         box = locator.bounding_box()
         if not box:
             return False, f"no-box:{target.get('text','')[:120]}"
-        x = box["x"] + min(box["width"] * 0.35, max(12.0, box["width"] / 2))
+        # Hit the left third where both players expose their play icon/title.
+        x = box["x"] + min(box["width"] * 0.25, max(14.0, box["width"] / 2))
         y = box["y"] + box["height"] / 2
         page.mouse.move(x, y)
         page.mouse.down()
@@ -156,7 +186,7 @@ def capture(page_url: str, site: str, max_tracks: int = 30, timeout_ms: int = 30
                 old_url = str(redirect.get("url", ""))
                 headers = redirect.get("headers") or {}
                 location = headers.get("location") or headers.get("Location")
-                if old_url and location and (site == "poleknig" and "/files/" in old_url or _audio(str(location))):
+                if old_url and location and ((site == "poleknig" and "/files/" in old_url) or _audio(str(location))):
                     diagnostics.append(f"redirect:{redirect.get('status')}:{old_url[:500]} -> {str(location)[:700]}")
                     remember(str(location), "Media" if _audio(str(location)) else "", "redirect")
 
@@ -175,7 +205,11 @@ def capture(page_url: str, site: str, max_tracks: int = 30, timeout_ms: int = 30
         session.on("Network.requestWillBeSent", request_event)
         session.on("Network.responseReceived", response_event)
         page.goto(page_url, wait_until="domcontentloaded", timeout=timeout_ms)
-        page.wait_for_timeout(1200)
+        page.wait_for_timeout(1400)
+
+        if site in {"knigavuhe", "izib"}:
+            hints = _visible_track_hints(page, site)
+            diagnostics.append(f"visible-track-hints={len(hints)}:{str(hints)[:1400]}")
 
         clicks = 0
         misses = 0
@@ -183,16 +217,16 @@ def capture(page_url: str, site: str, max_tracks: int = 30, timeout_ms: int = 30
             ok, info = _trusted_click(page, site, index)
             if not ok:
                 misses += 1
-                if index < 6 or misses <= 2:
+                if index < 8 or misses <= 2:
                     diagnostics.append(f"target-{index}:miss:{info}")
                 if misses >= 4:
                     break
                 continue
             clicks += 1
             misses = 0
-            if index < 10:
+            if index < 12:
                 diagnostics.append(f"target-{index}:hit:{info}")
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(550)
 
         diagnostics.insert(0, f"cdp-clicks={clicks}")
         diagnostics.insert(1, f"cdp-requests={request_count}")

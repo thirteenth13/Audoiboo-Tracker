@@ -22,4 +22,16 @@ class BazaKnigWebViewMediaCaptureTest {
         assertEquals(10, BazaKnigWebViewMediaCapture.trackNumber("https://x.redirectto.cc/a/10.mp3"))
         assertEquals(2, BazaKnigWebViewMediaCapture.trackNumber("https://x.redirectto.cc/a/2.mp3"))
     }
+
+    @Test fun acceptsNumberedTrackLabel() {
+        assertTrue(BazaKnigWebViewMediaCapture.isLikelyTrackLabel("01. Глава первая"))
+    }
+
+    @Test fun acceptsNamedChapterLabel() {
+        assertTrue(BazaKnigWebViewMediaCapture.isLikelyTrackLabel("Глава 12"))
+    }
+
+    @Test fun rejectsDescriptionTextAsTrack() {
+        assertFalse(BazaKnigWebViewMediaCapture.isLikelyTrackLabel("Роман Прокофьев — Звездная кровь"))
+    }
 }

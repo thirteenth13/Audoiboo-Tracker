@@ -14,7 +14,8 @@ sealed interface DeclarativeEntrypoint {
         val remoteId: String? = null,
         val books: RepeatedFields? = null,
         val followLink: String? = null,
-        val titleRegex: String? = null
+        val titleRegex: String? = null,
+        val supplement: SeriesSupplement? = null
     ) : DeclarativeEntrypoint
 
     data class SeriesSearch(
@@ -50,6 +51,14 @@ data class RepeatedFields(
     val number: String? = null
 )
 
+data class SeriesSupplement(
+    val startLink: String,
+    val items: RepeatedFields,
+    val seriesTitle: String,
+    val nextPage: String? = null,
+    val maxPages: Int = 1
+)
+
 fun interface DeclarativeEntrypointDecoder {
     fun decode(json: String): DeclarativeEntrypoint
 }
@@ -60,13 +69,23 @@ object JsonDeclarativeEntrypointDecoder : DeclarativeEntrypointDecoder {
         return when (root.getString("operation")) {
             "seriesLookup" -> {
                 val series = root.getJSONObject("series")
+                val supplement = series.optJSONObject("supplement")?.let { item ->
+                    SeriesSupplement(
+                        startLink = item.getString("startLink"),
+                        items = item.getJSONObject("items").toRepeatedFields(),
+                        seriesTitle = item.getString("seriesTitle"),
+                        nextPage = item.optString("nextPage").takeIf { it.isNotBlank() },
+                        maxPages = item.optInt("maxPages", 1).coerceIn(1, 10)
+                    )
+                }
                 DeclarativeEntrypoint.SeriesLookup(
                     title = series.getString("title"),
                     description = series.optString("description").takeIf { it.isNotBlank() },
                     remoteId = series.optString("remoteId").takeIf { it.isNotBlank() },
                     books = series.optJSONObject("books")?.toRepeatedFields(),
                     followLink = series.optString("followLink").takeIf { it.isNotBlank() },
-                    titleRegex = series.optString("titleRegex").takeIf { it.isNotBlank() }
+                    titleRegex = series.optString("titleRegex").takeIf { it.isNotBlank() },
+                    supplement = supplement
                 )
             }
             "seriesSearch" -> {
@@ -138,17 +157,12 @@ class DeclarativePluginRuntime(
         }
         var title = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
         title = applyRegex(title, spec.titleRegex)
-        val books = spec.books?.let { fields ->
-            document.select(fields.item).mapNotNull { item ->
-                val link = extract(item, fields.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                SourceBookRef(
-                    remoteId = fields.remoteId?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
-                    url = resolveUrl(item, link),
-                    title = fields.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
-                    number = fields.number?.let { extract(item, it) }?.toDoubleOrNull()
-                )
+        val books = buildList {
+            spec.books?.let { fields -> addAll(extractBookRefs(document, fields)) }
+            spec.supplement?.let { supplement ->
+                addAll(loadSupplementRefs(session, document, title, supplement))
             }
-        }.orEmpty()
+        }.distinctBy { SourceKeys.normalizeUrl(it.url) }
         session.requireOutputSize(books.size)
         val authors = spec.books?.author?.let { selector ->
             document.select(spec.books.item)
@@ -246,6 +260,52 @@ class DeclarativePluginRuntime(
         }.distinctBy { it.url }
         session.requireOutputSize(results.size)
         return results
+    }
+
+    private fun extractBookRefs(document: Element, fields: RepeatedFields): List<SourceBookRef> =
+        document.select(fields.item).mapNotNull { item ->
+            val link = extract(item, fields.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            SourceBookRef(
+                remoteId = fields.remoteId?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
+                url = resolveUrl(item, link),
+                title = fields.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
+                number = fields.number?.let { extract(item, it) }?.toDoubleOrNull()
+            )
+        }
+
+    private fun loadSupplementRefs(
+        session: PluginSandboxSession,
+        seriesDocument: Element,
+        expectedTitle: String,
+        spec: SeriesSupplement
+    ): List<SourceBookRef> {
+        val start = extract(seriesDocument, spec.startLink)?.takeIf { it.isNotBlank() } ?: return emptyList()
+        var nextUrl: String? = resolveUrl(seriesDocument, start)
+        val visited = linkedSetOf<String>()
+        val collected = mutableListOf<SourceBookRef>()
+        val expected = SourceIdentityMatcher.normalizeTitle(expectedTitle)
+        var pages = 0
+
+        while (!nextUrl.isNullOrBlank() && visited.add(nextUrl) && pages++ < spec.maxPages) {
+            val response = session.httpGet(nextUrl)
+            if (response.statusCode !in 200..299) break
+            val document = Jsoup.parse(response.body, response.finalUrl)
+            document.select(spec.items.item).forEach { item ->
+                val declared = extract(item, spec.seriesTitle)?.takeIf { it.isNotBlank() } ?: return@forEach
+                if (SourceIdentityMatcher.normalizeTitle(declared) != expected) return@forEach
+                val link = extract(item, spec.items.link)?.takeIf { it.isNotBlank() } ?: return@forEach
+                collected += SourceBookRef(
+                    remoteId = spec.items.remoteId?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
+                    url = resolveUrl(item, link),
+                    title = spec.items.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
+                    number = spec.items.number?.let { extract(item, it) }?.toDoubleOrNull()
+                )
+            }
+            nextUrl = spec.nextPage
+                ?.let { selector -> extract(document, selector)?.takeIf { it.isNotBlank() } }
+                ?.let { resolveUrl(document, it) }
+        }
+        return collected
     }
 
     private fun loadEntrypoint(manifest: PluginPackageManifest, packageDir: File, name: String): DeclarativeEntrypoint {

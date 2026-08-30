@@ -7,6 +7,8 @@ from urllib.parse import urljoin, urlsplit
 from playwright.sync_api import sync_playwright
 
 AUDIO_EXTENSIONS = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".flac")
+FILES_RE = re.compile(r"(?:https?://[^\"'<>\s]+)?/files/\d+(?:\?[^\"'<>\s]*)?", re.I)
+AUDIO_RE = re.compile(r"https?://[^\"'<>\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac)(?:\?[^\"'<>\s]*)?", re.I)
 
 
 @dataclass
@@ -23,7 +25,6 @@ def _is_audio_url(url: str) -> bool:
 
 
 def redirect_target(response_url: str, status: int, headers: dict[str, str]) -> str | None:
-    """Return a reusable audio target from a Poleknig /files redirect."""
     if status not in (301, 302, 303, 307, 308):
         return None
     if "poleknig.com" not in (urlsplit(response_url).hostname or ""):
@@ -38,8 +39,44 @@ def redirect_target(response_url: str, status: int, headers: dict[str, str]) -> 
     return target if _is_audio_url(target) else None
 
 
+def extract_embedded_urls(text: str, page_url: str) -> tuple[list[str], list[str]]:
+    """Find public resolver/media URLs already embedded in player markup or JS."""
+    cleaned = (text or "").replace("\\/", "/").replace("&amp;", "&")
+    resolvers: list[str] = []
+    media: list[str] = []
+    for match in FILES_RE.finditer(cleaned):
+        url = urljoin(page_url, match.group(0))
+        if url not in resolvers:
+            resolvers.append(url)
+    for match in AUDIO_RE.finditer(cleaned):
+        url = match.group(0)
+        if url not in media:
+            media.append(url)
+    return resolvers, media
+
+
+def _player_snapshot(page) -> dict:
+    """Return bounded, non-cookie diagnostics from the visible player and scripts."""
+    return page.evaluate(r"""() => {
+        const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+        const rows = Array.from(document.querySelectorAll('body *')).filter(el => /^\d{2}$/.test(norm(el.innerText || el.textContent)));
+        const unique = [];
+        for (const el of rows) {
+            if (Array.from(el.children).some(c => /^\d{2}$/.test(norm(c.innerText || c.textContent)))) continue;
+            const attrs = {};
+            for (const a of el.attributes || []) {
+                if (/^(data-|href|src|onclick|id|class)/i.test(a.name)) attrs[a.name] = String(a.value).slice(0, 500);
+            }
+            unique.push({text:norm(el.innerText || el.textContent), tag:el.tagName, attrs, html:el.outerHTML.slice(0, 1200)});
+            if (unique.length >= 12) break;
+        }
+        const scripts = Array.from(document.scripts).map(s => s.textContent || '').filter(t => /\/files\/|\.mp3|playlist|track|audio/i.test(t)).map(t => t.slice(0, 12000)).slice(0, 12);
+        const audio = Array.from(document.querySelectorAll('audio,source')).map(el => ({tag:el.tagName, src:el.src || el.getAttribute('src') || '', html:el.outerHTML.slice(0,800)})).slice(0,12);
+        return {rows:unique, scripts, audio, html:document.documentElement.outerHTML};
+    }""")
+
+
 def _click_track(page, label: str) -> bool:
-    """Click the smallest DOM node whose visible label is exactly 01, 02, ..."""
     try:
         return bool(page.evaluate(
             r"""label => {
@@ -85,8 +122,6 @@ def resolve(page_url: str, max_tracks: int = 60, timeout_ms: int = 30000) -> Bro
         page = context.new_page()
         page.set_default_timeout(1500)
 
-        # Prevent the large 206 audio body from being downloaded. The /files/
-        # 302 is still allowed through and is enough to recover the final MP3.
         def route_handler(route) -> None:
             request_url = route.request.url
             if _is_audio_url(request_url) and "poleknig.com/storage/" in request_url:
@@ -96,6 +131,24 @@ def resolve(page_url: str, max_tracks: int = 60, timeout_ms: int = 30000) -> Bro
 
         page.route("**/*", route_handler)
 
+        def remember_resolver(url: str) -> None:
+            if url not in seen_resolvers:
+                seen_resolvers.add(url)
+                resolver_urls.append(url)
+
+        def remember_media(url: str) -> None:
+            if url not in seen_media:
+                seen_media.add(url)
+                media.append(url)
+
+        def on_request(request) -> None:
+            try:
+                u = str(request.url)
+                if "poleknig.com" in (urlsplit(u).hostname or "") and urlsplit(u).path.startswith("/files/"):
+                    remember_resolver(u)
+            except Exception:
+                pass
+
         def on_response(response) -> None:
             nonlocal redirects
             try:
@@ -104,31 +157,50 @@ def resolve(page_url: str, max_tracks: int = 60, timeout_ms: int = 30000) -> Bro
                 headers = dict(response.headers or {})
                 path = urlsplit(response_url).path
                 if "poleknig.com" in (urlsplit(response_url).hostname or "") and path.startswith("/files/"):
-                    if response_url not in seen_resolvers:
-                        seen_resolvers.add(response_url)
-                        resolver_urls.append(response_url)
+                    remember_resolver(response_url)
                     target = redirect_target(response_url, status, headers)
                     diagnostics.append(f"{path}:{status}:location={'yes' if headers.get('location') else 'no'}")
                     if target:
                         redirects += 1
-                        if target not in seen_media:
-                            seen_media.add(target)
-                            media.append(target)
+                        remember_media(target)
                 elif _is_audio_url(response_url) and "poleknig.com/storage/" in response_url:
-                    if response_url not in seen_media:
-                        seen_media.add(response_url)
-                        media.append(response_url)
+                    remember_media(response_url)
             except Exception as exc:
                 diagnostics.append(f"response-error:{type(exc).__name__}")
 
+        page.on("request", on_request)
         page.on("response", on_response)
         page.goto(page_url, wait_until="domcontentloaded", timeout=timeout_ms)
-        page.wait_for_timeout(600)
+        page.wait_for_timeout(1000)
+
+        # Inspect the actual player state before trying playback. This catches
+        # resolver URLs hidden in data attributes/inline JS even when headless
+        # Chromium refuses to initiate media playback.
+        try:
+            snapshot = _player_snapshot(page)
+            embedded_text = "\n".join([snapshot.get("html", ""), *snapshot.get("scripts", [])])
+            embedded_resolvers, embedded_media = extract_embedded_urls(embedded_text, page_url)
+            for u in embedded_resolvers:
+                remember_resolver(u)
+            for u in embedded_media:
+                remember_media(u)
+            diagnostics.append(f"state-rows={len(snapshot.get('rows', []))}")
+            diagnostics.append(f"state-scripts={len(snapshot.get('scripts', []))}")
+            diagnostics.append(f"state-audio={len(snapshot.get('audio', []))}")
+            diagnostics.append(f"state-resolvers={len(embedded_resolvers)}")
+            diagnostics.append(f"state-media={len(embedded_media)}")
+            for row in snapshot.get("rows", [])[:8]:
+                attrs = row.get("attrs", {})
+                safe_attrs = {k:v for k,v in attrs.items() if k.lower() not in {"cookie", "authorization"}}
+                diagnostics.append(f"row={row.get('text')}:{row.get('tag')}:{str(safe_attrs)[:500]}")
+        except Exception as exc:
+            diagnostics.append(f"state-error:{type(exc).__name__}")
 
         misses = 0
         for number in range(1, max_tracks + 1):
             label = f"{number:02d}"
-            before = len(media)
+            before_resolvers = len(resolver_urls)
+            before_media = len(media)
             if not _click_track(page, label):
                 misses += 1
                 if misses >= 3:
@@ -136,11 +208,8 @@ def resolve(page_url: str, max_tracks: int = 60, timeout_ms: int = 30000) -> Bro
                 continue
             clicks += 1
             misses = 0
-
-            # The redirect appears almost immediately after the player switches
-            # tracks. Stop waiting as soon as a new target is captured.
             waited = 0
-            while waited < 1200 and len(media) == before:
+            while waited < 700 and len(media) == before_media and len(resolver_urls) == before_resolvers:
                 page.wait_for_timeout(100)
                 waited += 100
 
@@ -150,10 +219,4 @@ def resolve(page_url: str, max_tracks: int = 60, timeout_ms: int = 30000) -> Bro
         context.close()
         browser.close()
 
-    return BrowserResolveResult(
-        clicks=clicks,
-        redirects=redirects,
-        media=media,
-        resolver_urls=resolver_urls,
-        diagnostics=diagnostics,
-    )
+    return BrowserResolveResult(clicks=clicks, redirects=redirects, media=media, resolver_urls=resolver_urls, diagnostics=diagnostics)

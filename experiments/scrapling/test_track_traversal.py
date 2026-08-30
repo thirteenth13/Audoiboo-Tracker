@@ -6,11 +6,18 @@ def test_numbered_track_parts():
         "https://cdn.example/book/",
         0,
         ".mp3",
+        "",
     )
 
 
 def test_numbered_track_url_preserves_extension():
     assert numbered_track_url("https://cdn.example/book/7.m4b", 8) == "https://cdn.example/book/8.m4b"
+
+
+def test_numbered_track_url_preserves_query_signature():
+    assert numbered_track_url("https://cdn.example/book/chapter-01.mp3?token=abc&expires=123", 2) == (
+        "https://cdn.example/book/chapter-2.mp3?token=abc&expires=123"
+    )
 
 
 def test_numbered_track_url_rejects_non_numbered_filename():

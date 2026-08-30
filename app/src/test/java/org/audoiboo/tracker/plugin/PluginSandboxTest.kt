@@ -51,14 +51,40 @@ class PluginSandboxTest {
     }
 
     @Test
-    fun rejectsRedirectToUndeclaredHost() {
-        val sandbox = PluginSandbox(PluginHttpTransport { _, _ ->
-            PluginHttpResponse(200, "https://cdn.example.net/archive.zip", "data")
+    fun rejectsRedirectToUndeclaredHostBeforeSecondRequest() {
+        var calls = 0
+        val sandbox = PluginSandbox(PluginHttpTransport { request, _ ->
+            calls++
+            PluginHttpResponse(
+                statusCode = 302,
+                finalUrl = request.url,
+                body = "",
+                headers = mapOf("Location" to listOf("https://cdn.example.net/archive.zip"))
+            )
         })
 
         assertThrows(PluginSandboxViolation::class.java) {
             sandbox.open(manifest).httpGet("https://example.org/download")
         }
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun followsDeclaredRedirectThroughValidatedSecondHop() {
+        val seen = mutableListOf<String>()
+        val sandbox = PluginSandbox(PluginHttpTransport { request, _ ->
+            seen += request.url
+            if (request.url.endsWith("/start")) {
+                PluginHttpResponse(302, request.url, "", mapOf("Location" to listOf("/final")))
+            } else {
+                PluginHttpResponse(200, request.url, "ok")
+            }
+        })
+
+        val response = sandbox.open(manifest).httpGet("https://example.org/start")
+
+        assertEquals("ok", response.body)
+        assertEquals(listOf("https://example.org/start", "https://example.org/final"), seen)
     }
 
     @Test

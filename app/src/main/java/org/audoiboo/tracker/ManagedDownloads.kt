@@ -36,7 +36,7 @@ internal object ManagedDownloads {
         parts += cleanPath(series)
         val relativeDir = parts.joinToString("/")
         val bookDir = cleanPath(title).take(120)
-        val fileName = bookDir + archiveExtension(archiveUrl)
+        val fileName = bookDir + DownloadFilePolicy.extension(archiveUrl)
         val record = ManagedDownloadRecord(
             UUID.randomUUID().toString(), title, series, author, bookUrl, archiveUrl,
             relativeDir, bookDir, fileName, ManagedDownloadState.QUEUED
@@ -95,8 +95,4 @@ internal object ManagedDownloads {
     }
 
     internal fun cleanPath(v: String) = v.replace(Regex("[\\/:*?\"<>|]"), "_").trim().ifBlank { "Unknown" }
-
-    private fun archiveExtension(url: String) =
-        Regex("\\.(zip|rar|7z)(?:\\?|$)", RegexOption.IGNORE_CASE)
-            .find(url)?.value?.substringBefore('?') ?: ".zip"
 }

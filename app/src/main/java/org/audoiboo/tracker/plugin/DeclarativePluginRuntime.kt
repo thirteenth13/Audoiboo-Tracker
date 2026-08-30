@@ -13,6 +13,16 @@ sealed interface DeclarativeEntrypoint {
         val books: RepeatedFields? = null
     ) : DeclarativeEntrypoint
 
+    data class BookLookup(
+        val title: String,
+        val author: String? = null,
+        val remoteId: String? = null,
+        val seriesTitle: String? = null,
+        val seriesNumber: String? = null,
+        val coverUrl: String? = null,
+        val description: String? = null
+    ) : DeclarativeEntrypoint
+
     data class DownloadResolution(
         val items: RepeatedFields,
         val type: DownloadType = DownloadType.ARCHIVE,
@@ -44,6 +54,18 @@ object JsonDeclarativeEntrypointDecoder : DeclarativeEntrypointDecoder {
                     description = series.optString("description").takeIf { it.isNotBlank() },
                     remoteId = series.optString("remoteId").takeIf { it.isNotBlank() },
                     books = series.optJSONObject("books")?.toRepeatedFields()
+                )
+            }
+            "bookLookup" -> {
+                val book = root.getJSONObject("book")
+                DeclarativeEntrypoint.BookLookup(
+                    title = book.getString("title"),
+                    author = book.optString("author").takeIf { it.isNotBlank() },
+                    remoteId = book.optString("remoteId").takeIf { it.isNotBlank() },
+                    seriesTitle = book.optString("seriesTitle").takeIf { it.isNotBlank() },
+                    seriesNumber = book.optString("seriesNumber").takeIf { it.isNotBlank() },
+                    coverUrl = book.optString("coverUrl").takeIf { it.isNotBlank() },
+                    description = book.optString("description").takeIf { it.isNotBlank() }
                 )
             }
             "downloadResolution" -> {
@@ -114,6 +136,32 @@ class DeclarativePluginRuntime(
         )
     }
 
+    fun resolveBook(manifest: PluginPackageManifest, packageDir: File, url: String): SourceBook? {
+        requireCapability(manifest, SourceCapability.BOOK_LOOKUP)
+        val spec = loadEntrypoint(manifest, packageDir, "bookLookup") as? DeclarativeEntrypoint.BookLookup
+            ?: throw PluginSandboxViolation("bookLookup entrypoint has wrong operation")
+        val session = sandbox.open(manifest)
+        val response = session.httpGet(url)
+        if (response.statusCode !in 200..299) return null
+        val document = Jsoup.parse(response.body, response.finalUrl)
+        val title = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
+        val author = spec.author?.let { extract(document, it) }?.takeIf { it.isNotBlank() }
+        val cover = spec.coverUrl?.let { extract(document, it) }
+            ?.takeIf { it.isNotBlank() }
+            ?.let { resolveUrl(document, it) }
+        return SourceBook(
+            sourceId = manifest.id,
+            remoteId = spec.remoteId?.let { extract(document, it) }?.takeIf { it.isNotBlank() },
+            url = response.finalUrl,
+            title = title,
+            authors = author?.let { listOf(SourceAuthor(it)) }.orEmpty(),
+            seriesTitle = spec.seriesTitle?.let { extract(document, it) }?.takeIf { it.isNotBlank() },
+            seriesNumber = spec.seriesNumber?.let { extract(document, it) }?.toDoubleOrNull(),
+            coverUrl = cover,
+            description = spec.description?.let { extract(document, it) }?.takeIf { it.isNotBlank() }
+        )
+    }
+
     fun resolveDownloads(manifest: PluginPackageManifest, packageDir: File, url: String): List<DownloadCandidate> {
         requireCapability(manifest, SourceCapability.DOWNLOAD_RESOLUTION)
         val spec = loadEntrypoint(manifest, packageDir, "downloadResolution") as? DeclarativeEntrypoint.DownloadResolution
@@ -165,6 +213,6 @@ class DeclarativePluginRuntime(
 
     private fun resolveUrl(element: Element, value: String): String {
         if (value.startsWith("http://") || value.startsWith("https://")) return value
-        return element.baseUri().let { base -> java.net.URI(base).resolve(value).toString() }
+        return java.net.URI(element.baseUri()).resolve(value).toString()
     }
 }

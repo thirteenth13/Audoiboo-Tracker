@@ -38,6 +38,7 @@ class ProbeResult:
     traversal_media: int = 0
     traversal_added_media: int = 0
     media_urls: list[str] = field(default_factory=list)
+    diagnostics: list[str] = field(default_factory=list)
     timed_out: bool = False
     error: str | None = None
 
@@ -53,11 +54,16 @@ def run_one(name: str, url: str) -> ProbeResult:
 
     if name == "poleknig":
         try:
-            requests, urls = resolve_poleknig(url, limit=40)
-            result.traversal_responses = requests
-            result.traversal_media = len(urls)
-            result.traversal_added_media = len(urls)
-            all_urls.update(urls)
+            probe = resolve_poleknig(url, limit=40)
+            result.traversal_responses = probe.requests
+            result.traversal_media = len(probe.media)
+            result.traversal_added_media = len(probe.media)
+            all_urls.update(probe.media)
+            result.diagnostics = [
+                f"discovered={len(probe.discovered)}",
+                *[f"resolver={u}" for u in probe.discovered[:8]],
+                *probe.statuses[:16],
+            ]
         except Exception as exc:
             _add_error(result, "poleknig-fast", exc)
         result.media_urls = sorted(all_urls)
@@ -135,6 +141,8 @@ def run_isolated(name: str, url: str) -> ProbeResult:
         f"error={result.error or '-'}",
         flush=True,
     )
+    for diagnostic in result.diagnostics:
+        print(f"DIAG {name} {diagnostic}", flush=True)
     for media_url in result.media_urls:
         print(f"MEDIA {name} {media_url}", flush=True)
     return result

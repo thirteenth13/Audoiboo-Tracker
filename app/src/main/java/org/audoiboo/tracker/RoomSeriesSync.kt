@@ -235,17 +235,15 @@ internal object RoomSeriesSync {
         // Discovery is best-effort and runs only after the canonical sync has committed. A broken
         // alternate source must never roll back or fail the user's primary series update.
         try {
-            discoverAndPersistAlternates(
-                context = context,
-                canonicalSeriesId = canonicalSeriesId,
-                canonical = canonicalSeriesInput(
-                    SeriesWithBooks(
-                        series = dao.seriesById(canonicalSeriesId) ?: return@withContext result,
-                        books = dao.booksForSeries(canonicalSeriesId)
-                    )
-                ),
-                excludeSourceId = plugin.descriptor.id
-            )
+            val canonicalSnapshot = dao.library().firstOrNull { it.series.id == canonicalSeriesId }
+            if (canonicalSnapshot != null) {
+                discoverAndPersistAlternates(
+                    context = context,
+                    canonicalSeriesId = canonicalSeriesId,
+                    canonical = canonicalSeriesInput(canonicalSnapshot),
+                    excludeSourceId = plugin.descriptor.id
+                )
+            }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
         }

@@ -8,6 +8,10 @@ package org.audoiboo.tracker.plugin
  * "Звездная Кровь. Белый Дьявол 02 ..." carries a stronger structural signal than the flattened
  * metadata: after the parent series name there is a named qualifier before a new volume number.
  * Plain parent-series titles such as "Звездная Кровь 08 ..." remain accepted.
+ *
+ * Generic volume words ("книга", "том", "часть", "book", "volume") are not subseries names.
+ * Many sources render ordinary titles as "<series>. Книга 3"; treating that as a nested series
+ * silently drops almost the whole cycle.
  */
 object SeriesBookMembershipPolicy {
     fun belongsTo(series: SourceSeries, book: SourceBook): Boolean {
@@ -21,11 +25,6 @@ object SeriesBookMembershipPolicy {
     fun filter(series: SourceSeries, books: List<SourceBook>): List<SourceBook> =
         books.filter { belongsTo(series, it) }
 
-    /**
-     * Returns a normalized candidate subseries title when the book title has the form
-     * "<parent series> <named qualifier> <volume number>". The value is intended only for matching
-     * an already-known canonical series; callers should not create a new series from this signal.
-     */
     fun inferredNestedSeriesKey(series: SourceSeries, book: SourceBook): String? =
         nestedParts(series, book)?.first
 
@@ -44,12 +43,26 @@ object SeriesBookMembershipPolicy {
         val tokens = suffix.split(' ').filter { it.isNotBlank() }
         val firstNumber = tokens.indexOfFirst(::isVolumeNumber)
         if (firstNumber <= 0) return null
-        val qualifier = tokens.take(firstNumber).filter { token -> token.any(Char::isLetter) }
+        val qualifier = tokens.take(firstNumber)
+            .filter { token -> token.any(Char::isLetter) }
+            .filterNot(::isGenericVolumeQualifier)
         if (qualifier.isEmpty()) return null
         val number = tokens[firstNumber].toDoubleOrNull()?.toInt() ?: return null
         return (listOf(expected) + qualifier).joinToString(" ") to number
     }
 
+    private fun isGenericVolumeQualifier(token: String): Boolean {
+        val normalized = token.lowercase().trim('.', ',', ':', '-', '–', '—', '№', '#')
+        return normalized in GENERIC_VOLUME_QUALIFIERS
+    }
+
     private fun isVolumeNumber(token: String): Boolean =
         token.toDoubleOrNull() != null || Regex("^\\d+(?:[.-]\\d+)*$").matches(token)
+
+    private val GENERIC_VOLUME_QUALIFIERS = setOf(
+        "книга", "книги", "кн",
+        "том", "тома", "т",
+        "часть", "частина", "части", "ч",
+        "book", "volume", "vol", "part"
+    )
 }

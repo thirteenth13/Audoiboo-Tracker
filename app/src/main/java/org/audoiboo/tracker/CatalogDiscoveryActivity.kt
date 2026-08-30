@@ -1,6 +1,8 @@
 package org.audoiboo.tracker
 
+import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -31,9 +33,14 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
     var query by remember { mutableStateOf("") }
     var searched by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
+    var importingId by remember { mutableStateOf<String?>(null) }
     var results by remember { mutableStateOf<List<CatalogSourceMatch>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    fun openSource(url: String) {
+        activity.startActivity(Intent(activity, MainActivity::class.java).apply { putExtra(MainActivity.EXTRA_URL, url) })
+    }
 
     fun search() {
         val value = query.trim()
@@ -46,6 +53,26 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
                 .onSuccess { results = it }
                 .onFailure { error = it.message ?: "Не вдалося виконати пошук" }
             loading = false
+        }
+    }
+
+    fun addToLibrary(result: CatalogSourceMatch) {
+        if (importingId != null) return
+        importingId = result.canonical.id
+        scope.launch {
+            when (val imported = runCatching { CatalogLibraryImport.add(activity, result) }.getOrNull()) {
+                is CatalogLibraryImportResult.Added -> {
+                    Toast.makeText(activity, "${imported.name}: додано ${imported.books} книг", Toast.LENGTH_LONG).show()
+                    activity.startActivity(Intent(activity, RoomLibraryActivity::class.java))
+                }
+                is CatalogLibraryImportResult.NeedsReview -> {
+                    Toast.makeText(activity, "Збіг потребує перевірки — відкриваю джерело", Toast.LENGTH_LONG).show()
+                    openSource(imported.sourceUrl)
+                }
+                CatalogLibraryImportResult.NoAudioSource, null ->
+                    Toast.makeText(activity, "Немає достатньо надійного аудіоджерела для додавання", Toast.LENGTH_LONG).show()
+            }
+            importingId = null
         }
     }
 
@@ -66,7 +93,7 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
                 trailingIcon = { TextButton(onClick = ::search, enabled = query.isNotBlank() && !loading) { Text("Знайти") } },
                 singleLine = true
             )
-            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (loading || importingId != null) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
             if (!loading && error == null && results.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -74,7 +101,15 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
                 }
             } else if (results.isNotEmpty()) {
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(results, key = { it.canonical.id }) { CatalogSeriesCard(it) }
+                    items(results, key = { it.canonical.id }) { result ->
+                        CatalogSeriesCard(
+                            result = result,
+                            importing = importingId == result.canonical.id,
+                            actionsEnabled = importingId == null,
+                            onAdd = { addToLibrary(result) },
+                            onOpenSource = ::openSource
+                        )
+                    }
                 }
             }
         }
@@ -82,7 +117,13 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
 }
 
 @Composable
-private fun CatalogSeriesCard(result: CatalogSourceMatch) {
+private fun CatalogSeriesCard(
+    result: CatalogSourceMatch,
+    importing: Boolean,
+    actionsEnabled: Boolean,
+    onAdd: () -> Unit,
+    onOpenSource: (String) -> Unit
+) {
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(result.series.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -97,6 +138,11 @@ private fun CatalogSeriesCard(result: CatalogSourceMatch) {
                 },
                 style = MaterialTheme.typography.bodySmall
             )
+            Button(
+                onClick = onAdd,
+                enabled = actionsEnabled && accepted > 0,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(if (importing) "Додаю…" else "Додати в бібліотеку") }
             HorizontalDivider()
             result.series.books.forEach { book ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
@@ -116,7 +162,10 @@ private fun CatalogSeriesCard(result: CatalogSourceMatch) {
                         MatchDisposition.REVIEW -> "перевірити"
                         MatchDisposition.REJECT -> "відхилено"
                     }
-                    Text("${finding.sourceId}: $percent% • $status", style = MaterialTheme.typography.bodySmall)
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("${finding.sourceId}: $percent% • $status", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { onOpenSource(finding.series.url) }, enabled = actionsEnabled) { Text("Відкрити") }
+                    }
                 }
             }
         }

@@ -17,6 +17,7 @@ data class PluginStoreScanResult(
  * Layout:
  * plugins/
  *   installed/<id>/active-version
+ *   installed/<id>/enabled
  *   installed/<id>/versions/<version>/plugin.json
  *   quarantine/<id>/<version>-<timestamp>/...
  */
@@ -40,6 +41,7 @@ class PluginPackageStore(
                 val versions = availableVersions(pluginId)
                 if (versions.isEmpty()) {
                     activeVersionFile(pluginId).delete()
+                    enabledMarker(pluginId).delete()
                     errors += "$pluginId: no installed versions"
                     return@forEach
                 }
@@ -77,6 +79,7 @@ class PluginPackageStore(
 
                 if (registration == null || selectedVersion == null) {
                     activeVersionFile(pluginId).delete()
+                    enabledMarker(pluginId).delete()
                     manager.markPackageState(pluginId, PluginState.QUARANTINED, "No valid installed version")
                     return@forEach
                 }
@@ -95,13 +98,24 @@ class PluginPackageStore(
         )
     }
 
+    fun enable(pluginId: String): Boolean {
+        if (!File(installedRoot(), pluginId).isDirectory) return false
+        enabledMarker(pluginId).apply {
+            parentFile?.mkdirs()
+            writeText("enabled")
+        }
+        disabledMarker(pluginId).delete()
+        return true
+    }
+
     fun disable(pluginId: String): Boolean {
         if (!File(installedRoot(), pluginId).isDirectory) return false
+        enabledMarker(pluginId).delete()
         disabledMarker(pluginId).apply {
             parentFile?.mkdirs()
             writeText("disabled")
         }
-        manager.markPackageState(pluginId, PluginState.DISABLED, "Disabled by user")
+        manager.disablePackagePlugin(pluginId)
         return true
     }
 
@@ -111,12 +125,15 @@ class PluginPackageStore(
         return marker.delete()
     }
 
+    fun isEnabled(pluginId: String): Boolean = enabledMarker(pluginId).isFile && !disabledMarker(pluginId).isFile
+
     fun isDisabled(pluginId: String): Boolean = disabledMarker(pluginId).isFile
 
     fun quarantineActive(pluginId: String, reason: String): Boolean {
         val active = readActiveVersion(pluginId) ?: return false
         val moved = quarantineVersion(pluginId, active, reason)
         if (!moved) return false
+        enabledMarker(pluginId).delete()
         val fallback = availableVersions(pluginId).maxOrNull()
         if (fallback != null) writeActiveVersionAtomically(pluginId, fallback)
         else activeVersionFile(pluginId).delete()
@@ -213,6 +230,7 @@ class PluginPackageStore(
     private fun versionsDir(pluginId: String) = File(installedRoot(), "$pluginId/versions")
     private fun versionDir(pluginId: String, version: Int) = File(versionsDir(pluginId), version.toString())
     private fun activeVersionFile(pluginId: String) = File(installedRoot(), "$pluginId/active-version")
+    private fun enabledMarker(pluginId: String) = File(installedRoot(), "$pluginId/enabled")
     private fun disabledMarker(pluginId: String) = File(installedRoot(), "$pluginId/disabled")
 
     private sealed interface LoadResult {

@@ -57,16 +57,15 @@ internal object AudiobooFastParser {
         }
 
         // Audioboo occasionally exposes a just-published volume on the author's page before the
-        // xfsearch/cikl listing catches up. Recover those cards from the same author and keep only
-        // cards that explicitly declare the requested series. Membership policy later rejects
-        // flattened subseries such as "Звездная Кровь. Белый Дьявол" when the site labels them only
-        // as the parent series.
+        // xfsearch/cikl listing catches up. It also sometimes flattens older subseries volumes into
+        // their parent series metadata. Recover both cases from the same author: exact declared
+        // series matches are accepted, and a flattened card is accepted only when its title itself
+        // structurally starts with the requested subseries followed by a volume number.
         if (!targetSeries.isNullOrBlank()) {
             authorUrls.forEach { authorUrl ->
                 crawlPages(authorUrl, MAX_AUTHOR_PAGES) { doc ->
                     parseCards(doc).forEach { parsed ->
-                        val cardSeries = parsed.book.seriesTitle ?: return@forEach
-                        if (sameSeries(targetSeries, cardSeries)) {
+                        if (belongsToTargetSeries(targetSeries, parsed.book)) {
                             collected.putIfAbsent(parsed.book.url, parsed.book)
                         }
                     }
@@ -150,6 +149,19 @@ internal object AudiobooFastParser {
             ?.trim()
             ?.takeIf { it.isNotBlank() }
     }.getOrNull()
+
+    private fun belongsToTargetSeries(targetSeries: String, book: FastBook): Boolean {
+        val declared = book.seriesTitle
+        if (!declared.isNullOrBlank() && sameSeries(targetSeries, declared)) return true
+
+        val target = normalizeSeries(targetSeries)
+        val title = normalizeSeries(book.title)
+        val start = title.indexOf(target)
+        if (target.isBlank() || start < 0) return false
+        val suffix = title.substring(start + target.length).trim()
+        val firstToken = suffix.substringBefore(' ').trim()
+        return firstToken.matches(Regex("^\\d+(?:[.-]\\d+)*$"))
+    }
 
     private fun sameSeries(left: String, right: String): Boolean = normalizeSeries(left) == normalizeSeries(right)
 

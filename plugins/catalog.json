@@ -4,11 +4,11 @@
     {
       "id": "baza-knig",
       "name": "Baza-Knig",
-      "version": 1,
+      "version": 2,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/baza-knig-1.abplugin",
-      "sha256": "b6d79516b1292f77640c9e236d9ac31d75a8f8be85ebaa2dc651fd63610eddb4",
-      "description": "Серії та книги Baza-Knig; прямі аудіофайли, коли вони доступні у HTML."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/baza-knig-2.abplugin",
+      "sha256": "96390fba651f1fc35240a04dc2de6b4a164ea0541550279e179d347e007d4937",
+      "description": "Серії, пошук серій та книги Baza-Knig; прямі аудіофайли, коли вони доступні у HTML."
     }
   ]
 }

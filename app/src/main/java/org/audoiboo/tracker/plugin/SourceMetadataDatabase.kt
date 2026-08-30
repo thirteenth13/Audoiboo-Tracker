@@ -148,6 +148,9 @@ interface SourceMetadataDao {
     @Query("SELECT * FROM series_match_decisions WHERE sourceId=:sourceId AND remoteKey=:remoteKey ORDER BY decidedAt DESC")
     suspend fun matchDecisions(sourceId: String, remoteKey: String): List<SeriesMatchDecisionEntity>
 
+    @Query("SELECT * FROM series_match_decisions WHERE canonicalSeriesId=:seriesId AND decision='REVIEW_PENDING' ORDER BY decidedAt DESC")
+    suspend fun pendingMatchDecisions(seriesId: String): List<SeriesMatchDecisionEntity>
+
     @Upsert
     suspend fun upsertMatchDecision(value: SeriesMatchDecisionEntity)
 

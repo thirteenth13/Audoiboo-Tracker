@@ -4,6 +4,8 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.json.JSONObject
 import java.io.File
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 sealed interface DeclarativeEntrypoint {
     data class SeriesLookup(
@@ -15,6 +17,12 @@ sealed interface DeclarativeEntrypoint {
         val titleRegex: String? = null
     ) : DeclarativeEntrypoint
 
+    data class SeriesSearch(
+        val searchUrl: String,
+        val items: RepeatedFields,
+        val maxResults: Int = 10
+    ) : DeclarativeEntrypoint
+
     data class BookLookup(
         val title: String,
         val author: String? = null,
@@ -22,8 +30,7 @@ sealed interface DeclarativeEntrypoint {
         val seriesTitle: String? = null,
         val seriesNumber: String? = null,
         val coverUrl: String? = null,
-        val description: String? = null,
-        val titleRegex: String? = null
+        val description: String? = null
     ) : DeclarativeEntrypoint
 
     data class DownloadResolution(
@@ -61,6 +68,13 @@ object JsonDeclarativeEntrypointDecoder : DeclarativeEntrypointDecoder {
                     titleRegex = series.optString("titleRegex").takeIf { it.isNotBlank() }
                 )
             }
+            "seriesSearch" -> {
+                DeclarativeEntrypoint.SeriesSearch(
+                    searchUrl = root.getString("searchUrl"),
+                    items = root.getJSONObject("items").toRepeatedFields(),
+                    maxResults = root.optInt("maxResults", 10).coerceIn(1, 50)
+                )
+            }
             "bookLookup" -> {
                 val book = root.getJSONObject("book")
                 DeclarativeEntrypoint.BookLookup(
@@ -70,8 +84,7 @@ object JsonDeclarativeEntrypointDecoder : DeclarativeEntrypointDecoder {
                     seriesTitle = book.optString("seriesTitle").takeIf { it.isNotBlank() },
                     seriesNumber = book.optString("seriesNumber").takeIf { it.isNotBlank() },
                     coverUrl = book.optString("coverUrl").takeIf { it.isNotBlank() },
-                    description = book.optString("description").takeIf { it.isNotBlank() },
-                    titleRegex = book.optString("titleRegex").takeIf { it.isNotBlank() }
+                    description = book.optString("description").takeIf { it.isNotBlank() }
                 )
             }
             "downloadResolution" -> {
@@ -112,22 +125,20 @@ class DeclarativePluginRuntime(
         var response = session.httpGet(url)
         if (response.statusCode !in 200..299) return null
         var document = Jsoup.parse(response.body, response.finalUrl)
-
         spec.followLink?.let { selector ->
-            val link = extract(document, selector)?.takeIf { it.isNotBlank() }
-            if (link != null) {
-                val target = resolveUrl(document, link)
-                if (normalizeNavigationUrl(target) != normalizeNavigationUrl(response.finalUrl)) {
-                    val followed = session.httpGet(target)
-                    if (followed.statusCode !in 200..299) return null
-                    response = followed
-                    document = Jsoup.parse(followed.body, followed.finalUrl)
-                }
+            val follow = extract(document, selector)?.takeIf { it.isNotBlank() } ?: return@let
+            val followUrl = resolveUrl(document, follow)
+            val followed = session.httpGet(followUrl)
+            if (followed.statusCode in 200..299) {
+                response = followed
+                document = Jsoup.parse(followed.body, followed.finalUrl)
             }
         }
-
-        val rawTitle = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
-        val title = applyRegex(rawTitle, spec.titleRegex) ?: return null
+        var title = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
+        spec.titleRegex?.let { regex ->
+            val match = runCatching { Regex(regex).find(title) }.getOrNull()
+            if (match != null) title = match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: match.value
+        }
         val books = spec.books?.let { fields ->
             document.select(fields.item).mapNotNull { item ->
                 val link = extract(item, fields.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -137,7 +148,7 @@ class DeclarativePluginRuntime(
                     title = fields.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
                     number = fields.number?.let { extract(item, it) }?.toDoubleOrNull()
                 )
-            }.distinctBy { it.url }
+            }
         }.orEmpty()
         session.requireOutputSize(books.size)
         val authors = spec.books?.author?.let { selector ->
@@ -157,6 +168,40 @@ class DeclarativePluginRuntime(
         )
     }
 
+    fun searchSeries(manifest: PluginPackageManifest, packageDir: File, query: SeriesSearchQuery): List<SeriesCandidate> {
+        requireCapability(manifest, SourceCapability.SERIES_SEARCH)
+        val spec = loadEntrypoint(manifest, packageDir, "seriesSearch") as? DeclarativeEntrypoint.SeriesSearch
+            ?: throw PluginSandboxViolation("seriesSearch entrypoint has wrong operation")
+        val encoded = URLEncoder.encode(query.title.trim(), StandardCharsets.UTF_8.name())
+        val searchUrl = spec.searchUrl.replace("{query}", encoded)
+        if (searchUrl == spec.searchUrl) throw PluginSandboxViolation("seriesSearch searchUrl must contain {query}")
+        val session = sandbox.open(manifest)
+        val response = session.httpGet(searchUrl)
+        if (response.statusCode !in 200..299) return emptyList()
+        val document = Jsoup.parse(response.body, response.finalUrl)
+        val results = document.select(spec.items.item)
+            .asSequence()
+            .mapNotNull { item ->
+                val link = extract(item, spec.items.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val title = spec.items.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val author = spec.items.author?.let { extract(item, it) }?.takeIf { it.isNotBlank() }
+                SeriesCandidate(
+                    series = SourceSeries(
+                        sourceId = manifest.id,
+                        remoteId = spec.items.remoteId?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
+                        url = resolveUrl(item, link),
+                        title = title,
+                        authors = author?.let { listOf(SourceAuthor(it)) }.orEmpty()
+                    )
+                )
+            }
+            .distinctBy { it.series.url }
+            .take(spec.maxResults)
+            .toList()
+        session.requireOutputSize(results.size)
+        return results
+    }
+
     fun resolveBook(manifest: PluginPackageManifest, packageDir: File, url: String): SourceBook? {
         requireCapability(manifest, SourceCapability.BOOK_LOOKUP)
         val spec = loadEntrypoint(manifest, packageDir, "bookLookup") as? DeclarativeEntrypoint.BookLookup
@@ -165,8 +210,7 @@ class DeclarativePluginRuntime(
         val response = session.httpGet(url)
         if (response.statusCode !in 200..299) return null
         val document = Jsoup.parse(response.body, response.finalUrl)
-        val rawTitle = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
-        val title = applyRegex(rawTitle, spec.titleRegex) ?: return null
+        val title = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
         val author = spec.author?.let { extract(document, it) }?.takeIf { it.isNotBlank() }
         val cover = spec.coverUrl?.let { extract(document, it) }
             ?.takeIf { it.isNotBlank() }
@@ -233,18 +277,8 @@ class DeclarativePluginRuntime(
         }
     }
 
-    private fun applyRegex(value: String, pattern: String?): String? {
-        if (pattern.isNullOrBlank()) return value.trim()
-        val regex = runCatching { Regex(pattern) }
-            .getOrElse { throw PluginSandboxViolation("Invalid extraction regex") }
-        val match = regex.find(value) ?: return null
-        return (match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: match.value).trim()
-    }
-
     private fun resolveUrl(element: Element, value: String): String {
         if (value.startsWith("http://") || value.startsWith("https://")) return value
         return java.net.URI(element.baseUri()).resolve(value).toString()
     }
-
-    private fun normalizeNavigationUrl(value: String): String = value.trim().trimEnd('/')
 }

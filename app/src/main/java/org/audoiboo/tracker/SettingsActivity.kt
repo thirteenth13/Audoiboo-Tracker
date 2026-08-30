@@ -126,6 +126,9 @@ private fun SettingsScreen(activity: ComponentActivity) {
                 SectionTitle("Плеєр")
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Налаштування вбудованого плеєра", style = MaterialTheme.typography.titleMedium); Text("Швидкість запам’ятовується окремо для кожної книги.", style = MaterialTheme.typography.bodySmall); OutlinedButton(onClick = { activity.startActivity(Intent(activity, PlayerSettingsActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) { Text("Налаштування плеєра") } } }
 
+                SectionTitle("Джерела книг")
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Плагіни джерел", style = MaterialTheme.typography.titleMedium); Text("Імпорт .abplugin, дозволи, увімкнення, карантин і rollback.", style = MaterialTheme.typography.bodySmall); OutlinedButton(onClick = { activity.startActivity(Intent(activity, PluginManagementActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) { Text("Керування плагінами") } } }
+
                 SectionTitle("Картка книги")
                 SettingCard("Кнопка «Сторінка»", "Відкривати сторінку книги в браузері") { Switch(checked = showPage, onCheckedChange = { showPage = it; save() }) }
                 SettingCard("Кнопка «Знайти архів»", "Ручний пошук посилання на архів") { Switch(checked = showFind, onCheckedChange = { showFind = it; save() }) }

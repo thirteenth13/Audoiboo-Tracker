@@ -7,6 +7,7 @@ import org.junit.Test
 import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlin.io.path.createTempDirectory
 
 class PluginPackageInstallerTest {
     @Test
@@ -141,7 +142,7 @@ class PluginPackageInstallerTest {
     }
 
     private inline fun withTempDir(block: (File) -> Unit) {
-        val root = createTempDir(prefix = "audoiboo-plugin-test-")
+        val root = createTempDirectory(prefix = "audoiboo-plugin-test-").toFile()
         try {
             block(root)
         } finally {

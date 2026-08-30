@@ -129,6 +129,11 @@ class PluginPackageStore(
 
     fun isDisabled(pluginId: String): Boolean = disabledMarker(pluginId).isFile
 
+    fun quarantinedPluginIds(): List<String> = quarantineRoot().listFiles().orEmpty()
+        .filter { pluginDir -> pluginDir.isDirectory && pluginDir.listFiles().orEmpty().any { it.isDirectory } }
+        .map { it.name }
+        .sorted()
+
     fun quarantineActive(pluginId: String, reason: String): Boolean {
         val active = readActiveVersion(pluginId) ?: return false
         val moved = quarantineVersion(pluginId, active, reason)

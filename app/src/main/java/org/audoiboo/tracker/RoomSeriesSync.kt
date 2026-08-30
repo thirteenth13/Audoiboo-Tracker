@@ -2,6 +2,7 @@ package org.audoiboo.tracker
 
 import android.content.Context
 import androidx.room.withTransaction
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.audoiboo.tracker.plugin.CanonicalBookMatchInput
@@ -12,6 +13,7 @@ import org.audoiboo.tracker.plugin.PluginPackageRuntime
 import org.audoiboo.tracker.plugin.SeriesProvider
 import org.audoiboo.tracker.plugin.SourceBook
 import org.audoiboo.tracker.plugin.SourceCapability
+import org.audoiboo.tracker.plugin.SourceDiscoveryEngine
 import org.audoiboo.tracker.plugin.SourceIdentityMatcher
 import org.audoiboo.tracker.plugin.SourceKeys
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
@@ -230,9 +232,69 @@ internal object RoomSeriesSync {
             )
         }
 
+        // Discovery is best-effort and runs only after the canonical sync has committed. A broken
+        // alternate source must never roll back or fail the user's primary series update.
+        try {
+            discoverAndPersistAlternates(
+                context = context,
+                canonicalSeriesId = canonicalSeriesId,
+                canonical = canonicalSeriesInput(
+                    SeriesWithBooks(
+                        series = dao.seriesById(canonicalSeriesId) ?: return@withContext result,
+                        books = dao.booksForSeries(canonicalSeriesId)
+                    )
+                ),
+                excludeSourceId = plugin.descriptor.id
+            )
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+        }
+
         LibraryRepository.mirrorLegacy(context)
         RoomCoverSync.enqueueAll(context)
         result
+    }
+
+    private suspend fun discoverAndPersistAlternates(
+        context: Context,
+        canonicalSeriesId: String,
+        canonical: CanonicalSeriesMatchInput,
+        excludeSourceId: String
+    ) {
+        val findings = SourceDiscoveryEngine(PluginPackageRuntime.registry)
+            .discoverSeries(canonical, excludeSourceId)
+            .filter { it.disposition == MatchDisposition.AUTO_ACCEPT }
+
+        findings.forEach { finding ->
+            val canonicalBooks = canonical.books
+            val usedIds = linkedSetOf<String>()
+            val links = finding.books.mapNotNull { sourceBook ->
+                val match = SourceIdentityMatcher.bestBookMatch(
+                    incoming = sourceBook,
+                    candidates = canonicalBooks.filterNot { it.id in usedIds }
+                )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                    ?: return@mapNotNull null
+                usedIds += match.value.id
+                CanonicalSourceBookLink(match.value.id, sourceBook, match.confidence)
+            }
+            SourceMetadataRepository.recordSeriesSnapshot(
+                context = context,
+                canonicalSeriesId = canonicalSeriesId,
+                series = finding.series,
+                books = links,
+                relationship = "SAME_SERIES",
+                confidence = finding.confidence,
+                userVerified = false
+            )
+            SourceMetadataRepository.recordSeriesMatchDecision(
+                context = context,
+                canonicalSeriesId = canonicalSeriesId,
+                series = finding.series,
+                decision = "AUTO_ACCEPTED",
+                relationship = "SAME_SERIES",
+                confidence = finding.confidence
+            )
+        }
     }
 
     private fun canonicalSeriesInput(item: SeriesWithBooks): CanonicalSeriesMatchInput = CanonicalSeriesMatchInput(

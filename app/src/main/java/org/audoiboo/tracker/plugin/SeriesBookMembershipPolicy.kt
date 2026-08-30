@@ -15,23 +15,32 @@ object SeriesBookMembershipPolicy {
         val expected = SourceIdentityMatcher.normalizeTitle(series.title)
         val actual = SourceIdentityMatcher.normalizeTitle(declared)
         if (expected.isBlank() || expected != actual) return false
-        return !hasNestedSeriesQualifier(expected, SourceIdentityMatcher.normalizeTitle(book.title))
+        return inferredNestedSeriesKey(series, book) == null
     }
 
     fun filter(series: SourceSeries, books: List<SourceBook>): List<SourceBook> =
         books.filter { belongsTo(series, it) }
 
-    private fun hasNestedSeriesQualifier(expected: String, bookTitle: String): Boolean {
+    /**
+     * Returns a normalized candidate subseries title when the book title has the form
+     * "<parent series> <named qualifier> <volume number>". The value is intended only for matching
+     * an already-known canonical series; callers should not create a new series from this signal.
+     */
+    fun inferredNestedSeriesKey(series: SourceSeries, book: SourceBook): String? {
+        val expected = SourceIdentityMatcher.normalizeTitle(series.title)
+        val bookTitle = SourceIdentityMatcher.normalizeTitle(book.title)
+        if (expected.isBlank()) return null
         val start = bookTitle.indexOf(expected)
-        if (start < 0) return false
+        if (start < 0) return null
         val suffix = bookTitle.substring(start + expected.length).trim()
-        if (suffix.isBlank()) return false
+        if (suffix.isBlank()) return null
 
         val tokens = suffix.split(' ').filter { it.isNotBlank() }
         val firstNumber = tokens.indexOfFirst(::isVolumeNumber)
-        if (firstNumber <= 0) return false
-
-        return tokens.take(firstNumber).any { token -> token.any(Char::isLetter) }
+        if (firstNumber <= 0) return null
+        val qualifier = tokens.take(firstNumber).filter { token -> token.any(Char::isLetter) }
+        if (qualifier.isEmpty()) return null
+        return (listOf(expected) + qualifier).joinToString(" ")
     }
 
     private fun isVolumeNumber(token: String): Boolean =

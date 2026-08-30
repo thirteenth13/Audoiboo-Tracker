@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import org.audoiboo.tracker.plugin.CanonicalSourceBookLink
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 import org.audoiboo.tracker.plugin.SeriesProvider
+import org.audoiboo.tracker.plugin.SourceCapability
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
 import java.util.UUID
 
@@ -19,12 +20,12 @@ internal data class RoomSeriesSyncResult(val seriesId: String, val name: String,
 internal object RoomSeriesSync {
     suspend fun sync(context: Context, inputUrl: String): RoomSeriesSyncResult? = withContext(Dispatchers.IO) {
         PluginPackageRuntime.initialize(context.filesDir)
-        val plugin = PluginPackageRuntime.registry.forUrl(inputUrl) ?: return@withContext null
+        val plugin = PluginPackageRuntime.registry.forUrl(inputUrl, SourceCapability.SERIES_LOOKUP) ?: return@withContext null
         val provider = plugin as? SeriesProvider ?: return@withContext null
         val resolved = provider.resolveSeries(inputUrl) ?: return@withContext null
         if (resolved.sourceId != plugin.descriptor.id) return@withContext null
         val sourceBooks = provider.loadSeriesBooks(resolved)
-        if (sourceBooks.any { it.sourceId != plugin.descriptor.id }) return@withContext null
+        if (sourceBooks.isEmpty() || sourceBooks.any { it.sourceId != plugin.descriptor.id }) return@withContext null
 
         val db = AudoibooDatabase.get(context)
         val dao = db.libraryDao()
@@ -49,11 +50,8 @@ internal object RoomSeriesSync {
                 )
             }
             dao.upsertSeries(SeriesEntity(id, resolved.title, resolved.url, now))
-            if (books.isEmpty()) dao.deleteBooksForSeries(id)
-            else {
-                dao.deleteMissingBooks(id, books.map { it.id })
-                dao.upsertBooks(books)
-            }
+            dao.deleteMissingBooks(id, books.map { it.id })
+            dao.upsertBooks(books)
             RoomSeriesSyncResult(id, resolved.title, books.size)
         }
 

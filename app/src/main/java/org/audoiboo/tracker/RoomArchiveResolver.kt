@@ -11,7 +11,7 @@ import org.audoiboo.tracker.plugin.SourceKeys
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
 
 internal object RoomArchiveResolver {
-    suspend fun resolve(context: Context, book: BookEntity): String? = withContext(Dispatchers.IO) {
+    suspend fun resolveAll(context: Context, book: BookEntity): List<String> = withContext(Dispatchers.IO) {
         PluginPackageRuntime.initialize(context.filesDir)
 
         val primaryPlugin = PluginPackageRuntime.registry.forUrl(book.url)
@@ -40,17 +40,27 @@ internal object RoomArchiveResolver {
             if (primary != null) add(primary)
             addAll(mapped)
         }
-        val resolved = DownloadResolutionPlanner(PluginPackageRuntime.registry).resolve(sources)
-            ?: return@withContext null
+        val resolved = DownloadResolutionPlanner(PluginPackageRuntime.registry).resolveAll(sources)
+        if (resolved.isEmpty()) return@withContext emptyList()
 
-        LibraryRepository.updateBookArchive(context, book.id, resolved.candidate.url)
-        SourceMetadataRepository.recordAvailability(
-            context = context,
-            canonicalBookId = book.id,
-            sourceId = resolved.book.sourceId,
-            bookUrl = resolved.book.url,
-            candidate = resolved.candidate
-        )
-        resolved.candidate.url
+        // Keep the legacy single archive URL only when the source really resolves to one payload.
+        // Multi-track books must be re-resolved as a set; persisting only the first MP3 would make
+        // the next download silently lose every remaining track.
+        if (resolved.size == 1) {
+            LibraryRepository.updateBookArchive(context, book.id, resolved.first().candidate.url)
+        }
+        resolved.forEach { item ->
+            SourceMetadataRepository.recordAvailability(
+                context = context,
+                canonicalBookId = book.id,
+                sourceId = item.book.sourceId,
+                bookUrl = item.book.url,
+                candidate = item.candidate
+            )
+        }
+        resolved.map { it.candidate.url }.distinct()
     }
+
+    suspend fun resolve(context: Context, book: BookEntity): String? =
+        resolveAll(context, book).firstOrNull()
 }

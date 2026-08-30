@@ -37,17 +37,17 @@ class SourceDiscoveryEngine(
 
         registry.withCapability(SourceCapability.SERIES_SEARCH)
             .filterNot { it.descriptor.id == excludeSourceId }
-            .forEach { plugin ->
-                val search = plugin as? SeriesSearchProvider ?: return@forEach
+            .forEach pluginLoop@ { plugin ->
+                val search = plugin as? SeriesSearchProvider ?: return@pluginLoop
                 val candidates = try {
                     search.searchSeries(query).take(maxCandidatesPerSource)
                 } catch (t: Throwable) {
                     if (t is CancellationException) throw t
-                    return@forEach
+                    return@pluginLoop
                 }
 
-                candidates.forEach { candidate ->
-                    if (candidate.series.sourceId != plugin.descriptor.id) return@forEach
+                candidates.forEach candidateLoop@ { candidate ->
+                    if (candidate.series.sourceId != plugin.descriptor.id) return@candidateLoop
                     val provider = plugin as? SeriesProvider
                     val hydrated = if (provider != null) {
                         try {
@@ -57,7 +57,7 @@ class SourceDiscoveryEngine(
                             candidate.series
                         }
                     } else candidate.series
-                    if (hydrated.sourceId != plugin.descriptor.id) return@forEach
+                    if (hydrated.sourceId != plugin.descriptor.id) return@candidateLoop
 
                     val books = if (provider != null) {
                         try {
@@ -73,7 +73,7 @@ class SourceDiscoveryEngine(
                         incoming = hydrated,
                         incomingBooks = books,
                         candidates = listOf(canonical)
-                    ) ?: return@forEach
+                    ) ?: return@candidateLoop
                     if (match.disposition != MatchDisposition.REJECT) {
                         findings += SeriesDiscoveryFinding(
                             sourceId = plugin.descriptor.id,

@@ -40,6 +40,39 @@ class DeclarativeSourcePluginTest {
     }
 
     @Test
+    fun completionQueriesIncludeNextVolumeFromTitles() {
+        val books = (1..10).map { number ->
+            SourceBook(
+                sourceId = "declarative-test",
+                url = "https://example.org/b$number",
+                title = "Звездная Кровь ${number.toString().padStart(2, '0')}. Том"
+            )
+        }
+
+        assertEquals(
+            listOf("Звездная Кровь", "Звездная Кровь 11"),
+            seriesCompletionQueries("Звездная Кровь", books)
+        )
+    }
+
+    @Test
+    fun completionQueriesPreferExplicitSeriesNumber() {
+        val books = listOf(
+            SourceBook(
+                sourceId = "declarative-test",
+                url = "https://example.org/b10",
+                title = "Book without useful ordinal",
+                seriesNumber = 10.0
+            )
+        )
+
+        assertEquals(
+            listOf("Cycle", "Cycle 11"),
+            seriesCompletionQueries("Cycle", books)
+        )
+    }
+
+    @Test
     fun rejectsForeignBookForDownloadResolution() = withTempDir { root ->
         val plugin = plugin(root, setOf(SourceCapability.DOWNLOAD_RESOLUTION))
         val foreign = SourceBook(sourceId = "other", url = "https://example.org/b1", title = "One")

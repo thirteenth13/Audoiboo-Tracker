@@ -1,0 +1,11 @@
+{
+  "operation": "seriesSearch",
+  "searchUrl": "https://baza-knig.info/index.php?do=search&subaction=search&story={query}",
+  "maxResults": 8,
+  "items": {
+    "item": "article, .short, .item",
+    "title": "h2 a@text, h3 a@text, .title a@text",
+    "link": "h2 a@href, h3 a@href, .title a@href",
+    "author": "a[href*='/avtor-'], a[href*='/xfsearch/autor/']"
+  }
+}

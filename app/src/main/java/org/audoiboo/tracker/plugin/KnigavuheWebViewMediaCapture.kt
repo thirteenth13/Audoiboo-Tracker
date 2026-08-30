@@ -11,6 +11,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -109,18 +110,22 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
         private const val BRIDGE = "AudoibooMediaCapture"
         private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac")
 
+        // Keep URL validation on the JVM so local unit tests do not depend on Android Uri stubs.
         fun isAllowedPage(url: String): Boolean = runCatching {
-            val uri = Uri.parse(url)
-            uri.scheme in setOf("http", "https") &&
-                (uri.host == "knigavuhe.org" || uri.host == "m.knigavuhe.org" || uri.host?.endsWith(".knigavuhe.org") == true)
+            val uri = URI(url)
+            val scheme = uri.scheme?.lowercase().orEmpty()
+            val host = uri.host?.lowercase().orEmpty()
+            scheme in setOf("http", "https") &&
+                (host == "knigavuhe.org" || host.endsWith(".knigavuhe.org"))
         }.getOrDefault(false)
 
         fun isBookAudio(url: String): Boolean = runCatching {
-            val uri = Uri.parse(url)
+            val uri = URI(url)
+            val scheme = uri.scheme?.lowercase().orEmpty()
             val host = uri.host?.lowercase().orEmpty()
             val path = uri.path?.lowercase().orEmpty()
             val ext = path.substringAfterLast('.', "")
-            uri.scheme in setOf("http", "https") &&
+            scheme in setOf("http", "https") &&
                 (host == "knigavuhe.org" || host.endsWith(".knigavuhe.org")) &&
                 path.contains("/audio/") && ext in AUDIO_EXTENSIONS
         }.getOrDefault(false)

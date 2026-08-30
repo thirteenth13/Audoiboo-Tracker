@@ -65,6 +65,23 @@ class SeriesBookMembershipPolicyTest {
     }
 
     @Test
+    fun genericBookWordBeforeVolumeNumberStaysInParentSeries() {
+        val parent = SourceSeries(
+            sourceId = "lis10book",
+            url = "https://lis10book.com/serie/dlan-sistemy/",
+            title = "Длань системы"
+        )
+        val books = listOf(
+            SourceBook("lis10book", url = "https://lis10book.com/audio/dlan-sistemy-kniga-1/", title = "Длань системы. Книга 1", seriesTitle = "Длань системы"),
+            SourceBook("lis10book", url = "https://lis10book.com/audio/dlan-sistemy-kniga-2/", title = "Длань системы. Книга 2", seriesTitle = "Длань системы"),
+            SourceBook("lis10book", url = "https://lis10book.com/audio/dlan-sistemy-kniga-3/", title = "Длань системы. Книга 3", seriesTitle = "Длань системы")
+        )
+
+        assertEquals(3, SeriesBookMembershipPolicy.filter(parent, books).size)
+        books.forEach { assertNull(SeriesBookMembershipPolicy.inferredNestedSeriesKey(parent, it)) }
+    }
+
+    @Test
     fun anotherNamedSubseriesBeforeVolumeNumberIsRejectedGenerically() {
         val book = SourceBook(
             sourceId = "source",

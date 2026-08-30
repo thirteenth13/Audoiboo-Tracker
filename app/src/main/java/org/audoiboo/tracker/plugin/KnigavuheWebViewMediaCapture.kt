@@ -16,28 +16,15 @@ import java.util.Collections
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Device-side media discovery for Knigavuhe pages.
- *
- * This deliberately runs in Android WebView so the request comes from the user's device/network
- * instead of a datacenter runner. Only public HTTP(S) audiobook media URLs are collected; cookies
- * and authorization data are never returned to plugins.
- */
+/** Device-side media discovery for Knigavuhe pages. */
 class KnigavuheWebViewMediaCapture(private val context: Context) {
-    data class Result(
-        val pageUrl: String,
-        val mediaUrls: List<String>,
-        val diagnostics: List<String>
-    )
+    data class Result(val pageUrl: String, val mediaUrls: List<String>, val diagnostics: List<String>)
 
-    fun capture(
-        pageUrl: String,
-        timeoutMs: Long = 20_000L,
-        onComplete: (Result) -> Unit
-    ) {
+    fun capture(pageUrl: String, timeoutMs: Long = 20_000L, onComplete: (Result) -> Unit) {
         require(isAllowedPage(pageUrl)) { "Unsupported Knigavuhe URL" }
         Handler(Looper.getMainLooper()).post {
             val found = Collections.synchronizedSet(LinkedHashSet<String>())
+            val foundPaths = Collections.synchronizedSet(LinkedHashSet<String>())
             val diagnostics = mutableListOf<String>()
             val finished = AtomicBoolean(false)
             val handler = Handler(Looper.getMainLooper())
@@ -45,7 +32,15 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
 
             fun remember(raw: String?) {
                 val url = raw?.trim().orEmpty()
-                if (isBookAudio(url)) found += url
+                if (!isBookAudio(url)) return
+                val key = runCatching {
+                    val u = URI(url)
+                    "${u.scheme?.lowercase()}://${u.host?.lowercase()}${u.path}"
+                }.getOrNull() ?: return
+                synchronized(found) {
+                    if (found.size >= MAX_MEDIA_URLS || !foundPaths.add(key)) return
+                    found += url
+                }
             }
 
             fun snapshot(): List<String> = synchronized(found) { found.toList() }
@@ -57,11 +52,9 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
                 diagnostics += "media=${media.size}"
                 handler.removeCallbacksAndMessages(null)
                 runCatching {
-                    webView.stopLoading()
-                    webView.loadUrl("about:blank")
+                    webView.stopLoading(); webView.loadUrl("about:blank")
                     webView.removeJavascriptInterface(BRIDGE)
-                    (webView.parent as? ViewGroup)?.removeView(webView)
-                    webView.destroy()
+                    (webView.parent as? ViewGroup)?.removeView(webView); webView.destroy()
                 }
                 onComplete(Result(pageUrl, media, diagnostics.toList()))
             }
@@ -75,11 +68,8 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
             }
 
             webView.addJavascriptInterface(object {
-                @JavascriptInterface
-                fun media(url: String?) = handler.post { remember(url) }
-
-                @JavascriptInterface
-                fun event(message: String?) = handler.post {
+                @JavascriptInterface fun media(url: String?) = handler.post { remember(url) }
+                @JavascriptInterface fun event(message: String?) = handler.post {
                     if (!message.isNullOrBlank() && diagnostics.size < 60) diagnostics += "js:$message"
                 }
             }, BRIDGE)
@@ -94,17 +84,11 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
                     if (!isAllowedPage(url)) return
                     diagnostics += "loaded:${Uri.parse(url).host}"
                     view.evaluateJavascript(INSTALL_HOOKS, null)
-                    handler.postDelayed({
-                        if (!finished.get()) view.evaluateJavascript(ACTIVATE_PLAYER, null)
-                    }, 900L)
+                    handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(ACTIVATE_PLAYER, null) }, 900L)
                     listOf(2_500L, 6_500L, 10_000L).forEach { delay ->
-                        handler.postDelayed({
-                            if (!finished.get()) view.evaluateJavascript(SCAN_PAGE, null)
-                        }, delay)
+                        handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(SCAN_PLAYER, null) }, delay)
                     }
-                    handler.postDelayed({
-                        if (!finished.get() && snapshot().isNotEmpty()) finish("captured")
-                    }, 12_500L)
+                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("captured") }, 13_500L)
                 }
             }
 
@@ -115,33 +99,23 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
 
     companion object {
         private const val BRIDGE = "AudoibooMediaCapture"
+        private const val MAX_MEDIA_URLS = 120
         private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac")
-        private val TRACK_LABEL = Regex(
-            """(?ix)^\s*(?:\d{1,3}(?:[\s._:)-]+.+)?|.+_\d+)(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*$"""
-        )
+        private val TRACK_LABEL = Regex("""(?ix)^\s*(?:\d{1,3}(?:[\s._:)-]+.+)?|.+_\d+)(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*$""")
 
-        // Keep URL validation on the JVM so local unit tests do not depend on Android Uri stubs.
         fun isAllowedPage(url: String): Boolean = runCatching {
-            val uri = URI(url)
-            val scheme = uri.scheme?.lowercase().orEmpty()
-            val host = uri.host?.lowercase().orEmpty()
-            scheme in setOf("http", "https") &&
-                (host == "knigavuhe.org" || host.endsWith(".knigavuhe.org"))
+            val uri = URI(url); val scheme = uri.scheme?.lowercase().orEmpty(); val host = uri.host?.lowercase().orEmpty()
+            scheme in setOf("http", "https") && (host == "knigavuhe.org" || host.endsWith(".knigavuhe.org"))
         }.getOrDefault(false)
 
         fun isBookAudio(url: String): Boolean = runCatching {
-            val uri = URI(url)
-            val scheme = uri.scheme?.lowercase().orEmpty()
-            val host = uri.host?.lowercase().orEmpty()
-            val path = uri.path?.lowercase().orEmpty()
-            val ext = path.substringAfterLast('.', "")
-            scheme in setOf("http", "https") &&
-                (host == "knigavuhe.org" || host.endsWith(".knigavuhe.org")) &&
+            val uri = URI(url); val scheme = uri.scheme?.lowercase().orEmpty(); val host = uri.host?.lowercase().orEmpty()
+            val path = uri.path?.lowercase().orEmpty(); val ext = path.substringAfterLast('.', "")
+            scheme in setOf("http", "https") && (host == "knigavuhe.org" || host.endsWith(".knigavuhe.org")) &&
                 path.contains("/audio/") && ext in AUDIO_EXTENSIONS
         }.getOrDefault(false)
 
-        fun isLikelyTrackLabel(text: String): Boolean =
-            text.trim().length in 1..180 && TRACK_LABEL.matches(text.trim())
+        fun isLikelyTrackLabel(text: String): Boolean = text.trim().length in 1..180 && TRACK_LABEL.matches(text.trim())
 
         private val INSTALL_HOOKS = """
             (() => {
@@ -150,8 +124,7 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
               const emit = u => { try { if (u) AudoibooMediaCapture.media(String(u)); } catch (_) {} };
               const src = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
               if (src && src.set) Object.defineProperty(HTMLMediaElement.prototype, 'src', {
-                configurable: src.configurable, enumerable: src.enumerable,
-                get: src.get,
+                configurable: src.configurable, enumerable: src.enumerable, get: src.get,
                 set(v) { emit(v); return src.set.call(this, v); }
               });
               const oldSet = Element.prototype.setAttribute;
@@ -174,46 +147,26 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
               const all = [...document.querySelectorAll('button,a,div,span,li,label')].filter(visible);
               const full = all.find(e => /слушать полностью/i.test(norm(e.innerText)));
               if (full) { try { full.click(); AudoibooMediaCapture.event('clicked-full'); } catch (_) {} }
-
               const largeLabel = all.find(e => /большие отрезки/i.test(norm(e.innerText)));
               if (largeLabel) {
                 const checkbox = largeLabel.matches('input[type=checkbox]') ? largeLabel :
                   (largeLabel.querySelector('input[type=checkbox]') || document.querySelector('input[type=checkbox][name*=large i],input[type=checkbox][id*=large i]'));
-                if (checkbox && !checkbox.checked) {
-                  try {
-                    checkbox.click();
-                    checkbox.dispatchEvent(new Event('change', {bubbles:true}));
-                    AudoibooMediaCapture.event('enabled-large-segments');
-                  } catch (_) {}
-                }
+                if (checkbox && !checkbox.checked) { try { checkbox.click(); checkbox.dispatchEvent(new Event('change',{bubbles:true})); AudoibooMediaCapture.event('enabled-large-segments'); } catch (_) {} }
               }
-
-              const leaf = e => ![...e.children].some(c => {
-                const t = norm(c.innerText || c.textContent);
-                return t && t.length <= 180 && (/^\d{1,3}(?:[\s._:)-]+.+)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(t) || /_\d+(?:\s|$)/.test(t));
-              });
-              const tracks = all.filter(e => {
-                const t = norm(e.innerText || e.textContent);
-                return t && t.length <= 180 && leaf(e) &&
-                  (/^\d{1,3}(?:[\s._:)-]+.+)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(t) || /_\d+(?:\s|$)/.test(t));
-              }).slice(0, 100);
-
-              tracks.forEach((t, i) => setTimeout(() => { try { t.click(); } catch (_) {} }, i * 180));
-              AudoibooMediaCapture.event('track-candidates='+tracks.length);
-              return tracks.length;
+              const leaf = e => ![...e.children].some(c => { const t=norm(c.innerText||c.textContent); return t && t.length<=180 && (/^\d{1,3}(?:[\s._:)-]+.+)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(t) || /_\d+(?:\s|$)/.test(t)); });
+              const tracks = all.filter(e => { const t=norm(e.innerText||e.textContent); return t && t.length<=180 && leaf(e) && (/^\d{1,3}(?:[\s._:)-]+.+)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(t) || /_\d+(?:\s|$)/.test(t)); }).slice(0, 100);
+              tracks.forEach((t,i) => setTimeout(() => { try { t.click(); } catch (_) {} }, i*180));
+              AudoibooMediaCapture.event('track-candidates='+tracks.length); return tracks.length;
             })();
         """.trimIndent()
 
-        private val SCAN_PAGE = """
+        // Deliberately inspect only the active player DOM. Broad performance/HTML scans pulled
+        // audio belonging to recommendations and other books on the page.
+        private val SCAN_PLAYER = """
             (() => {
               const emit = u => { try { if (u) AudoibooMediaCapture.media(String(u)); } catch (_) {} };
-              document.querySelectorAll('audio[src],source[src],a[href]').forEach(e => emit(e.src || e.href));
-              try { performance.getEntriesByType('resource').forEach(e => emit(e.name)); } catch (_) {}
-              const html = document.documentElement.innerHTML.replaceAll('\\/','/');
-              const urls = html.match(/https?:[^\"'<>\\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac)(?:\?[^\"'<>\\s]*)?/gi) || [];
-              urls.forEach(emit);
-              AudoibooMediaCapture.event('scan='+urls.length);
-              return urls.length;
+              document.querySelectorAll('audio[src],audio source[src],source[src]').forEach(e => emit(e.src));
+              return document.querySelectorAll('audio[src],audio source[src],source[src]').length;
             })();
         """.trimIndent()
     }

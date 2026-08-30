@@ -70,6 +70,14 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
             .orEmpty()
     }
 
+    fun openSourceBrowser(url: String? = null) {
+        activity.startActivity(
+            Intent(activity, MainActivity::class.java).apply {
+                url?.takeIf { it.startsWith("http") }?.let { putExtra(MainActivity.EXTRA_URL, it) }
+            }
+        )
+    }
+
     fun syncUrl(url: String, fallbackToBrowser: Boolean, resolution: RoomSeriesReviewResolution? = null) {
         if (url.isBlank() || syncing) return
         syncing = true
@@ -87,8 +95,8 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
                     Toast.makeText(activity, "${result.name}: ${result.books} книг", Toast.LENGTH_SHORT).show()
                 }
                 fallbackToBrowser -> {
-                    Toast.makeText(activity, "HTTP parser не пройшов — відкриваю WebView fallback", Toast.LENGTH_LONG).show()
-                    activity.startActivity(Intent(activity, MainActivity::class.java))
+                    Toast.makeText(activity, "HTTP parser не пройшов — відкриваю браузер джерел", Toast.LENGTH_LONG).show()
+                    openSourceBrowser(url)
                 }
                 else -> Toast.makeText(activity, "Не вдалося оновити серію", Toast.LENGTH_LONG).show()
             }
@@ -134,7 +142,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
                         IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Filled.Delete, "Видалити серію") }
                     } else if (tab == RoomLibraryTab.SERIES) IconButton(onClick = { addUrl = ""; showAdd = true }) { Icon(Icons.Filled.Add, "Додати серію") }
                     IconButton(onClick = { activity.startActivity(Intent(activity, PlayerActivity::class.java)) }) { Icon(Icons.Filled.Headphones, "Плеєр") }
-                    IconButton(onClick = { activity.startActivity(Intent(activity, MainActivity::class.java)) }) { Icon(Icons.Filled.Public, "Audioboo браузер") }
+                    IconButton(onClick = { openSourceBrowser() }) { Icon(Icons.Filled.Public, "Браузер джерел") }
                     IconButton(onClick = { activity.startActivity(Intent(activity, SettingsActivity::class.java)) }) { Icon(Icons.Filled.Settings, "Налаштування") }
                 }
             )
@@ -321,23 +329,37 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
             }
             Column {
                 IconButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(book.url))) }) { Icon(Icons.Filled.OpenInBrowser, "Сторінка") }
-                if (!book.archiveUrl.isNullOrBlank()) {
-                    IconButton(onClick = { ManagedDownloads.enqueue(context, book.title, seriesName ?: "Без серії", book.author, book.url, book.archiveUrl) }) { Icon(Icons.Filled.CloudDownload, "Завантажити") }
-                } else {
-                    IconButton(onClick = {
-                        if (!resolvingArchive) scope.launch {
-                            resolvingArchive = true
-                            val archive = runCatching { RoomArchiveResolver.resolve(context, book) }.getOrNull()
-                            resolvingArchive = false
-                            if (archive != null) {
-                                ManagedDownloads.enqueue(context, book.title, seriesName ?: "Без серії", book.author, book.url, archive)
-                                Toast.makeText(context, "Архів знайдено — додано в завантаження", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, "HTTP parser не знайшов архів — відкриваю WebView fallback", Toast.LENGTH_LONG).show()
-                                context.startActivity(Intent(context, MainActivity::class.java))
+                IconButton(onClick = {
+                    if (!resolvingArchive) scope.launch {
+                        resolvingArchive = true
+                        val resolvedUrls = runCatching { RoomArchiveResolver.resolveAll(context, book) }.getOrDefault(emptyList())
+                        val urls = if (resolvedUrls.isNotEmpty()) resolvedUrls else listOfNotNull(book.archiveUrl)
+                        resolvingArchive = false
+                        if (urls.isNotEmpty()) {
+                            urls.distinct().forEach { url ->
+                                ManagedDownloads.enqueue(
+                                    context = context,
+                                    title = book.title,
+                                    series = seriesName ?: "Без серії",
+                                    author = book.author,
+                                    bookUrl = book.url,
+                                    archiveUrl = url,
+                                    fileNameHint = url
+                                )
                             }
+                            Toast.makeText(
+                                context,
+                                if (urls.size == 1) "Додано до завантажень" else "Додано треків: ${urls.distinct().size}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            Toast.makeText(context, "Плагін не знайшов аудіо — відкриваю браузер джерел", Toast.LENGTH_LONG).show()
+                            context.startActivity(Intent(context, MainActivity::class.java).putExtra(MainActivity.EXTRA_URL, book.url))
                         }
-                    }, enabled = !resolvingArchive) { if (resolvingArchive) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) else Icon(Icons.Filled.Link, "Знайти архів") }
+                    }
+                }, enabled = !resolvingArchive) {
+                    if (resolvingArchive) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                    else Icon(if (book.archiveUrl.isNullOrBlank()) Icons.Filled.Link else Icons.Filled.CloudDownload, if (book.archiveUrl.isNullOrBlank()) "Знайти аудіо" else "Завантажити")
                 }
             }
         }
@@ -352,6 +374,10 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
 private fun roomSourceLabel(sourceId: String): String = when (sourceId) {
     "audioboo" -> "Audioboo"
     "baza-knig" -> "Baza-Knig"
+    "knigavuhe" -> "Knigavuhe"
+    "poleknig" -> "Poleknig"
+    "lis10book" -> "Lis10book"
+    "izib" -> "Izib/PDA"
     else -> sourceId
 }
 

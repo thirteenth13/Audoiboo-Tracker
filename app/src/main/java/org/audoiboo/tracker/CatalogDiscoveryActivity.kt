@@ -29,6 +29,7 @@ class CatalogDiscoveryActivity : ComponentActivity() {
 @Composable
 private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
     var query by remember { mutableStateOf("") }
+    var searched by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var results by remember { mutableStateOf<List<CatalogSourceMatch>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -38,6 +39,7 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
         val value = query.trim()
         if (value.isBlank() || loading) return
         loading = true
+        searched = true
         error = null
         scope.launch {
             runCatching { CatalogSourceBridge(BuiltInSourcePluginManager.registry).discoverByAuthor(value) }
@@ -47,14 +49,12 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Каталог авторів") },
-                navigationIcon = { IconButton(onClick = activity::finish) { Icon(Icons.Filled.ArrowBack, "Назад") } }
-            )
-        }
-    ) { padding ->
+    Scaffold(topBar = {
+        TopAppBar(
+            title = { Text("Каталог авторів") },
+            navigationIcon = { IconButton(onClick = activity::finish) { Icon(Icons.Filled.ArrowBack, "Назад") } }
+        )
+    }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             OutlinedTextField(
                 value = query,
@@ -67,14 +67,14 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
                 singleLine = true
             )
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
             if (!loading && error == null && results.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(if (query.isBlank()) "Введіть ім’я автора, щоб знайти його серії" else "Серій не знайдено")
+                    Text(if (searched) "Серій не знайдено" else "Введіть ім’я автора, щоб знайти його серії")
                 }
-            } else {
+            } else if (results.isNotEmpty()) {
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(results, key = { it.canonical.id }) { result -> CatalogSeriesCard(result) }
+                    items(results, key = { it.canonical.id }) { CatalogSeriesCard(it) }
                 }
             }
         }
@@ -87,8 +87,8 @@ private fun CatalogSeriesCard(result: CatalogSourceMatch) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(result.series.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(result.author.name, style = MaterialTheme.typography.bodyMedium)
-            val accepted = result.sources.count { it.match.disposition == MatchDisposition.AUTO_ACCEPT }
-            val review = result.sources.count { it.match.disposition == MatchDisposition.REVIEW }
+            val accepted = result.sources.count { it.disposition == MatchDisposition.AUTO_ACCEPT }
+            val review = result.sources.count { it.disposition == MatchDisposition.REVIEW }
             Text(
                 when {
                     accepted > 0 -> "Аудіоджерела: $accepted знайдено" + if (review > 0) " • $review потребує перевірки" else ""
@@ -100,7 +100,7 @@ private fun CatalogSeriesCard(result: CatalogSourceMatch) {
             HorizontalDivider()
             result.series.books.forEach { book ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                    Text(book.seriesNumber?.let { formatSeriesNumber(it) } ?: "—", modifier = Modifier.width(42.dp), fontWeight = FontWeight.Medium)
+                    Text(book.seriesNumber?.let(::formatSeriesNumber) ?: "—", modifier = Modifier.width(42.dp), fontWeight = FontWeight.Medium)
                     Column(Modifier.weight(1f)) {
                         Text(book.title)
                         book.firstPublishYear?.let { Text(it.toString(), style = MaterialTheme.typography.bodySmall) }
@@ -110,13 +110,13 @@ private fun CatalogSeriesCard(result: CatalogSourceMatch) {
             if (result.sources.isNotEmpty()) {
                 HorizontalDivider()
                 result.sources.forEach { finding ->
-                    val percent = (finding.match.confidence * 100).toInt()
-                    val status = when (finding.match.disposition) {
+                    val percent = (finding.confidence * 100).toInt()
+                    val status = when (finding.disposition) {
                         MatchDisposition.AUTO_ACCEPT -> "збіг"
                         MatchDisposition.REVIEW -> "перевірити"
                         MatchDisposition.REJECT -> "відхилено"
                     }
-                    Text("${finding.plugin.descriptor.name}: $percent% • $status", style = MaterialTheme.typography.bodySmall)
+                    Text("${finding.sourceId}: $percent% • $status", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }

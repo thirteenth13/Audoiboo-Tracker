@@ -22,24 +22,26 @@ def _audio(url: str) -> bool:
 
 
 def _mark_track_target(page, site: str, index: int) -> dict | None:
-    """Find a player row and mark it, but do not synthesize a click in JS.
-
-    The actual input is sent later through Playwright's mouse so the page sees
-    normal browser-generated pointer/mouse events instead of element.click().
-    """
+    """Find a player row and mark it without synthesizing a JS click."""
     try:
         return page.evaluate(
             r"""({site,index}) => {
                 const norm = s => (s || '').replace(/\s+/g, ' ').trim();
-                const wanted = site === 'poleknig'
-                    ? new RegExp('^' + String(index + 1).padStart(2, '0') + '$')
-                    : site === 'izib'
-                        ? new RegExp('^' + String(index + 1).padStart(2, '0') + '(?:\\s+\\d{1,2}:\\d{2})?$')
-                        : new RegExp('(?:^|\\s)Игра Кота\\. Книга вторая_' + index + '(?:\\s|$)');
+                let wanted;
+                if (site === 'poleknig') {
+                    wanted = new RegExp('^' + String(index + 1).padStart(2, '0') + '$');
+                } else if (site === 'izib') {
+                    // Real IZIB rows look like:
+                    // "Звёздная кровь 11. Колония Альфа 02" plus a duration
+                    // in a sibling element. Match the trailing two-digit chapter
+                    // number instead of assuming the entire row text is just "02".
+                    wanted = new RegExp('(?:^|\\s)' + String(index + 1).padStart(2, '0') + '(?:\\s+\\d{1,2}:\\d{2})?$');
+                } else {
+                    wanted = new RegExp('(?:^|\\s)Игра Кота\\. Книга вторая_' + index + '(?:\\s|$)');
+                }
 
                 const all = Array.from(document.querySelectorAll('body *'));
                 let candidates = all.filter(el => wanted.test(norm(el.innerText || el.textContent)));
-                // Prefer leaves so a whole player/container is never selected.
                 const leaves = candidates.filter(el => !Array.from(el.children).some(c => wanted.test(norm(c.innerText || c.textContent))));
                 if (leaves.length) candidates = leaves;
                 candidates = candidates.filter(el => {
@@ -48,26 +50,40 @@ def _mark_track_target(page, site: str, index: int) -> dict | None:
                     return r.width > 2 && r.height > 2 && st.visibility !== 'hidden' && st.display !== 'none';
                 });
                 if (!candidates.length) return null;
+
+                // Prefer a node whose text ends in the requested chapter number.
+                // If the smallest leaf is only an icon, use its closest visible row.
                 candidates.sort((a,b) => {
-                    const ar=a.getBoundingClientRect(), br=b.getBoundingClientRect();
-                    return ar.width*ar.height - br.width*br.height;
+                    const at = norm(a.innerText || a.textContent);
+                    const bt = norm(b.innerText || b.textContent);
+                    const aa = a.getBoundingClientRect(), bb = b.getBoundingClientRect();
+                    const aScore = (wanted.test(at) ? 0 : 1000000) + aa.width * aa.height;
+                    const bScore = (wanted.test(bt) ? 0 : 1000000) + bb.width * bb.height;
+                    return aScore - bScore;
                 });
-                const leaf = candidates[0];
-                // Clicking the leaf is intentional: browser mouse events bubble to
-                // delegated handlers on the row/playlist, unlike JS element.click().
+                let leaf = candidates[0];
+                if (site === 'izib') {
+                    const row = leaf.closest('li,[class*=track],[class*=playlist] > *,[class*=audio] > *,tr');
+                    if (row) {
+                        const rr = row.getBoundingClientRect();
+                        const rs = getComputedStyle(row);
+                        if (rr.width > 2 && rr.height > 2 && rs.visibility !== 'hidden' && rs.display !== 'none') leaf = row;
+                    }
+                }
+
                 document.querySelectorAll('[data-oai-cdp-target]').forEach(el => el.removeAttribute('data-oai-cdp-target'));
                 leaf.setAttribute('data-oai-cdp-target', '1');
                 leaf.scrollIntoView({block:'center', inline:'nearest'});
                 const r=leaf.getBoundingClientRect();
                 const parent=leaf.parentElement;
                 return {
-                    text:norm(leaf.innerText || leaf.textContent).slice(0,180),
+                    text:norm(leaf.innerText || leaf.textContent).slice(0,220),
                     tag:leaf.tagName,
                     cls:String(leaf.className || '').slice(0,180),
                     parentTag:parent ? parent.tagName : '',
                     parentCls:parent ? String(parent.className || '').slice(0,180) : '',
                     x:r.x,y:r.y,width:r.width,height:r.height,
-                    html:leaf.outerHTML.slice(0,500)
+                    html:leaf.outerHTML.slice(0,700)
                 };
             }""",
             {"site": site, "index": index},
@@ -81,12 +97,11 @@ def _trusted_click(page, site: str, index: int) -> tuple[bool, str]:
     if not target:
         return False, "not-found"
     try:
-        # Re-read the box after scroll/layout settles, then use Playwright mouse.
         locator = page.locator('[data-oai-cdp-target="1"]').first
         box = locator.bounding_box()
         if not box:
             return False, f"no-box:{target.get('text','')[:120]}"
-        x = box["x"] + box["width"] / 2
+        x = box["x"] + min(box["width"] * 0.35, max(12.0, box["width"] / 2))
         y = box["y"] + box["height"] / 2
         page.mouse.move(x, y)
         page.mouse.down()
@@ -168,14 +183,14 @@ def capture(page_url: str, site: str, max_tracks: int = 30, timeout_ms: int = 30
             ok, info = _trusted_click(page, site, index)
             if not ok:
                 misses += 1
-                if index < 4 or misses <= 2:
+                if index < 6 or misses <= 2:
                     diagnostics.append(f"target-{index}:miss:{info}")
                 if misses >= 4:
                     break
                 continue
             clicks += 1
             misses = 0
-            if index < 8:
+            if index < 10:
                 diagnostics.append(f"target-{index}:hit:{info}")
             page.wait_for_timeout(500)
 

@@ -10,6 +10,7 @@ import org.audoiboo.tracker.plugin.CanonicalSeriesMatchInput
 import org.audoiboo.tracker.plugin.CanonicalSourceBookLink
 import org.audoiboo.tracker.plugin.MatchDisposition
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
+import org.audoiboo.tracker.plugin.SeriesDecisionPolicy
 import org.audoiboo.tracker.plugin.SeriesProvider
 import org.audoiboo.tracker.plugin.SourceBook
 import org.audoiboo.tracker.plugin.SourceCapability
@@ -264,6 +265,9 @@ internal object RoomSeriesSync {
             .filter { it.disposition == MatchDisposition.AUTO_ACCEPT }
 
         findings.forEach { finding ->
+            val decisions = SourceMetadataRepository.seriesMatchDecisions(context, finding.series)
+            if (!SeriesDecisionPolicy.allowsAutomaticLink(canonicalSeriesId, decisions)) return@forEach
+
             val canonicalBooks = canonical.books
             val usedIds = linkedSetOf<String>()
             val links = finding.books.mapNotNull { sourceBook ->

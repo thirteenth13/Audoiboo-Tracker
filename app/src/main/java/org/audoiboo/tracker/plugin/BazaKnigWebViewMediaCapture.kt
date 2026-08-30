@@ -62,7 +62,7 @@ class BazaKnigWebViewMediaCapture(private val context: Context) {
             webView.addJavascriptInterface(object {
                 @JavascriptInterface fun media(url: String?) = handler.post { remember(url) }
                 @JavascriptInterface fun event(message: String?) = handler.post {
-                    if (!message.isNullOrBlank() && diagnostics.size < 30) diagnostics += "js:$message"
+                    if (!message.isNullOrBlank() && diagnostics.size < 50) diagnostics += "js:$message"
                 }
             }, BRIDGE)
 
@@ -76,10 +76,10 @@ class BazaKnigWebViewMediaCapture(private val context: Context) {
                     if (!isAllowedPage(url)) return
                     diagnostics += "loaded"
                     view.evaluateJavascript(INSTALL_HOOKS, null)
-                    handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(ACTIVATE_AND_SCAN, null) }, 900L)
-                    handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(ACTIVATE_AND_SCAN, null) }, 2_500L)
-                    handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(ACTIVATE_AND_SCAN, null) }, 4_500L)
-                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("captured") }, 7_000L)
+                    listOf(900L, 2_800L, 5_500L, 8_500L).forEach { delay ->
+                        handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(ACTIVATE_AND_SCAN, null) }, delay)
+                    }
+                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("captured") }, 12_500L)
                 }
             }
 
@@ -90,6 +90,7 @@ class BazaKnigWebViewMediaCapture(private val context: Context) {
 
     companion object {
         private const val BRIDGE = "AudoibooBazaCapture"
+        private val TRACK_LABEL = Regex("""(?ix)^\s*(?:\d{1,3}(?:[\s._:)-]+.*)?|.*(?:трек|глава|часть)\s*\d+).*$""")
 
         fun isAllowedPage(url: String): Boolean = runCatching {
             val uri = URI(url.trim())
@@ -111,6 +112,9 @@ class BazaKnigWebViewMediaCapture(private val context: Context) {
             val name = URI(url).path.substringAfterLast('/')
             name.substringBeforeLast('.').toIntOrNull()
         }.getOrNull()
+
+        fun isLikelyTrackLabel(text: String): Boolean =
+            text.trim().length in 1..180 && TRACK_LABEL.matches(text.trim())
 
         private val INSTALL_HOOKS = """
             (() => {
@@ -137,13 +141,24 @@ class BazaKnigWebViewMediaCapture(private val context: Context) {
         private val ACTIVATE_AND_SCAN = """
             (() => {
               const emit = u => { try { if (u) AudoibooBazaCapture.media(String(u)); } catch (_) {} };
+              const norm = s => (s || '').replace(/\s+/g, ' ').trim();
               document.querySelectorAll('audio[src],source[src],a[href]').forEach(e => emit(e.src || e.href));
+              try { performance.getEntriesByType('resource').forEach(e => emit(e.name)); } catch (_) {}
               const html = document.documentElement.innerHTML.replaceAll('\\/','/');
               (html.match(/https?:[^\"'<>\\s]+\.mp3(?:\?[^\"'<>\\s]*)?/gi) || []).forEach(emit);
               const visible = e => { const r=e.getBoundingClientRect(); const s=getComputedStyle(e); return r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none'; };
               const nodes = [...document.querySelectorAll('button,a,div,span,li')].filter(visible);
-              const likely = nodes.filter(e => /^\s*(?:\d{1,2}|\d{1,2}[.:)]|.*(?:трек|глава)\s*\d+)/i.test((e.innerText||'').trim())).slice(0, 80);
-              for (const e of likely) { try { e.click(); } catch (_) {} }
+              const likely = nodes.filter(e => {
+                const t = norm(e.innerText || e.textContent);
+                if (!t || t.length > 180) return false;
+                const own = /^\d{1,3}(?:[\s._:)-]+.*)?$/i.test(t) || /(?:трек|глава|часть)\s*\d+/i.test(t) || /(?:play|слушать|воспроизвести)/i.test(t);
+                if (!own) return false;
+                return ![...e.children].some(c => {
+                  const ct = norm(c.innerText || c.textContent);
+                  return ct && ct.length <= 180 && (/^\d{1,3}(?:[\s._:)-]+.*)?$/i.test(ct) || /(?:трек|глава|часть)\s*\d+/i.test(ct));
+                });
+              }).slice(0, 100);
+              likely.forEach((e, i) => setTimeout(() => { try { e.click(); } catch (_) {} }, i * 180));
               AudoibooBazaCapture.event('clicks='+likely.length);
               return likely.length;
             })();

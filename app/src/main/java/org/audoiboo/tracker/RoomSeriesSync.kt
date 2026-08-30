@@ -61,12 +61,10 @@ internal object RoomSeriesSync {
         val provider = plugin as? SeriesProvider ?: return@withContext null
         val resolved = provider.resolveSeries(inputUrl) ?: return@withContext null
         if (resolved.sourceId != plugin.descriptor.id) return@withContext null
-        val sourceBooks = SeriesBookMembershipPolicy.filter(
-            resolved,
-            provider.loadSeriesBooks(resolved)
-                .filter { it.sourceId == plugin.descriptor.id }
-                .distinctBy { SourceKeys.normalizeUrl(it.url) }
-        )
+        val rawSourceBooks = provider.loadSeriesBooks(resolved)
+            .filter { it.sourceId == plugin.descriptor.id }
+            .distinctBy { SourceKeys.normalizeUrl(it.url) }
+        val sourceBooks = SeriesBookMembershipPolicy.filter(resolved, rawSourceBooks)
         if (sourceBooks.isEmpty()) return@withContext null
 
         val db = AudoibooDatabase.get(context)
@@ -140,6 +138,15 @@ internal object RoomSeriesSync {
         val existingBooks = selected?.books.orEmpty()
         val existingBookById = existingBooks.associateBy { it.id }
         val existingBookByUrl = existingBooks.associateBy { SourceKeys.normalizeUrl(it.url) }
+        val allBooksByUrl = library.flatMap { it.books }.associateBy { SourceKeys.normalizeUrl(it.url) }
+        val nestedTargets = rawSourceBooks.mapNotNull { source ->
+            if (SeriesBookMembershipPolicy.belongsTo(resolved, source)) return@mapNotNull null
+            val key = SeriesBookMembershipPolicy.inferredNestedSeriesKey(resolved, source) ?: return@mapNotNull null
+            val target = library.firstOrNull {
+                it.series.id != canonicalSeriesId && SourceIdentityMatcher.normalizeTitle(it.series.name) == key
+            } ?: return@mapNotNull null
+            source to target
+        }
         val mappedBookIds = sourceBooks.associateWith { source ->
             SourceMetadataRepository.canonicalBookIdForSource(context, source)
         }
@@ -147,6 +154,7 @@ internal object RoomSeriesSync {
         val usedCanonicalBookIds = linkedSetOf<String>()
         var nextSortIndex = (existingBooks.maxOfOrNull { it.sortIndex } ?: -1) + 1
         val links = mutableListOf<CanonicalSourceBookLink>()
+        val rehomedLinks = mutableListOf<Pair<String, SourceBook>>()
 
         val result = db.withTransaction {
             val now = System.currentTimeMillis()
@@ -156,6 +164,59 @@ internal object RoomSeriesSync {
                 else -> selected.series.copy(updatedAt = now)
             }
             dao.upsertSeries(seriesEntity)
+
+            nestedTargets.groupBy { it.second.series.id }.forEach { (_, entries) ->
+                val target = entries.first().second
+                val targetBooksByUrl = target.books.associateBy { SourceKeys.normalizeUrl(it.url) }
+
+                // Keep an already-known target subseries ordered by the nested volume marker when
+                // its title exposes one (for example 01/02/03), instead of leaving a previously
+                // lone third book at sort index zero.
+                target.books.forEach { existing ->
+                    val pseudo = SourceBook(
+                        sourceId = plugin.descriptor.id,
+                        url = existing.url,
+                        title = existing.title,
+                        seriesTitle = resolved.title
+                    )
+                    val number = SeriesBookMembershipPolicy.inferredNestedVolumeNumber(resolved, pseudo)
+                    if (number != null && existing.sortIndex != number - 1) {
+                        dao.upsertBooks(listOf(existing.copy(sortIndex = (number - 1).coerceAtLeast(0), updatedAt = now)))
+                    }
+                }
+
+                entries.forEach { (source, _) ->
+                    val normalizedUrl = SourceKeys.normalizeUrl(source.url)
+                    val directTarget = targetBooksByUrl[normalizedUrl]
+                    val anywhere = allBooksByUrl[normalizedUrl]
+                    val number = SeriesBookMembershipPolicy.inferredNestedVolumeNumber(resolved, source)
+                    val entity = when (val existing = directTarget ?: anywhere) {
+                        null -> BookEntity(
+                            id = "${target.series.id}::${source.url}",
+                            seriesId = target.series.id,
+                            title = source.title,
+                            url = source.url,
+                            author = sourceAuthor(source),
+                            coverUrl = source.coverUrl,
+                            status = "NEW",
+                            archiveUrl = null,
+                            sortIndex = number?.minus(1)?.coerceAtLeast(0)
+                                ?: ((target.books.maxOfOrNull { it.sortIndex } ?: -1) + 1),
+                            updatedAt = now
+                        )
+                        else -> existing.copy(
+                            seriesId = target.series.id,
+                            title = source.title,
+                            author = sourceAuthor(source) ?: existing.author,
+                            coverUrl = source.coverUrl ?: existing.coverUrl,
+                            sortIndex = number?.minus(1)?.coerceAtLeast(0) ?: existing.sortIndex,
+                            updatedAt = now
+                        )
+                    }
+                    dao.upsertBooks(listOf(entity))
+                    rehomedLinks += entity.id to source
+                }
+            }
 
             val additions = mutableListOf<BookEntity>()
             sourceBooks.forEachIndexed { sourceIndex, source ->
@@ -238,6 +299,18 @@ internal object RoomSeriesSync {
             confidence = userAcceptedConfidence ?: autoSeriesConfidence ?: 1f,
             userVerified = userAcceptedConfidence != null || (autoSeriesConfidence == null && selected != null)
         )
+        rehomedLinks.forEach { (canonicalBookId, source) ->
+            SourceMetadataRepository.recordAvailability(
+                context = context,
+                canonicalBookId = canonicalBookId,
+                sourceId = source.sourceId,
+                bookUrl = source.url,
+                candidate = org.audoiboo.tracker.plugin.DownloadCandidate(
+                    type = org.audoiboo.tracker.plugin.DownloadType.DIRECT_FILE,
+                    url = source.url
+                )
+            )
+        }
         if (autoSeriesConfidence != null) {
             SourceMetadataRepository.recordSeriesMatchDecision(
                 context = context,

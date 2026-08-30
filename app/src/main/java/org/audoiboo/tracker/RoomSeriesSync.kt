@@ -14,6 +14,7 @@ import org.audoiboo.tracker.plugin.SeriesBookMembershipPolicy
 import org.audoiboo.tracker.plugin.SeriesDecisionPolicy
 import org.audoiboo.tracker.plugin.SeriesProvider
 import org.audoiboo.tracker.plugin.SourceBook
+import org.audoiboo.tracker.plugin.SourceBookReassignment
 import org.audoiboo.tracker.plugin.SourceCapability
 import org.audoiboo.tracker.plugin.SourceDiscoveryEngine
 import org.audoiboo.tracker.plugin.SourceIdentityMatcher
@@ -154,7 +155,7 @@ internal object RoomSeriesSync {
         val usedCanonicalBookIds = linkedSetOf<String>()
         var nextSortIndex = (existingBooks.maxOfOrNull { it.sortIndex } ?: -1) + 1
         val links = mutableListOf<CanonicalSourceBookLink>()
-        val rehomedLinks = mutableListOf<Pair<String, SourceBook>>()
+        val rehomedLinks = mutableListOf<Triple<String, String, SourceBook>>()
 
         val result = db.withTransaction {
             val now = System.currentTimeMillis()
@@ -169,9 +170,6 @@ internal object RoomSeriesSync {
                 val target = entries.first().second
                 val targetBooksByUrl = target.books.associateBy { SourceKeys.normalizeUrl(it.url) }
 
-                // Keep an already-known target subseries ordered by the nested volume marker when
-                // its title exposes one (for example 01/02/03), instead of leaving a previously
-                // lone third book at sort index zero.
                 target.books.forEach { existing ->
                     val pseudo = SourceBook(
                         sourceId = plugin.descriptor.id,
@@ -214,7 +212,7 @@ internal object RoomSeriesSync {
                         )
                     }
                     dao.upsertBooks(listOf(entity))
-                    rehomedLinks += entity.id to source
+                    rehomedLinks += Triple(entity.id, target.series.id, source)
                 }
             }
 
@@ -299,16 +297,12 @@ internal object RoomSeriesSync {
             confidence = userAcceptedConfidence ?: autoSeriesConfidence ?: 1f,
             userVerified = userAcceptedConfidence != null || (autoSeriesConfidence == null && selected != null)
         )
-        rehomedLinks.forEach { (canonicalBookId, source) ->
-            SourceMetadataRepository.recordAvailability(
+        rehomedLinks.forEach { (canonicalBookId, targetSeriesId, source) ->
+            SourceBookReassignment.record(
                 context = context,
                 canonicalBookId = canonicalBookId,
-                sourceId = source.sourceId,
-                bookUrl = source.url,
-                candidate = org.audoiboo.tracker.plugin.DownloadCandidate(
-                    type = org.audoiboo.tracker.plugin.DownloadType.DIRECT_FILE,
-                    url = source.url
-                )
+                canonicalSeriesId = targetSeriesId,
+                book = source
             )
         }
         if (autoSeriesConfidence != null) {
@@ -322,8 +316,6 @@ internal object RoomSeriesSync {
             )
         }
 
-        // Discovery is best-effort and runs only after the canonical sync has committed. Repeated
-        // manual refreshes are throttled, while explicit review resolutions force a fresh pass.
         val discoveryPrefs = context.getSharedPreferences(DISCOVERY_PREFS, Context.MODE_PRIVATE)
         val discoveryKey = "$DISCOVERY_LAST_SUCCESS_PREFIX$canonicalSeriesId"
         val discoveryNow = System.currentTimeMillis()

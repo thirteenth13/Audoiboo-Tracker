@@ -30,7 +30,8 @@ sealed interface DeclarativeEntrypoint {
         val seriesTitle: String? = null,
         val seriesNumber: String? = null,
         val coverUrl: String? = null,
-        val description: String? = null
+        val description: String? = null,
+        val titleRegex: String? = null
     ) : DeclarativeEntrypoint
 
     data class DownloadResolution(
@@ -84,7 +85,8 @@ object JsonDeclarativeEntrypointDecoder : DeclarativeEntrypointDecoder {
                     seriesTitle = book.optString("seriesTitle").takeIf { it.isNotBlank() },
                     seriesNumber = book.optString("seriesNumber").takeIf { it.isNotBlank() },
                     coverUrl = book.optString("coverUrl").takeIf { it.isNotBlank() },
-                    description = book.optString("description").takeIf { it.isNotBlank() }
+                    description = book.optString("description").takeIf { it.isNotBlank() },
+                    titleRegex = book.optString("titleRegex").takeIf { it.isNotBlank() }
                 )
             }
             "downloadResolution" -> {
@@ -135,10 +137,7 @@ class DeclarativePluginRuntime(
             }
         }
         var title = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
-        spec.titleRegex?.let { regex ->
-            val match = runCatching { Regex(regex).find(title) }.getOrNull()
-            if (match != null) title = match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: match.value
-        }
+        title = applyRegex(title, spec.titleRegex)
         val books = spec.books?.let { fields ->
             document.select(fields.item).mapNotNull { item ->
                 val link = extract(item, fields.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -210,7 +209,8 @@ class DeclarativePluginRuntime(
         val response = session.httpGet(url)
         if (response.statusCode !in 200..299) return null
         val document = Jsoup.parse(response.body, response.finalUrl)
-        val title = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
+        var title = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
+        title = applyRegex(title, spec.titleRegex)
         val author = spec.author?.let { extract(document, it) }?.takeIf { it.isNotBlank() }
         val cover = spec.coverUrl?.let { extract(document, it) }
             ?.takeIf { it.isNotBlank() }
@@ -262,6 +262,12 @@ class DeclarativePluginRuntime(
 
     private fun requireCapability(manifest: PluginPackageManifest, capability: SourceCapability) {
         if (capability !in manifest.capabilities) throw PluginSandboxViolation("Plugin does not declare $capability")
+    }
+
+    private fun applyRegex(value: String, regex: String?): String {
+        if (regex.isNullOrBlank()) return value
+        val match = runCatching { Regex(regex).find(value) }.getOrNull() ?: return value
+        return match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: match.value
     }
 
     private fun extract(root: Element, expression: String): String? {

@@ -51,6 +51,8 @@ class SeriesDecisionPolicyTest {
         )
 
         assertTrue(SeriesDecisionPolicy.allowsAutomaticLink("series-a", decisions))
+        assertTrue(SeriesDecisionPolicy.isUserAccepted("series-a", decisions))
+        assertFalse(SeriesDecisionPolicy.isUserAccepted("series-b", decisions))
     }
 
     @Test

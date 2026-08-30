@@ -14,7 +14,7 @@ class DeclarativeSourcePlugin(
     private val runtime: DeclarativePluginRuntime,
     private val onRuntimeSuccess: (String, Int) -> Unit = { _, _ -> },
     private val onRuntimeFailure: (String, Int, Throwable) -> Unit = { _, _, _ -> }
-) : SourcePlugin, SeriesProvider, BookProvider, DownloadResolver {
+) : SourcePlugin, SeriesProvider, BookProvider, SeriesSearchProvider, DownloadResolver {
     override val descriptor: SourceDescriptor = SourceDescriptor(
         id = manifest.id,
         name = manifest.name,
@@ -59,6 +59,11 @@ class DeclarativeSourcePlugin(
     override suspend fun loadBook(url: String): SourceBook? {
         if (!supports(url)) return null
         return guarded { runtime.resolveBook(manifest, packageDir, url) }
+    }
+
+    override suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate> {
+        if (SourceCapability.SERIES_SEARCH !in manifest.capabilities) return emptyList()
+        return guarded { runtime.searchSeries(manifest, packageDir, query) }
     }
 
     override suspend fun resolveDownloads(book: SourceBook): List<DownloadCandidate> {

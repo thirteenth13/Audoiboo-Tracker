@@ -22,6 +22,43 @@ class PluginUpdatePolicyTest {
     }
 
     @Test
+    fun exposesNewestCatalogVersionForNotInstalledPlugin() {
+        val entries = listOf(
+            entry("baza-knig", 1),
+            entry("baza-knig", 3),
+            entry("other", 2)
+        )
+
+        val installable = PluginUpdatePolicy.availableInstalls(entries, emptyList())
+
+        assertEquals(listOf("baza-knig", "other"), installable.map { it.id })
+        assertEquals(3, installable.first { it.id == "baza-knig" }.version)
+    }
+
+    @Test
+    fun installedQuarantinedAndBuiltInIdsAreNotOfferedForInstall() {
+        val quarantined = SourcePluginRegistration(
+            descriptor = null,
+            packageId = "broken",
+            displayName = "Broken",
+            origin = PluginOrigin.PACKAGE,
+            state = PluginState.QUARANTINED
+        )
+        val registrations = listOf(
+            registration("source", 2),
+            registration("builtin", 1, origin = PluginOrigin.BUILT_IN),
+            quarantined
+        )
+
+        val installable = PluginUpdatePolicy.availableInstalls(
+            listOf(entry("source", 4), entry("builtin", 4), entry("broken", 4), entry("new", 1)),
+            registrations
+        )
+
+        assertEquals(listOf("new"), installable.map { it.id })
+    }
+
+    @Test
     fun ignoresBuiltInPackagesAndNonNewerVersions() {
         val builtIn = registration("builtin", 1, origin = PluginOrigin.BUILT_IN)
         val external = registration("source", 4)

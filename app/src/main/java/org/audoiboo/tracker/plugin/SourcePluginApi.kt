@@ -8,6 +8,7 @@ enum class SourceCapability {
     BOOK_SEARCH,
     SERIES_SEARCH,
     SERIES_DISCOVERY,
+    AUTHOR_CATALOG,
     METADATA_ENRICHMENT,
     DOWNLOAD_RESOLUTION,
     STREAM_RESOLUTION,
@@ -83,6 +84,31 @@ data class SeriesCandidate(
     val sourceScore: Float? = null
 )
 
+data class CatalogAuthor(
+    val providerId: String,
+    val remoteId: String,
+    val name: String,
+    val alternativeNames: List<String> = emptyList(),
+    val workCount: Int? = null,
+    val confidence: Float = 1f
+)
+
+data class CatalogBook(
+    val providerId: String,
+    val remoteId: String,
+    val title: String,
+    val authors: List<String> = emptyList(),
+    val seriesTitles: List<String> = emptyList(),
+    val seriesNumber: Double? = null,
+    val firstPublishYear: Int? = null,
+    val coverUrl: String? = null
+)
+
+data class AuthorCatalog(
+    val author: CatalogAuthor,
+    val books: List<CatalogBook>
+)
+
 data class BookMetadata(
     val providerId: String,
     val remoteId: String,
@@ -130,6 +156,12 @@ interface BookProvider {
 
 interface SeriesSearchProvider {
     suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate>
+}
+
+interface AuthorCatalogProvider {
+    suspend fun searchAuthors(query: String, limit: Int = 5): List<CatalogAuthor>
+
+    suspend fun loadAuthorCatalog(author: CatalogAuthor, limit: Int = 200): AuthorCatalog
 }
 
 interface MetadataProvider {

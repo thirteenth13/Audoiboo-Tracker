@@ -33,6 +33,11 @@ object SourceMetadataRepository {
             ?: dao.bookSourceByUrl(book.sourceId, book.url)?.canonicalBookId
     }
 
+    suspend fun seriesMatchDecisions(context: Context, series: SourceSeries): List<SeriesMatchDecisionEntity> = withContext(Dispatchers.IO) {
+        val remoteKey = SourceKeys.remoteKey(series.remoteId, series.url)
+        SourceMetadataDatabase.get(context).dao().matchDecisions(series.sourceId, remoteKey)
+    }
+
     suspend fun recordSeriesSnapshot(
         context: Context,
         canonicalSeriesId: String,

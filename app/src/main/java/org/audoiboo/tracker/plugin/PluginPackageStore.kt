@@ -197,6 +197,8 @@ class PluginPackageStore(
         if (manifest.version != version) return LoadResult.Invalid("Manifest version ${manifest.version} does not match directory $version")
         val validation = PluginPackagePolicy.validate(manifest)
         if (!validation.valid) return LoadResult.Invalid(validation.errors.joinToString("; "))
+        val contentsValidation = PluginPackageContentsPolicy.validate(manifest, dir)
+        if (!contentsValidation.valid) return LoadResult.Invalid(contentsValidation.errors.joinToString("; "))
         return LoadResult.Valid(manifest, dir)
     }
 

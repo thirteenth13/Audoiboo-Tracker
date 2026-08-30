@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class BazaKnigWebViewMediaCapture(private val context: Context) {
     data class Result(val pageUrl: String, val mediaUrls: List<String>, val diagnostics: List<String>)
 
-    fun capture(pageUrl: String, timeoutMs: Long = 20_000L, onComplete: (Result) -> Unit) {
+    fun capture(pageUrl: String, timeoutMs: Long = 25_000L, onComplete: (Result) -> Unit) {
         require(isAllowedPage(pageUrl)) { "Unsupported Baza-Knig URL" }
         Handler(Looper.getMainLooper()).post {
             val found = Collections.synchronizedSet(LinkedHashSet<String>())
@@ -42,11 +42,9 @@ class BazaKnigWebViewMediaCapture(private val context: Context) {
                 diagnostics += "media=${media.size}"
                 handler.removeCallbacksAndMessages(null)
                 runCatching {
-                    webView.stopLoading()
-                    webView.loadUrl("about:blank")
+                    webView.stopLoading(); webView.loadUrl("about:blank")
                     webView.removeJavascriptInterface(BRIDGE)
-                    (webView.parent as? ViewGroup)?.removeView(webView)
-                    webView.destroy()
+                    (webView.parent as? ViewGroup)?.removeView(webView); webView.destroy()
                 }
                 onComplete(Result(pageUrl, media, diagnostics.toList()))
             }
@@ -76,10 +74,12 @@ class BazaKnigWebViewMediaCapture(private val context: Context) {
                     if (!isAllowedPage(url)) return
                     diagnostics += "loaded"
                     view.evaluateJavascript(INSTALL_HOOKS, null)
-                    listOf(900L, 2_800L, 5_500L, 8_500L).forEach { delay ->
+                    listOf(900L, 4_000L, 8_000L, 12_000L, 17_500L).forEach { delay ->
                         handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(ACTIVATE_AND_SCAN, null) }, delay)
                     }
-                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("captured") }, 12_500L)
+                    // Track buttons are activated with a stagger. The old 12.5 s cutoff could return
+                    // after the first media URL while the rest of the player was still being exposed.
+                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("captured") }, 20_500L)
                 }
             }
 
@@ -90,34 +90,25 @@ class BazaKnigWebViewMediaCapture(private val context: Context) {
 
     companion object {
         private const val BRIDGE = "AudoibooBazaCapture"
-        private val TRACK_LABEL = Regex(
-            """^\s*(?:\d{1,3}(?:[\s._:)-]+.*)?|.*(?:трек|глава|часть)\s*\d+).*$""",
-            RegexOption.IGNORE_CASE
-        )
+        private val TRACK_LABEL = Regex("""^\s*(?:\d{1,3}(?:[\s._:)-]+.*)?|.*(?:трек|глава|часть)\s*\d+).*$""", RegexOption.IGNORE_CASE)
 
         fun isAllowedPage(url: String): Boolean = runCatching {
-            val uri = URI(url.trim())
-            val host = uri.host?.lowercase().orEmpty()
+            val uri = URI(url.trim()); val host = uri.host?.lowercase().orEmpty()
             uri.scheme?.lowercase() in setOf("http", "https") &&
                 (host == "baza-knig.info" || host == "baza-knig.top" || host.endsWith(".baza-knig.info") || host.endsWith(".baza-knig.top"))
         }.getOrDefault(false)
 
         fun isBookAudio(url: String): Boolean = runCatching {
-            val uri = URI(url.trim())
-            val host = uri.host?.lowercase().orEmpty()
-            val path = uri.path?.lowercase().orEmpty()
-            uri.scheme?.lowercase() in setOf("http", "https") &&
-                path.endsWith(".mp3") &&
+            val uri = URI(url.trim()); val host = uri.host?.lowercase().orEmpty(); val path = uri.path?.lowercase().orEmpty()
+            uri.scheme?.lowercase() in setOf("http", "https") && path.endsWith(".mp3") &&
                 (host.endsWith(".redirectto.cc") || host == "redirectto.cc" || host.endsWith(".baza-knig.info") || host == "baza-knig.info" || host.endsWith(".baza-knig.top") || host == "baza-knig.top")
         }.getOrDefault(false)
 
         fun trackNumber(url: String): Int? = runCatching {
-            val name = URI(url).path.substringAfterLast('/')
-            name.substringBeforeLast('.').toIntOrNull()
+            val name = URI(url).path.substringAfterLast('/'); name.substringBeforeLast('.').toIntOrNull()
         }.getOrNull()
 
-        fun isLikelyTrackLabel(text: String): Boolean =
-            text.trim().length in 1..180 && TRACK_LABEL.matches(text.trim())
+        fun isLikelyTrackLabel(text: String): Boolean = text.trim().length in 1..180 && TRACK_LABEL.matches(text.trim())
 
         private val INSTALL_HOOKS = """
             (() => {
@@ -125,17 +116,11 @@ class BazaKnigWebViewMediaCapture(private val context: Context) {
               window.__audoibooBazaHooks = true;
               const emit = u => { try { if (u) AudoibooBazaCapture.media(String(u)); } catch (_) {} };
               const src = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
-              if (src && src.set) Object.defineProperty(HTMLMediaElement.prototype, 'src', {
-                configurable: src.configurable, enumerable: src.enumerable, get: src.get,
-                set(v) { emit(v); return src.set.call(this, v); }
-              });
+              if (src && src.set) Object.defineProperty(HTMLMediaElement.prototype, 'src', { configurable: src.configurable, enumerable: src.enumerable, get: src.get, set(v) { emit(v); return src.set.call(this, v); } });
               const oldSet = Element.prototype.setAttribute;
-              Element.prototype.setAttribute = function(n, v) {
-                if (String(n).toLowerCase() === 'src') emit(v);
-                return oldSet.call(this, n, v);
-              };
+              Element.prototype.setAttribute = function(n,v) { if (String(n).toLowerCase()==='src') emit(v); return oldSet.call(this,n,v); };
               const NativeAudio = window.Audio;
-              window.Audio = function(src) { const a = new NativeAudio(src); emit(src); return a; };
+              window.Audio = function(src) { const a=new NativeAudio(src); emit(src); return a; };
               window.Audio.prototype = NativeAudio.prototype;
               return 'installed';
             })();
@@ -152,18 +137,13 @@ class BazaKnigWebViewMediaCapture(private val context: Context) {
               const visible = e => { const r=e.getBoundingClientRect(); const s=getComputedStyle(e); return r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none'; };
               const nodes = [...document.querySelectorAll('button,a,div,span,li')].filter(visible);
               const likely = nodes.filter(e => {
-                const t = norm(e.innerText || e.textContent);
-                if (!t || t.length > 180) return false;
+                const t = norm(e.innerText || e.textContent); if (!t || t.length > 180) return false;
                 const own = /^\d{1,3}(?:[\s._:)-]+.*)?$/i.test(t) || /(?:трек|глава|часть)\s*\d+/i.test(t) || /(?:play|слушать|воспроизвести)/i.test(t);
                 if (!own) return false;
-                return ![...e.children].some(c => {
-                  const ct = norm(c.innerText || c.textContent);
-                  return ct && ct.length <= 180 && (/^\d{1,3}(?:[\s._:)-]+.*)?$/i.test(ct) || /(?:трек|глава|часть)\s*\d+/i.test(ct));
-                });
+                return ![...e.children].some(c => { const ct=norm(c.innerText||c.textContent); return ct && ct.length<=180 && (/^\d{1,3}(?:[\s._:)-]+.*)?$/i.test(ct) || /(?:трек|глава|часть)\s*\d+/i.test(ct)); });
               }).slice(0, 100);
-              likely.forEach((e, i) => setTimeout(() => { try { e.click(); } catch (_) {} }, i * 180));
-              AudoibooBazaCapture.event('clicks='+likely.length);
-              return likely.length;
+              likely.forEach((e,i) => setTimeout(() => { try { e.click(); } catch (_) {} }, i*180));
+              AudoibooBazaCapture.event('clicks='+likely.length); return likely.length;
             })();
         """.trimIndent()
     }

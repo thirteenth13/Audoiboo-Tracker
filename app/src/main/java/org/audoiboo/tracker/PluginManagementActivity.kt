@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -22,17 +23,25 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.audoiboo.tracker.plugin.PluginArchiveLimits
 import org.audoiboo.tracker.plugin.PluginInstallResult
 import org.audoiboo.tracker.plugin.PluginOrigin
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 import org.audoiboo.tracker.plugin.PluginState
 import org.audoiboo.tracker.plugin.SourcePluginRegistration
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.UUID
 
 class PluginManagementActivity : ComponentActivity() {
@@ -47,27 +56,52 @@ class PluginManagementActivity : ComponentActivity() {
 @Composable
 private fun PluginManagementScreen(activity: ComponentActivity) {
     var revision by remember { mutableIntStateOf(0) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val maxImportBytes = remember { PluginArchiveLimits().maxCompressedBytes }
 
     fun toast(message: String) = Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
     fun refresh() { revision++ }
+    fun runOperation(block: () -> Boolean, success: String, failure: String) {
+        if (busy) return
+        scope.launch {
+            busy = true
+            val ok = withContext(Dispatchers.IO) { runCatching(block).getOrDefault(false) }
+            busy = false
+            toast(if (ok) success else failure)
+            refresh()
+        }
+    }
 
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        val temp = File(activity.cacheDir, "plugin-import-${UUID.randomUUID()}.abplugin")
-        runCatching {
-            activity.contentResolver.openInputStream(uri)?.use { input ->
-                temp.outputStream().use { output -> input.copyTo(output) }
-            } ?: error("Не вдалося прочитати файл")
-            PluginPackageRuntime.installPackage(temp)
-        }.onSuccess { result ->
+        if (uri == null || busy) return@rememberLauncherForActivityResult
+        scope.launch {
+            busy = true
+            val result = withContext(Dispatchers.IO) {
+                val temp = File(activity.cacheDir, "plugin-import-${UUID.randomUUID()}.abplugin")
+                try {
+                    val copied = activity.contentResolver.openInputStream(uri)?.use { input ->
+                        temp.outputStream().use { output -> copyBounded(input, output, maxImportBytes) }
+                    } ?: error("Не вдалося прочитати файл")
+                    if (!copied) {
+                        PluginInstallResult.Rejected("Файл перевищує дозволений розмір ${maxImportBytes / (1024 * 1024)} МБ")
+                    } else {
+                        PluginPackageRuntime.installPackage(temp)
+                    }
+                } catch (t: Throwable) {
+                    PluginInstallResult.Failed(t.message ?: "Помилка імпорту", t)
+                } finally {
+                    temp.delete()
+                }
+            }
+            busy = false
             when (result) {
                 is PluginInstallResult.Installed -> toast("Плагін ${result.registration.displayName} v${result.registration.descriptor?.version ?: "?"} встановлено")
                 is PluginInstallResult.Rejected -> toast("Плагін відхилено: ${result.reason}")
                 is PluginInstallResult.Failed -> toast("Помилка встановлення: ${result.reason}")
             }
             refresh()
-        }.onFailure { toast("Помилка імпорту: ${it.message}") }
-        temp.delete()
+        }
     }
 
     val registrations = revision.let {
@@ -92,8 +126,16 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
                 "Зовнішні джерела встановлюються як .abplugin. Плагін не отримує прямого доступу до Android, файлів або мережі — HTTP виконується через sandbox застосунку.",
                 style = MaterialTheme.typography.bodyMedium
             )
-            Button(onClick = { importer.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) }, modifier = Modifier.fillMaxWidth()) {
-                Text("Імпортувати .abplugin")
+            Button(
+                onClick = { importer.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !busy
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(if (busy) "Обробка…" else "Імпортувати .abplugin")
             }
 
             if (visibleIds.isEmpty()) {
@@ -111,25 +153,34 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
                     registration = registration,
                     pluginId = pluginId,
                     hasQuarantine = pluginId in quarantinedIds,
+                    busy = busy,
                     onToggle = { enabled ->
-                        val ok = if (enabled) PluginPackageRuntime.enablePackage(pluginId) else PluginPackageRuntime.disablePackage(pluginId)
-                        toast(if (ok) if (enabled) "Плагін увімкнено" else "Плагін вимкнено" else "Не вдалося змінити стан плагіна")
-                        refresh()
+                        runOperation(
+                            block = { if (enabled) PluginPackageRuntime.enablePackage(pluginId) else PluginPackageRuntime.disablePackage(pluginId) },
+                            success = if (enabled) "Плагін увімкнено" else "Плагін вимкнено",
+                            failure = "Не вдалося змінити стан плагіна"
+                        )
                     },
                     onQuarantine = {
-                        val ok = PluginPackageRuntime.quarantinePackage(pluginId)
-                        toast(if (ok) "Активну версію переміщено в карантин" else "Не вдалося перемістити плагін у карантин")
-                        refresh()
+                        runOperation(
+                            block = { PluginPackageRuntime.quarantinePackage(pluginId) },
+                            success = "Активну версію переміщено в карантин",
+                            failure = "Не вдалося перемістити плагін у карантин"
+                        )
                     },
                     onRestore = {
-                        val ok = PluginPackageRuntime.restorePackage(pluginId)
-                        toast(if (ok) "Плагін відновлено з карантину" else "Немає версії, яку можна відновити")
-                        refresh()
+                        runOperation(
+                            block = { PluginPackageRuntime.restorePackage(pluginId) },
+                            success = "Плагін відновлено з карантину",
+                            failure = "Немає версії, яку можна відновити"
+                        )
                     },
                     onRollback = {
-                        val ok = PluginPackageRuntime.rollbackPackage(pluginId)
-                        toast(if (ok) "Повернуто попередню версію" else "Попередньої версії немає")
-                        refresh()
+                        runOperation(
+                            block = { PluginPackageRuntime.rollbackPackage(pluginId) },
+                            success = "Повернуто попередню версію",
+                            failure = "Попередньої версії немає"
+                        )
                     }
                 )
             }
@@ -142,6 +193,7 @@ private fun PluginCard(
     registration: SourcePluginRegistration?,
     pluginId: String,
     hasQuarantine: Boolean,
+    busy: Boolean,
     onToggle: (Boolean) -> Unit,
     onQuarantine: () -> Unit,
     onRestore: () -> Unit,
@@ -160,7 +212,11 @@ private fun PluginCard(
                     Text(pluginId, style = MaterialTheme.typography.bodySmall)
                 }
                 if (registration != null) {
-                    Switch(checked = enabled, onCheckedChange = onToggle, enabled = registration.state !in setOf(PluginState.QUARANTINED, PluginState.INCOMPATIBLE))
+                    Switch(
+                        checked = enabled,
+                        onCheckedChange = onToggle,
+                        enabled = !busy && registration.state !in setOf(PluginState.QUARANTINED, PluginState.INCOMPATIBLE)
+                    )
                 }
             }
 
@@ -186,6 +242,7 @@ private fun PluginCard(
                     if (permissions.javascript) add("javascript")
                 }
                 Text("Мережа: ${permissions.networkHosts.sorted().joinToString().ifBlank { "немає" }}${if (flags.isEmpty()) "" else " • ${flags.joinToString()}"}", style = MaterialTheme.typography.bodySmall)
+                Text("Завантаження: ${permissions.effectiveDownloadHosts.sorted().joinToString().ifBlank { "немає" }}", style = MaterialTheme.typography.bodySmall)
             }
             registration?.failureReason?.takeIf { it.isNotBlank() }?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -193,12 +250,24 @@ private fun PluginCard(
 
             Spacer(Modifier.height(2.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onRollback, enabled = registration != null, modifier = Modifier.weight(1f)) { Text("Rollback") }
-                OutlinedButton(onClick = onQuarantine, enabled = registration != null, modifier = Modifier.weight(1f)) { Text("Карантин") }
+                OutlinedButton(onClick = onRollback, enabled = !busy && registration != null, modifier = Modifier.weight(1f)) { Text("Rollback") }
+                OutlinedButton(onClick = onQuarantine, enabled = !busy && registration != null, modifier = Modifier.weight(1f)) { Text("Карантин") }
             }
             if (hasQuarantine) {
-                OutlinedButton(onClick = onRestore, modifier = Modifier.fillMaxWidth()) { Text("Відновити з карантину") }
+                OutlinedButton(onClick = onRestore, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Відновити з карантину") }
             }
         }
+    }
+}
+
+private fun copyBounded(input: InputStream, output: OutputStream, maxBytes: Long): Boolean {
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    var total = 0L
+    while (true) {
+        val read = input.read(buffer)
+        if (read < 0) return true
+        total += read
+        if (total > maxBytes) return false
+        output.write(buffer, 0, read)
     }
 }

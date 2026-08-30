@@ -6,7 +6,7 @@ from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
 
 from media_detector import collect_from_text, collect_network_responses
 
-app = FastAPI(title="Audioboo Scrapling experiment", version="0.1.0")
+app = FastAPI(title="Audioboo Scrapling experiment", version="0.2.0")
 
 
 class ParseRequest(BaseModel):
@@ -58,12 +58,75 @@ def _http(url: str) -> ParseResponse:
 
 
 def _dynamic(url: str, capture_xhr: str, wait_ms: int) -> ParseResponse:
-    page = DynamicFetcher.fetch(url, headless=True, capture_xhr=capture_xhr, wait=wait_ms)
+    page = DynamicFetcher.fetch(
+        url,
+        headless=True,
+        capture_xhr=capture_xhr,
+        wait=wait_ms,
+        timeout=20000,
+        network_idle=False,
+    )
     return _result(page, "dynamic")
 
 
+def _activate_player(page) -> None:
+    selectors = (
+        "button[aria-label*='play' i]",
+        "[role='button'][aria-label*='play' i]",
+        ".player-play",
+        ".play-button",
+        ".jp-play",
+        ".plyr__control[data-plyr='play']",
+        "[class*='player'] [class*='play']",
+        "button[class*='play']",
+    )
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            if locator.count() > 0 and locator.first.is_visible():
+                locator.first.click(timeout=1200, force=True)
+                break
+        except Exception:
+            continue
+
+    try:
+        page.evaluate(
+            """() => {
+                for (const media of document.querySelectorAll('audio,video')) {
+                    try {
+                        const promise = media.play();
+                        if (promise && promise.catch) promise.catch(() => {});
+                    } catch (_) {}
+                }
+            }"""
+        )
+    except Exception:
+        pass
+    page.wait_for_timeout(2200)
+
+
+def _dynamic_interactive(url: str, capture_xhr: str, wait_ms: int = 1200) -> ParseResponse:
+    page = DynamicFetcher.fetch(
+        url,
+        headless=True,
+        capture_xhr=capture_xhr,
+        page_action=_activate_player,
+        wait=wait_ms,
+        timeout=20000,
+        network_idle=False,
+    )
+    return _result(page, "dynamic-interactive")
+
+
 def _stealth(url: str, capture_xhr: str, wait_ms: int) -> ParseResponse:
-    page = StealthyFetcher.fetch(url, headless=True, capture_xhr=capture_xhr, wait=wait_ms)
+    page = StealthyFetcher.fetch(
+        url,
+        headless=True,
+        capture_xhr=capture_xhr,
+        wait=wait_ms,
+        timeout=20000,
+        network_idle=False,
+    )
     return _result(page, "stealth")
 
 
@@ -91,6 +154,9 @@ def parse(req: ParseRequest) -> ParseResponse:
         second = _dynamic(url, req.capture_xhr, req.wait_ms)
         if second.media:
             return second
+        third = _dynamic_interactive(url, req.capture_xhr, req.wait_ms)
+        if third.media:
+            return third
         return _stealth(url, req.capture_xhr, req.wait_ms)
     except HTTPException:
         raise

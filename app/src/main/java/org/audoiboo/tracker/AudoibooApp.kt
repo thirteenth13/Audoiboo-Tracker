@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.audoiboo.tracker.plugin.PluginPackageRuntime
 
 class AudoibooApp : Application() {
     private var trackerBridge: LegacyTrackerBridge? = null
@@ -59,6 +60,8 @@ class AudoibooApp : Application() {
         ContinueListeningWidget.updateAll(this)
 
         appScope.launch {
+            // Rebuild durable package metadata before any future sandbox runtime is allowed to use it.
+            runCatching { PluginPackageRuntime.initialize(filesDir) }
             // Tracking series are the only existing user data that still needs legacy import support.
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
             // Rebind stale MediaStore/SAF URIs after reboot, provider changes or an app restore.

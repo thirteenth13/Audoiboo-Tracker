@@ -19,7 +19,8 @@ data class PluginCatalogEntry(
     val version: Int,
     val apiVersion: Int,
     val packageUrl: String,
-    val sha256: String
+    val sha256: String,
+    val description: String? = null
 )
 
 data class PluginUpdate(
@@ -28,7 +29,12 @@ data class PluginUpdate(
 )
 
 sealed interface PluginUpdateCheckResult {
-    data class Success(val updates: List<PluginUpdate>) : PluginUpdateCheckResult
+    data class Success(
+        val updates: List<PluginUpdate>,
+        val installable: List<PluginCatalogEntry> = emptyList(),
+        val entries: List<PluginCatalogEntry> = emptyList()
+    ) : PluginUpdateCheckResult
+
     data class Failed(val reason: String) : PluginUpdateCheckResult
 }
 
@@ -131,16 +137,29 @@ object PluginUpdatePolicy {
             .filter { it.origin == PluginOrigin.PACKAGE }
             .mapNotNull { registration -> registration.descriptor?.let { registration.packageId to it.version } }
             .toMap()
-        return entries
-            .filter { validateEntry(it) == null }
+        return newestValidEntries(entries)
             .mapNotNull { entry ->
                 val current = installed[entry.id] ?: return@mapNotNull null
                 entry.takeIf { it.version > current }?.let { PluginUpdate(it, current) }
             }
-            .groupBy { it.entry.id }
-            .mapNotNull { (_, updates) -> updates.maxByOrNull { it.entry.version } }
             .sortedBy { it.entry.name.lowercase() }
     }
+
+    fun availableInstalls(
+        entries: List<PluginCatalogEntry>,
+        registrations: List<SourcePluginRegistration>
+    ): List<PluginCatalogEntry> {
+        val reservedIds = registrations.mapTo(hashSetOf()) { it.packageId }
+        return newestValidEntries(entries)
+            .filterNot { it.id in reservedIds }
+            .sortedBy { it.name.lowercase() }
+    }
+
+    private fun newestValidEntries(entries: List<PluginCatalogEntry>): List<PluginCatalogEntry> =
+        entries
+            .filter { validateEntry(it) == null }
+            .groupBy { it.id }
+            .mapNotNull { (_, versions) -> versions.maxByOrNull { it.version } }
 }
 
 class PluginUpdateService(
@@ -166,23 +185,31 @@ class PluginUpdateService(
                         version = item.getInt("version"),
                         apiVersion = item.getInt("apiVersion"),
                         packageUrl = item.getString("url"),
-                        sha256 = item.getString("sha256").lowercase()
+                        sha256 = item.getString("sha256").lowercase(),
+                        description = item.optString("description").takeIf { it.isNotBlank() }
                     )
                 )
             }
         }
-        PluginUpdateCheckResult.Success(PluginUpdatePolicy.availableUpdates(entries, registrations))
+        PluginUpdateCheckResult.Success(
+            updates = PluginUpdatePolicy.availableUpdates(entries, registrations),
+            installable = PluginUpdatePolicy.availableInstalls(entries, registrations),
+            entries = entries
+        )
     }.getOrElse { PluginUpdateCheckResult.Failed(it.message ?: "Plugin update check failed") }
 
-    fun downloadVerified(update: PluginUpdate, cacheDir: File): Result<File> = runCatching {
-        val validationError = PluginUpdatePolicy.validateEntry(update.entry)
+    fun downloadVerified(update: PluginUpdate, cacheDir: File): Result<File> =
+        downloadVerified(update.entry, cacheDir)
+
+    fun downloadVerified(entry: PluginCatalogEntry, cacheDir: File): Result<File> = runCatching {
+        val validationError = PluginUpdatePolicy.validateEntry(entry)
         require(validationError == null) { validationError ?: "Invalid catalog entry" }
-        val target = File(cacheDir, "plugin-update-${update.entry.id}-${update.entry.version}.abplugin")
+        val target = File(cacheDir, "plugin-catalog-${entry.id}-${entry.version}.abplugin")
         target.delete()
-        downloader.download(update.entry.packageUrl, target, PluginArchiveLimits().maxCompressedBytes)
+        downloader.download(entry.packageUrl, target, PluginArchiveLimits().maxCompressedBytes)
         require(target.isFile && target.length() > 0L) { "Downloaded plugin package is empty" }
         val digest = sha256(target)
-        require(digest == update.entry.sha256) { "Plugin update checksum mismatch" }
+        require(digest == entry.sha256) { "Plugin update checksum mismatch" }
         target
     }
 

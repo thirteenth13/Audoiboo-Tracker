@@ -1,6 +1,8 @@
 package org.audoiboo.tracker.plugin
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -21,6 +23,7 @@ class SeriesBookMembershipPolicyTest {
         )
 
         assertTrue(SeriesBookMembershipPolicy.belongsTo(series, book))
+        assertNull(SeriesBookMembershipPolicy.inferredNestedSeriesKey(series, book))
     }
 
     @Test
@@ -48,7 +51,7 @@ class SeriesBookMembershipPolicyTest {
     }
 
     @Test
-    fun flattenedWhiteDevilSeriesIsRejectedFromParent() {
+    fun flattenedWhiteDevilSeriesIsRejectedFromParentAndCanBeRehomed() {
         val book = SourceBook(
             sourceId = "audioboo",
             url = "https://audioboo.org/book-white-devil-2",
@@ -57,6 +60,8 @@ class SeriesBookMembershipPolicyTest {
         )
 
         assertFalse(SeriesBookMembershipPolicy.belongsTo(series, book))
+        assertEquals("звездная кровь белый дьявол", SeriesBookMembershipPolicy.inferredNestedSeriesKey(series, book))
+        assertEquals(2, SeriesBookMembershipPolicy.inferredNestedVolumeNumber(series, book))
     }
 
     @Test
@@ -74,6 +79,8 @@ class SeriesBookMembershipPolicyTest {
         )
 
         assertFalse(SeriesBookMembershipPolicy.belongsTo(parent, book))
+        assertEquals("основная серия побочная ветка", SeriesBookMembershipPolicy.inferredNestedSeriesKey(parent, book))
+        assertEquals(3, SeriesBookMembershipPolicy.inferredNestedVolumeNumber(parent, book))
     }
 
     @Test
@@ -91,6 +98,7 @@ class SeriesBookMembershipPolicyTest {
         )
 
         assertTrue(SeriesBookMembershipPolicy.belongsTo(parent, book))
+        assertNull(SeriesBookMembershipPolicy.inferredNestedSeriesKey(parent, book))
     }
 
     @Test

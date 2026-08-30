@@ -12,6 +12,13 @@ internal object SeriesDecisionPolicy {
         it.canonicalSeriesId == canonicalSeriesId && it.decision == "USER_REJECTED"
     }
 
+    fun isUserAccepted(
+        canonicalSeriesId: String,
+        decisions: List<SeriesMatchDecisionEntity>
+    ): Boolean = decisions.any {
+        it.canonicalSeriesId == canonicalSeriesId && it.decision == "USER_ACCEPTED"
+    }
+
     fun shouldQueueReview(
         canonicalSeriesId: String,
         decisions: List<SeriesMatchDecisionEntity>

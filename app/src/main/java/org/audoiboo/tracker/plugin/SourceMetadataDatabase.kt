@@ -5,8 +5,6 @@ import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
 import androidx.room.Index
-import androidx.room.Insert
-import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -120,6 +118,9 @@ interface SourceMetadataDao {
     @Query("SELECT * FROM series_sources WHERE sourceId=:sourceId AND remoteKey=:remoteKey LIMIT 1")
     suspend fun seriesSource(sourceId: String, remoteKey: String): SeriesSourceEntity?
 
+    @Query("SELECT * FROM series_sources WHERE sourceId=:sourceId AND url=:url LIMIT 1")
+    suspend fun seriesSourceByUrl(sourceId: String, url: String): SeriesSourceEntity?
+
     @Upsert
     suspend fun upsertSeriesSource(value: SeriesSourceEntity)
 
@@ -128,6 +129,9 @@ interface SourceMetadataDao {
 
     @Query("SELECT * FROM book_sources WHERE sourceId=:sourceId AND remoteKey=:remoteKey LIMIT 1")
     suspend fun bookSource(sourceId: String, remoteKey: String): BookSourceEntity?
+
+    @Query("SELECT * FROM book_sources WHERE sourceId=:sourceId AND url=:url LIMIT 1")
+    suspend fun bookSourceByUrl(sourceId: String, url: String): BookSourceEntity?
 
     @Upsert
     suspend fun upsertBookSource(value: BookSourceEntity)

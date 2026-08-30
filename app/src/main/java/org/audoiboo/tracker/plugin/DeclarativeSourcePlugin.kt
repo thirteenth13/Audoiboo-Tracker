@@ -38,7 +38,7 @@ class DeclarativeSourcePlugin(
         if (series.sourceId != manifest.id) return emptyList()
         val canLookup = SourceCapability.BOOK_LOOKUP in manifest.capabilities && manifest.entrypoints.containsKey("bookLookup")
         return guarded {
-            series.books.mapNotNull { ref ->
+            val direct = series.books.mapNotNull { ref ->
                 if (canLookup) {
                     runtime.resolveBook(manifest, packageDir, ref.url)
                 } else {
@@ -53,6 +53,28 @@ class DeclarativeSourcePlugin(
                     )
                 }
             }
+
+            // Some catalog pages lag behind the site's search index. When a declarative source can
+            // both search and resolve books, use matching search hits as a conservative completeness
+            // pass. A hit is accepted only when BOOK_LOOKUP independently declares the exact series.
+            val canSearchForMissing = canLookup &&
+                SourceCapability.SERIES_SEARCH in manifest.capabilities &&
+                manifest.entrypoints.containsKey("seriesSearch")
+            val supplemental = if (canSearchForMissing) {
+                val expected = SourceIdentityMatcher.normalizeTitle(series.title)
+                runtime.searchSeries(manifest, packageDir, SeriesSearchQuery(series.title))
+                    .asSequence()
+                    .mapNotNull { candidate ->
+                        runCatching { runtime.resolveBook(manifest, packageDir, candidate.series.url) }.getOrNull()
+                    }
+                    .filter { book ->
+                        book.seriesTitle?.let(SourceIdentityMatcher::normalizeTitle) == expected
+                    }
+                    .toList()
+            } else emptyList()
+
+            (direct + supplemental)
+                .distinctBy { SourceKeys.normalizeUrl(it.url) }
         }
     }
 

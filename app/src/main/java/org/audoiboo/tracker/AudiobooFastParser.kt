@@ -30,6 +30,11 @@ internal object AudiobooFastParser {
         val doc = fetch(url)
         val location = doc.location().ifBlank { url }
         val uri = URI(location)
+
+        if (isKnigavuhe(uri.host)) {
+            return@runCatching resolveKnigavuheSeries(doc, location)
+        }
+
         if (uri.path.orEmpty().contains("/xfsearch/cikl/", true)) {
             val clean = location.replace(Regex("/page/\\d+/?$", RegexOption.IGNORE_CASE), "/")
             val segment = uri.path.split('/').filter { it.isNotBlank() }
@@ -45,6 +50,9 @@ internal object AudiobooFastParser {
     }.getOrNull()
 
     fun parseSeries(url: String): List<FastBook>? = runCatching {
+        val host = URI(url).host
+        if (isKnigavuhe(host)) return@runCatching parseKnigavuheSeries(url)
+
         val collected = linkedMapOf<String, FastBook>()
         val authorUrls = linkedSetOf<String>()
         val targetSeries = seriesNameFromUrl(url)
@@ -84,6 +92,58 @@ internal object AudiobooFastParser {
                 !text.contains("торрент") && !a.attr("href").startsWith("magnet:")
             }?.let { it.absUrl("href").ifBlank { it.attr("href") } }?.takeIf { it.startsWith("http") }
     }.getOrNull()
+
+    private fun resolveKnigavuheSeries(doc: Document, location: String): FastResolvedSeries? {
+        val uri = runCatching { URI(location) }.getOrNull() ?: return null
+        if (uri.path.orEmpty().contains("/series/", true)) {
+            val h1 = doc.selectFirst("h1")?.text()?.trim().orEmpty()
+            val fromHeading = Regex("(?i)^цикл\\s*[«\"“]?(.+?)[»\"”]?\\s+автор\\b")
+                .find(h1)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+            val fromSlug = uri.path.split('/').filter { it.isNotBlank() }
+                .let { parts -> parts.indexOfFirst { it.equals("series", true) }.let { i -> parts.getOrNull(i + 1) } }
+                ?.let { URLDecoder.decode(it, "UTF-8").replace('-', ' ').replace('+', ' ').trim() }
+                ?.takeIf { it.isNotBlank() }
+            val name = fromHeading ?: fromSlug ?: return null
+            return FastResolvedSeries(name, location)
+        }
+
+        val link = doc.select("a[href*=/series/]")
+            .firstOrNull { it.text().trim().isNotBlank() }
+            ?: return null
+        val href = link.absUrl("href").ifBlank { link.attr("href") }
+        val name = link.text().trim().removePrefix("Цикл").trim(' ', '«', '»', '"', '“', '”')
+        return if (href.isNotBlank() && name.isNotBlank()) FastResolvedSeries(name, href) else null
+    }
+
+    private fun parseKnigavuheSeries(url: String): List<FastBook>? {
+        val doc = fetch(url)
+        val resolved = resolveKnigavuheSeries(doc, doc.location().ifBlank { url })
+        val seriesName = resolved?.name
+            ?: doc.selectFirst("h1")?.text()?.trim()
+            ?: return null
+        val author = doc.selectFirst("a[href*=/author/]")?.text()?.trim()?.takeIf { it.isNotBlank() }
+        val baseHost = runCatching { URI(doc.location().ifBlank { url }).host?.lowercase() }.getOrNull()
+
+        return doc.select("a[href*=/book/]")
+            .mapNotNull { a ->
+                val href = a.absUrl("href").ifBlank { a.attr("href") }
+                val uri = runCatching { URI(href) }.getOrNull() ?: return@mapNotNull null
+                if (!isKnigavuhe(uri.host) || !uri.path.orEmpty().contains("/book/", true)) return@mapNotNull null
+                if (baseHost != null && uri.host?.lowercase() != baseHost && !isKnigavuhe(uri.host)) return@mapNotNull null
+                val title = a.text().trim()
+                    .replace(Regex("^\\d+\\.\\s*"), "")
+                    .takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                FastBook(title = title, url = href, author = author, coverUrl = null, seriesTitle = seriesName)
+            }
+            .distinctBy { it.url }
+            .takeIf { it.isNotEmpty() }
+    }
+
+    private fun isKnigavuhe(host: String?): Boolean {
+        val normalized = host?.lowercase()?.trimEnd('.') ?: return false
+        return normalized == "knigavuhe.org" || normalized.endsWith(".knigavuhe.org")
+    }
 
     private fun crawlPages(startUrl: String, maxPages: Int, consume: (Document) -> Unit) {
         val visited = mutableSetOf<String>()
@@ -174,7 +234,10 @@ internal object AudiobooFastParser {
 
     private fun fetch(url: String) = Jsoup.connect(url)
         .userAgent(UA)
-        .referrer("https://audioboo.org/")
+        .referrer(runCatching {
+            val uri = URI(url)
+            "${uri.scheme}://${uri.host}/"
+        }.getOrDefault("https://audioboo.org/"))
         .timeout(12_000)
         .followRedirects(true)
         .get()

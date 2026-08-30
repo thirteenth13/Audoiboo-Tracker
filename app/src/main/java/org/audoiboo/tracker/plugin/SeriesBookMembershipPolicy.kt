@@ -26,7 +26,13 @@ object SeriesBookMembershipPolicy {
      * "<parent series> <named qualifier> <volume number>". The value is intended only for matching
      * an already-known canonical series; callers should not create a new series from this signal.
      */
-    fun inferredNestedSeriesKey(series: SourceSeries, book: SourceBook): String? {
+    fun inferredNestedSeriesKey(series: SourceSeries, book: SourceBook): String? =
+        nestedParts(series, book)?.first
+
+    fun inferredNestedVolumeNumber(series: SourceSeries, book: SourceBook): Int? =
+        nestedParts(series, book)?.second
+
+    private fun nestedParts(series: SourceSeries, book: SourceBook): Pair<String, Int>? {
         val expected = SourceIdentityMatcher.normalizeTitle(series.title)
         val bookTitle = SourceIdentityMatcher.normalizeTitle(book.title)
         if (expected.isBlank()) return null
@@ -40,7 +46,8 @@ object SeriesBookMembershipPolicy {
         if (firstNumber <= 0) return null
         val qualifier = tokens.take(firstNumber).filter { token -> token.any(Char::isLetter) }
         if (qualifier.isEmpty()) return null
-        return (listOf(expected) + qualifier).joinToString(" ")
+        val number = tokens[firstNumber].toDoubleOrNull()?.toInt() ?: return null
+        return (listOf(expected) + qualifier).joinToString(" ") to number
     }
 
     private fun isVolumeNumber(token: String): Boolean =

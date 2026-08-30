@@ -62,13 +62,13 @@ def _click(page, selectors: tuple[str, ...]) -> bool:
     return False
 
 
-def _wait_new_media(page, media_responses: set[str], before: set[str], timeout_ms: int = 1600) -> bool:
+def _wait_new_media(page, media_responses: set[str], before: set[str], timeout_ms: int = 900) -> bool:
     elapsed = 0
     while elapsed < timeout_ms:
         if media_responses - before:
             return True
-        page.wait_for_timeout(120)
-        elapsed += 120
+        page.wait_for_timeout(100)
+        elapsed += 100
     return False
 
 
@@ -84,14 +84,14 @@ def _click_locator_rows(page, locator, media_responses: set[str], limit: int) ->
             item = locator.nth(i)
             if not item.is_visible():
                 continue
-            text = re.sub(r"\s+", " ", (item.inner_text(timeout=500) or "")).strip()
+            text = re.sub(r"\s+", " ", (item.inner_text(timeout=400) or "")).strip()
             if text and text in seen_text:
                 continue
             if text:
                 seen_text.add(text)
             before = set(media_responses)
-            item.scroll_into_view_if_needed(timeout=700)
-            item.click(timeout=1000, force=True)
+            item.scroll_into_view_if_needed(timeout=500)
+            item.click(timeout=800, force=True)
             _wait_new_media(page, media_responses, before)
             clicked += 1
             if clicked >= limit:
@@ -101,56 +101,98 @@ def _click_locator_rows(page, locator, media_responses: set[str], limit: int) ->
     return clicked
 
 
+def _text_row_candidates(page, host: str, limit: int) -> list[dict]:
+    """Find smallest visible nodes matching the chapter labels seen in real browsers."""
+    try:
+        rows = page.evaluate("""({host, limit}) => {
+            const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+            const visible = el => {
+                const r = el.getBoundingClientRect();
+                const s = getComputedStyle(el);
+                return r.width > 2 && r.height > 2 && s.visibility !== 'hidden' && s.display !== 'none';
+            };
+            const matches = text => {
+                if (host.includes('knigavuhe.org')) return /_\d+(?:\s+\d+:\d+)?$/.test(text);
+                if (host.includes('izib.')) return /\b\d{2}(?:\s+\d+:\d+)?$/.test(text);
+                if (host.includes('poleknig.com')) return /^\d{1,3}$/.test(text);
+                return false;
+            };
+            const out = [];
+            for (const el of document.querySelectorAll('body *')) {
+                if (!visible(el)) continue;
+                const text = norm(el.innerText || el.textContent);
+                if (!matches(text)) continue;
+                const childMatch = Array.from(el.children).some(c => matches(norm(c.innerText || c.textContent)));
+                if (childMatch) continue;
+                out.push({text, tag: el.tagName, cls: String(el.className || '')});
+                if (out.length >= limit) break;
+            }
+            return out;
+        }""", {"host": host, "limit": limit}) or []
+        return [r for r in rows if isinstance(r, dict)]
+    except Exception:
+        return []
+
+
+def _click_text_rows(page, host: str, media_responses: set[str], limit: int) -> int:
+    rows = _text_row_candidates(page, host, limit)
+    clicked = 0
+    for row in rows:
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            before = set(media_responses)
+            did_click = page.evaluate("""text => {
+                const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+                const all = Array.from(document.querySelectorAll('body *'));
+                let el = all.find(n => norm(n.innerText || n.textContent) === text &&
+                    !Array.from(n.children).some(c => norm(c.innerText || c.textContent) === text));
+                if (!el) return false;
+                const clickable = el.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]') || el;
+                clickable.scrollIntoView({block:'center'});
+                clickable.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window}));
+                clickable.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window}));
+                clickable.click();
+                return true;
+            }""", text)
+            if did_click:
+                _wait_new_media(page, media_responses, before, timeout_ms=700)
+                clicked += 1
+        except Exception:
+            continue
+    return clicked
+
+
 def _site_playlist_rows(page, url: str, media_responses: set[str], limit: int = 50) -> int:
     host = urlsplit(url).hostname or ""
 
-    # Knigavuhe exposes chapter rows whose visible labels end in _0, _1, ...
-    if "knigavuhe.org" in host:
-        selectors = (
-            "[class*='book'] [class*='track']",
-            "[class*='playlist'] > *",
-            "[class*='book'] li",
-            "[class*='player'] [class*='item']",
-        )
-        for selector in selectors:
-            locator = page.locator(selector).filter(has_text=re.compile(r"_\d+\s*(?:\d+:\d+)?$"))
-            clicked = _click_locator_rows(page, locator, media_responses, limit)
-            if clicked:
-                return clicked
-        try:
-            locator = page.get_by_text(re.compile(r"_\d+$"))
-            return _click_locator_rows(page, locator, media_responses, limit)
-        except Exception:
-            return 0
+    # First use visible row text. This does not depend on unstable CSS class names.
+    if any(key in host for key in ("knigavuhe.org", "izib.", "poleknig.com")):
+        clicked = _click_text_rows(page, host, media_responses, limit)
+        if clicked:
+            return clicked
 
-    # Izib chapters are numbered 01, 02, ... and live inside the player/playlist area.
-    if "izib." in host:
-        selectors = (
-            "[class*='playlist'] > *",
-            "[class*='player'] [class*='track']",
-            "[class*='player'] li",
-            "[class*='audio'] li",
-        )
-        rx = re.compile(r"\b\d{2}\s*(?:\d+:\d+)?$")
-        for selector in selectors:
-            locator = page.locator(selector).filter(has_text=rx)
+    if "knigavuhe.org" in host:
+        for selector in ("[class*='book'] [class*='track']", "[class*='playlist'] > *", "[class*='book'] li", "[class*='player'] [class*='item']"):
+            locator = page.locator(selector).filter(has_text=re.compile(r"_\d+\s*(?:\d+:\d+)?$"))
             clicked = _click_locator_rows(page, locator, media_responses, limit)
             if clicked:
                 return clicked
         return 0
 
-    # Poleknig uses numeric chapter rows and hashed MP3 names, so actual clicks are required.
+    if "izib." in host:
+        rx = re.compile(r"\b\d{2}\s*(?:\d+:\d+)?$")
+        for selector in ("[class*='playlist'] > *", "[class*='player'] [class*='track']", "[class*='player'] li", "[class*='audio'] li"):
+            clicked = _click_locator_rows(page, page.locator(selector).filter(has_text=rx), media_responses, limit)
+            if clicked:
+                return clicked
+        return 0
+
     if "poleknig.com" in host:
-        selectors = (
-            "[class*='player'] [class*='playlist'] > *",
-            "[class*='player'] [class*='track']",
-            "[class*='player'] li",
-            "[class*='playlist'] > *",
-        )
         rx = re.compile(r"^\s*\d{1,3}\s*$")
-        for selector in selectors:
-            locator = page.locator(selector).filter(has_text=rx)
-            clicked = _click_locator_rows(page, locator, media_responses, limit)
+        for selector in ("[class*='player'] [class*='playlist'] > *", "[class*='player'] [class*='track']", "[class*='player'] li", "[class*='playlist'] > *"):
+            clicked = _click_locator_rows(page, page.locator(selector).filter(has_text=rx), media_responses, limit)
             if clicked:
                 return clicked
         return 0
@@ -172,14 +214,14 @@ def _click_playlist_rows(page, media_responses: set[str], limit: int = 36) -> in
                 item = locator.nth(i)
                 if not item.is_visible():
                     continue
-                text = (item.inner_text(timeout=500) or "").strip()
+                text = (item.inner_text(timeout=400) or "").strip()
                 if text and text in seen_text:
                     continue
                 if text:
                     seen_text.add(text)
                 before = set(media_responses)
-                item.click(timeout=900, force=True)
-                _wait_new_media(page, media_responses, before, timeout_ms=800)
+                item.click(timeout=700, force=True)
+                _wait_new_media(page, media_responses, before, timeout_ms=600)
                 clicked += 1
                 if clicked >= limit:
                     return clicked
@@ -188,18 +230,23 @@ def _click_playlist_rows(page, media_responses: set[str], limit: int = 36) -> in
     return clicked
 
 
-def _dom_media_urls(page) -> set[str]:
+def _browser_media_urls(page) -> set[str]:
     try:
         rows = page.evaluate("""() => {
             const out = new Set();
+            const add = value => {
+                if (!value) return;
+                try { out.add(new URL(value, location.href).href); } catch (_) {}
+            };
             const attrs = ['src','href','data-src','data-url','data-file','data-audio'];
             for (const node of document.querySelectorAll('audio,source,a,[data-src],[data-url],[data-file],[data-audio]')) {
-                for (const attr of attrs) {
-                    const value = node.getAttribute && node.getAttribute(attr);
-                    if (value) { try { out.add(new URL(value, location.href).href); } catch (_) {} }
-                }
-                if (node.currentSrc) out.add(node.currentSrc);
+                for (const attr of attrs) add(node.getAttribute && node.getAttribute(attr));
+                add(node.currentSrc);
             }
+            for (const entry of performance.getEntriesByType('resource')) add(entry.name);
+            const html = document.documentElement.outerHTML.replace(/\\\//g, '/');
+            const rx = /https?:\\/\\/[^\"'<>\\s]+?(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)(?:\\?[^\"'<>\\s]*)?/ig;
+            for (const match of html.matchAll(rx)) add(match[0]);
             return Array.from(out);
         }""") or []
         return {str(url) for url in rows if isinstance(url, str)}
@@ -220,7 +267,7 @@ def _expand_numbered(page, seeds: set[str], max_tracks: int = 80) -> set[str]:
             if not candidate:
                 break
             try:
-                response = page.request.head(candidate, headers={"Referer": page.url}, timeout=1600, fail_on_status_code=False)
+                response = page.request.head(candidate, headers={"Referer": page.url}, timeout=1400, fail_on_status_code=False)
                 content_type = (response.headers.get("content-type") or "").lower()
                 if 200 <= response.status < 400 and (content_type.startswith("audio/") or urlsplit(candidate).path.lower().endswith(AUDIO_EXTENSIONS)):
                     found.add(candidate)
@@ -243,15 +290,14 @@ def _natural_media_key(url: str):
 def traverse(url: str, capture_xhr: str, max_steps: int = 40) -> tuple[int, list[str]]:
     network: list[dict] = []
     media_responses: set[str] = set()
-    dom_urls: set[str] = set()
+    browser_urls: set[str] = set()
     expanded_urls: set[str] = set()
 
     def setup(page) -> None:
         def on_response(response) -> None:
             try:
                 headers = dict(response.headers or {})
-                row = {"url": str(response.url), "status": int(response.status), "headers": headers, "body": ""}
-                network.append(row)
+                network.append({"url": str(response.url), "status": int(response.status), "headers": headers, "body": ""})
                 content_type = (headers.get("content-type") or "").lower()
                 if response.request.resource_type == "media" or content_type.startswith("audio/"):
                     media_responses.add(str(response.url))
@@ -260,37 +306,39 @@ def traverse(url: str, capture_xhr: str, max_steps: int = 40) -> tuple[int, list
         page.on("response", on_response)
 
     def action(page) -> None:
+        host = urlsplit(url).hostname or ""
         _click(page, PLAY_SELECTORS)
-        page.wait_for_timeout(500)
-        dom_urls.update(_dom_media_urls(page))
+        page.wait_for_timeout(350)
+        browser_urls.update(_browser_media_urls(page))
 
-        clicked = _site_playlist_rows(page, url, media_responses, limit=max_steps)
+        # Poleknig has many tracks and each click can wait on a streamed response; six rows
+        # are enough to prove extraction without consuming the entire per-site timeout.
+        site_limit = min(max_steps, 8 if "poleknig.com" in host else max_steps)
+        clicked = _site_playlist_rows(page, url, media_responses, limit=site_limit)
         if not clicked:
-            _click_playlist_rows(page, media_responses, limit=max_steps)
-        dom_urls.update(_dom_media_urls(page))
+            _click_playlist_rows(page, media_responses, limit=site_limit)
+        browser_urls.update(_browser_media_urls(page))
 
-        # Keep Next as a final generic fallback only when playlist clicking produced little media.
         if len(media_responses) <= 1:
-            for _ in range(max_steps):
+            for _ in range(min(max_steps, 8)):
                 before = set(media_responses)
                 if not _click(page, NEXT_SELECTORS):
                     break
-                _wait_new_media(page, media_responses, before, timeout_ms=700)
-                dom_urls.update(_dom_media_urls(page))
+                _wait_new_media(page, media_responses, before, timeout_ms=550)
+                browser_urls.update(_browser_media_urls(page))
 
-        seeds = {u for u in (set(media_responses) | set(dom_urls)) if u.startswith(("http://", "https://"))}
-        host = urlsplit(url).hostname or ""
+        seeds = {u for u in (set(media_responses) | set(browser_urls)) if u.startswith(("http://", "https://"))}
         if "poleknig.com" not in host:
             expanded_urls.update(_expand_numbered(page, seeds))
 
     page = DynamicFetcher.fetch(
         url, headless=True, capture_xhr=capture_xhr, page_setup=setup, page_action=action,
-        wait=400, timeout=65000, network_idle=False,
+        wait=350, timeout=50000, network_idle=False,
     )
 
     found = {c.url for c in collect_network_responses(network)}
     found.update(media_responses)
-    found.update(u for u in dom_urls if u.startswith(("http://", "https://")) and urlsplit(u).path.lower().endswith(AUDIO_EXTENSIONS + (".m3u8",)))
+    found.update(browser_urls)
     found.update(expanded_urls)
 
     for item in getattr(page, "captured_xhr", []) or []:

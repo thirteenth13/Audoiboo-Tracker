@@ -39,7 +39,7 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, DownloadResolver {
                 url = book.url,
                 title = book.title,
                 authors = book.author?.takeIf { it.isNotBlank() }?.let { listOf(SourceAuthor(it)) }.orEmpty(),
-                seriesTitle = series.title,
+                seriesTitle = book.seriesTitle ?: series.title,
                 coverUrl = book.coverUrl
             )
         }

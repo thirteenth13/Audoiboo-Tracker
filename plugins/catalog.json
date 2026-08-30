@@ -16,7 +16,7 @@
       "version": 1,
       "apiVersion": 1,
       "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/experiment/knigavuhe-webview-adapter/plugins/packages/knigavuhe-1.abplugin",
-      "sha256": "dd8d4d1a87d46ba905078c89df4db6a280f00184e2cad6c8e8e422597210bc9a",
+      "sha256": "e4d2e2ff3ae97e12649a0f03c35699d88e367a7e575681f3ac7720b3877b7466",
       "description": "Книги Knigavuhe; пряме визначення аудіотреків через device-side Android WebView, коли сайт віддає повний плеєр на телефоні."
     }
   ]

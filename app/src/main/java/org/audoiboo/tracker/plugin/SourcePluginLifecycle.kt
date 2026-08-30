@@ -19,6 +19,7 @@ data class SourcePluginRegistration(
     val origin: PluginOrigin,
     val state: PluginState,
     val packagePath: String? = null,
+    val manifest: PluginPackageManifest? = null,
     val failureReason: String? = null
 )
 
@@ -30,9 +31,10 @@ class SourcePluginManager(
     }
 
     private val packageRegistrations = linkedMapOf<String, SourcePluginRegistration>()
+    private val activePackagePlugins = linkedMapOf<String, SourcePlugin>()
 
-    // Package plugins remain metadata-only until the sandboxed loader is implemented.
-    fun activeRegistry(): SourcePluginRegistry = SourcePluginRegistry(builtInsById.values)
+    fun activeRegistry(): SourcePluginRegistry =
+        SourcePluginRegistry(builtInsById.values + activePackagePlugins.values)
 
     fun registrations(): List<SourcePluginRegistration> {
         val builtIns = builtInsById.values.map { plugin ->
@@ -52,13 +54,28 @@ class SourcePluginManager(
 
     fun clearPackageRegistrations() {
         packageRegistrations.clear()
+        activePackagePlugins.clear()
     }
 
     fun markPackageState(id: String, state: PluginState, reason: String? = null): SourcePluginRegistration? {
         val current = packageRegistrations[id] ?: return null
         require(current.origin == PluginOrigin.PACKAGE)
+        if (state != PluginState.ENABLED) activePackagePlugins.remove(id)
         return current.copy(state = state, failureReason = reason).also { packageRegistrations[id] = it }
     }
+
+    fun enablePackagePlugin(id: String, plugin: SourcePlugin): SourcePluginRegistration? {
+        val current = packageRegistrations[id] ?: return null
+        if (current.origin != PluginOrigin.PACKAGE || current.state == PluginState.QUARANTINED || current.state == PluginState.INCOMPATIBLE) {
+            return null
+        }
+        if (plugin.descriptor.id != id || plugin.descriptor.apiVersion != SOURCE_PLUGIN_API_VERSION) return null
+        activePackagePlugins[id] = plugin
+        return current.copy(state = PluginState.ENABLED, failureReason = null).also { packageRegistrations[id] = it }
+    }
+
+    fun disablePackagePlugin(id: String, reason: String = "Disabled by user"): SourcePluginRegistration? =
+        markPackageState(id, PluginState.DISABLED, reason)
 
     fun registerPackageManifest(
         manifest: PluginPackageManifest,
@@ -84,6 +101,7 @@ class SourcePluginManager(
                 origin = PluginOrigin.PACKAGE,
                 state = PluginState.QUARANTINED,
                 packagePath = packagePath,
+                manifest = manifest,
                 failureReason = "Package id conflicts with a built-in plugin"
             )
             !validation.valid -> SourcePluginRegistration(
@@ -93,6 +111,7 @@ class SourcePluginManager(
                 origin = PluginOrigin.PACKAGE,
                 state = if (manifest.apiVersion != SOURCE_PLUGIN_API_VERSION) PluginState.INCOMPATIBLE else PluginState.QUARANTINED,
                 packagePath = packagePath,
+                manifest = manifest,
                 failureReason = validation.errors.joinToString("; ")
             )
             else -> SourcePluginRegistration(
@@ -102,9 +121,11 @@ class SourcePluginManager(
                 origin = PluginOrigin.PACKAGE,
                 state = PluginState.DISABLED,
                 packagePath = packagePath,
-                failureReason = "Package validated; executable loader is not enabled yet"
+                manifest = manifest,
+                failureReason = "Package validated; waiting for user activation"
             )
         }
+        activePackagePlugins.remove(manifest.id)
         packageRegistrations[manifest.id] = registration
         return registration
     }

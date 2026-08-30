@@ -53,6 +53,7 @@
 
         <activity android:name=".DiagnosticActivity" android:exported="false" android:label="Audoiboo DOM" />
         <activity android:name=".SettingsActivity" android:exported="false" android:label="Налаштування" />
+        <activity android:name=".PluginManagementActivity" android:exported="false" android:label="Плагіни джерел" />
         <activity android:name=".PlayerSettingsActivity" android:exported="false" android:label="Налаштування плеєра" />
         <activity android:name=".SleepTimerActivity" android:exported="false" android:label="Таймер сну" />
         <activity android:name=".ListeningStatsActivity" android:exported="false" android:label="Статистика прослуховування" />

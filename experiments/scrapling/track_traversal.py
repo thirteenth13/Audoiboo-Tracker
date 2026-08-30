@@ -44,7 +44,9 @@ def numbered_track_url(seed: str, number: int) -> str | None:
     if not parsed:
         return None
     prefix, _, ext, query = parsed
-    result = f"{prefix}{number}{ext}"
+    width_match = re.search(r"(\d+)(?=\.(?:mp3|m4a|m4b|aac|ogg|opus|flac)$)", urlsplit(seed).path, re.I)
+    width = len(width_match.group(1)) if width_match else 1
+    result = f"{prefix}{number:0{width}d}{ext}"
     return f"{result}?{query}" if query else result
 
 
@@ -60,7 +62,103 @@ def _click(page, selectors: tuple[str, ...]) -> bool:
     return False
 
 
-def _click_playlist_rows(page, limit: int = 36) -> int:
+def _wait_new_media(page, media_responses: set[str], before: set[str], timeout_ms: int = 1600) -> bool:
+    elapsed = 0
+    while elapsed < timeout_ms:
+        if media_responses - before:
+            return True
+        page.wait_for_timeout(120)
+        elapsed += 120
+    return False
+
+
+def _click_locator_rows(page, locator, media_responses: set[str], limit: int) -> int:
+    clicked = 0
+    seen_text: set[str] = set()
+    try:
+        count = min(locator.count(), limit)
+    except Exception:
+        return 0
+    for i in range(count):
+        try:
+            item = locator.nth(i)
+            if not item.is_visible():
+                continue
+            text = re.sub(r"\s+", " ", (item.inner_text(timeout=500) or "")).strip()
+            if text and text in seen_text:
+                continue
+            if text:
+                seen_text.add(text)
+            before = set(media_responses)
+            item.scroll_into_view_if_needed(timeout=700)
+            item.click(timeout=1000, force=True)
+            _wait_new_media(page, media_responses, before)
+            clicked += 1
+            if clicked >= limit:
+                break
+        except Exception:
+            continue
+    return clicked
+
+
+def _site_playlist_rows(page, url: str, media_responses: set[str], limit: int = 50) -> int:
+    host = urlsplit(url).hostname or ""
+
+    # Knigavuhe exposes chapter rows whose visible labels end in _0, _1, ...
+    if "knigavuhe.org" in host:
+        selectors = (
+            "[class*='book'] [class*='track']",
+            "[class*='playlist'] > *",
+            "[class*='book'] li",
+            "[class*='player'] [class*='item']",
+        )
+        for selector in selectors:
+            locator = page.locator(selector).filter(has_text=re.compile(r"_\d+\s*(?:\d+:\d+)?$"))
+            clicked = _click_locator_rows(page, locator, media_responses, limit)
+            if clicked:
+                return clicked
+        try:
+            locator = page.get_by_text(re.compile(r"_\d+$"))
+            return _click_locator_rows(page, locator, media_responses, limit)
+        except Exception:
+            return 0
+
+    # Izib chapters are numbered 01, 02, ... and live inside the player/playlist area.
+    if "izib." in host:
+        selectors = (
+            "[class*='playlist'] > *",
+            "[class*='player'] [class*='track']",
+            "[class*='player'] li",
+            "[class*='audio'] li",
+        )
+        rx = re.compile(r"\b\d{2}\s*(?:\d+:\d+)?$")
+        for selector in selectors:
+            locator = page.locator(selector).filter(has_text=rx)
+            clicked = _click_locator_rows(page, locator, media_responses, limit)
+            if clicked:
+                return clicked
+        return 0
+
+    # Poleknig uses numeric chapter rows and hashed MP3 names, so actual clicks are required.
+    if "poleknig.com" in host:
+        selectors = (
+            "[class*='player'] [class*='playlist'] > *",
+            "[class*='player'] [class*='track']",
+            "[class*='player'] li",
+            "[class*='playlist'] > *",
+        )
+        rx = re.compile(r"^\s*\d{1,3}\s*$")
+        for selector in selectors:
+            locator = page.locator(selector).filter(has_text=rx)
+            clicked = _click_locator_rows(page, locator, media_responses, limit)
+            if clicked:
+                return clicked
+        return 0
+
+    return 0
+
+
+def _click_playlist_rows(page, media_responses: set[str], limit: int = 36) -> int:
     clicked = 0
     seen_text: set[str] = set()
     for selector in PLAYLIST_SELECTORS:
@@ -79,8 +177,9 @@ def _click_playlist_rows(page, limit: int = 36) -> int:
                     continue
                 if text:
                     seen_text.add(text)
+                before = set(media_responses)
                 item.click(timeout=900, force=True)
-                page.wait_for_timeout(260)
+                _wait_new_media(page, media_responses, before, timeout_ms=800)
                 clicked += 1
                 if clicked >= limit:
                     return clicked
@@ -135,7 +234,13 @@ def _expand_numbered(page, seeds: set[str], max_tracks: int = 80) -> set[str]:
     return found
 
 
-def traverse(url: str, capture_xhr: str, max_steps: int = 28) -> tuple[int, list[str]]:
+def _natural_media_key(url: str):
+    path = urlsplit(url).path
+    match = re.search(r"(\d+)(?=\.(?:mp3|m4a|m4b|aac|ogg|opus|flac)$)", path, re.I)
+    return (re.sub(r"\d+(?=\.(?:mp3|m4a|m4b|aac|ogg|opus|flac)$)", "", path, flags=re.I), int(match.group(1)) if match else 10**9, url)
+
+
+def traverse(url: str, capture_xhr: str, max_steps: int = 40) -> tuple[int, list[str]]:
     network: list[dict] = []
     media_responses: set[str] = set()
     dom_urls: set[str] = set()
@@ -156,25 +261,31 @@ def traverse(url: str, capture_xhr: str, max_steps: int = 28) -> tuple[int, list
 
     def action(page) -> None:
         _click(page, PLAY_SELECTORS)
-        page.wait_for_timeout(700)
+        page.wait_for_timeout(500)
         dom_urls.update(_dom_media_urls(page))
 
-        # Some players expose each chapter as a clickable playlist row rather than a Next button.
-        _click_playlist_rows(page, limit=max_steps)
+        clicked = _site_playlist_rows(page, url, media_responses, limit=max_steps)
+        if not clicked:
+            _click_playlist_rows(page, media_responses, limit=max_steps)
         dom_urls.update(_dom_media_urls(page))
 
-        for _ in range(max_steps):
-            if not _click(page, NEXT_SELECTORS):
-                break
-            page.wait_for_timeout(320)
-            dom_urls.update(_dom_media_urls(page))
+        # Keep Next as a final generic fallback only when playlist clicking produced little media.
+        if len(media_responses) <= 1:
+            for _ in range(max_steps):
+                before = set(media_responses)
+                if not _click(page, NEXT_SELECTORS):
+                    break
+                _wait_new_media(page, media_responses, before, timeout_ms=700)
+                dom_urls.update(_dom_media_urls(page))
 
         seeds = {u for u in (set(media_responses) | set(dom_urls)) if u.startswith(("http://", "https://"))}
-        expanded_urls.update(_expand_numbered(page, seeds))
+        host = urlsplit(url).hostname or ""
+        if "poleknig.com" not in host:
+            expanded_urls.update(_expand_numbered(page, seeds))
 
     page = DynamicFetcher.fetch(
         url, headless=True, capture_xhr=capture_xhr, page_setup=setup, page_action=action,
-        wait=500, timeout=50000, network_idle=False,
+        wait=400, timeout=65000, network_idle=False,
     )
 
     found = {c.url for c in collect_network_responses(network)}
@@ -189,5 +300,9 @@ def traverse(url: str, capture_xhr: str, max_steps: int = 28) -> tuple[int, list
         except Exception:
             pass
 
-    found = {u for u in found if not u.lower().startswith("blob:")}
-    return len(network), sorted(found)
+    found = {
+        u for u in found
+        if not u.lower().startswith("blob:")
+        and (urlsplit(u).path.lower().endswith(AUDIO_EXTENSIONS) or ".m3u8" in urlsplit(u).path.lower())
+    }
+    return len(network), sorted(found, key=_natural_media_key)

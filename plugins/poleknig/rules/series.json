@@ -1,0 +1,12 @@
+{
+  "operation": "seriesLookup",
+  "series": {
+    "title": "h1",
+    "followLink": "a[href*='/series/']@href",
+    "books": {
+      "item": "a[href*='/books/']",
+      "title": "@text",
+      "link": "@href"
+    }
+  }
+}

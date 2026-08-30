@@ -18,6 +18,24 @@
       "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-2.abplugin",
       "sha256": "9ebd825d8ccc743e11083de3a79c32f56cd5aee84c1ec7e978c4679f6940cceb",
       "description": "Цикли й книги Knigavuhe; пряме визначення аудіотреків через device-side Android WebView, коли сайт віддає повний плеєр на телефоні."
+    },
+    {
+      "id": "poleknig",
+      "name": "Poleknig",
+      "version": 1,
+      "apiVersion": 1,
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/poleknig-1.abplugin",
+      "sha256": "22b966c8eff9b60712a6032afd522b84f4b8017cc76d5ded3626a88d8107d3a8",
+      "description": "Книги й цикли Poleknig; device-side WebView перехоплює динамічні /files/<id> resolver-и та аудіо запити."
+    },
+    {
+      "id": "lis10book",
+      "name": "Lis10book",
+      "version": 1,
+      "apiVersion": 1,
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/lis10book-1.abplugin",
+      "sha256": "5bed31341f4d732d85f9639b078ebd77687b66fb1b7920366a653150593e2a3d",
+      "description": "Книги й цикли Lis10book; device-side WebView активує динамічний плеєр і збирає аудіотреки/HLS."
     }
   ]
 }

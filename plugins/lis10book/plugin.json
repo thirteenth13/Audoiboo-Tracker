@@ -1,0 +1,30 @@
+{
+  "id": "lis10book",
+  "name": "Lis10book",
+  "version": 1,
+  "apiVersion": 1,
+  "runtime": "DECLARATIVE",
+  "hosts": [
+    "lis10book.com"
+  ],
+  "capabilities": [
+    "SERIES_LOOKUP",
+    "BOOK_LOOKUP",
+    "DOWNLOAD_RESOLUTION"
+  ],
+  "permissions": {
+    "networkHosts": [
+      "lis10book.com"
+    ],
+    "downloadHosts": [
+      "lis10book.com"
+    ],
+    "cookies": false,
+    "javascript": false
+  },
+  "entrypoints": {
+    "seriesLookup": "rules/series.json",
+    "bookLookup": "rules/book.json",
+    "downloadResolution": "rules/download.json"
+  }
+}

@@ -114,7 +114,7 @@ def _text_row_candidates(page, host: str, limit: int) -> list[dict]:
             const matches = text => {
                 if (host.includes('knigavuhe.org')) return /_\d+(?:\s+\d+:\d+)?$/.test(text);
                 if (host.includes('izib.')) return /\b\d{2}(?:\s+\d+:\d+)?$/.test(text);
-                if (host.includes('poleknig.com')) return /^\d{1,3}$/.test(text);
+                if (host.includes('poleknig.com')) return /^\d{2}$/.test(text);
                 return false;
             };
             const out = [];
@@ -137,6 +137,7 @@ def _text_row_candidates(page, host: str, limit: int) -> list[dict]:
 def _click_text_rows(page, host: str, media_responses: set[str], limit: int) -> int:
     rows = _text_row_candidates(page, host, limit)
     clicked = 0
+    poleknig = "poleknig.com" in host
     for row in rows:
         text = str(row.get("text") or "").strip()
         if not text:
@@ -157,7 +158,7 @@ def _click_text_rows(page, host: str, media_responses: set[str], limit: int) -> 
                 return true;
             }""", text)
             if did_click:
-                _wait_new_media(page, media_responses, before, timeout_ms=700)
+                _wait_new_media(page, media_responses, before, timeout_ms=250 if poleknig else 700)
                 clicked += 1
         except Exception:
             continue
@@ -167,7 +168,6 @@ def _click_text_rows(page, host: str, media_responses: set[str], limit: int) -> 
 def _site_playlist_rows(page, url: str, media_responses: set[str], limit: int = 50) -> int:
     host = urlsplit(url).hostname or ""
 
-    # First use visible row text. This does not depend on unstable CSS class names.
     if any(key in host for key in ("knigavuhe.org", "izib.", "poleknig.com")):
         clicked = _click_text_rows(page, host, media_responses, limit)
         if clicked:
@@ -190,7 +190,7 @@ def _site_playlist_rows(page, url: str, media_responses: set[str], limit: int = 
         return 0
 
     if "poleknig.com" in host:
-        rx = re.compile(r"^\s*\d{1,3}\s*$")
+        rx = re.compile(r"^\s*\d{2}\s*$")
         for selector in ("[class*='player'] [class*='playlist'] > *", "[class*='player'] [class*='track']", "[class*='player'] li", "[class*='playlist'] > *"):
             clicked = _click_locator_rows(page, page.locator(selector).filter(has_text=rx), media_responses, limit)
             if clicked:
@@ -290,30 +290,51 @@ def _natural_media_key(url: str):
 def traverse(url: str, capture_xhr: str, max_steps: int = 40) -> tuple[int, list[str]]:
     network: list[dict] = []
     media_responses: set[str] = set()
+    redirect_media: set[str] = set()
     browser_urls: set[str] = set()
     expanded_urls: set[str] = set()
+    host = urlsplit(url).hostname or ""
+    is_poleknig = "poleknig.com" in host
 
     def setup(page) -> None:
+        if is_poleknig:
+            # /files/<id> returns the useful Location header. Do not spend CI time
+            # downloading the redirected multi-megabyte MP3 via 206 Range requests.
+            try:
+                page.route("**/*.mp3*", lambda route: route.abort())
+            except Exception:
+                pass
+
         def on_response(response) -> None:
             try:
                 headers = dict(response.headers or {})
-                network.append({"url": str(response.url), "status": int(response.status), "headers": headers, "body": ""})
+                response_url = str(response.url)
+                status = int(response.status)
+                network.append({"url": response_url, "status": status, "headers": headers, "body": ""})
                 content_type = (headers.get("content-type") or "").lower()
+
+                if is_poleknig and 300 <= status < 400 and "/files/" in urlsplit(response_url).path:
+                    location = headers.get("location") or headers.get("Location") or ""
+                    if location:
+                        target = str(location)
+                        if target.startswith("/"):
+                            target = f"{urlsplit(response_url).scheme}://{urlsplit(response_url).netloc}{target}"
+                        if urlsplit(target).path.lower().endswith(AUDIO_EXTENSIONS):
+                            redirect_media.add(target)
+                            media_responses.add(target)
+
                 if response.request.resource_type == "media" or content_type.startswith("audio/"):
-                    media_responses.add(str(response.url))
+                    media_responses.add(response_url)
             except Exception:
                 pass
         page.on("response", on_response)
 
     def action(page) -> None:
-        host = urlsplit(url).hostname or ""
         _click(page, PLAY_SELECTORS)
         page.wait_for_timeout(350)
         browser_urls.update(_browser_media_urls(page))
 
-        # Poleknig has many tracks and each click can wait on a streamed response; six rows
-        # are enough to prove extraction without consuming the entire per-site timeout.
-        site_limit = min(max_steps, 8 if "poleknig.com" in host else max_steps)
+        site_limit = min(max_steps, 12 if is_poleknig else max_steps)
         clicked = _site_playlist_rows(page, url, media_responses, limit=site_limit)
         if not clicked:
             _click_playlist_rows(page, media_responses, limit=site_limit)
@@ -328,16 +349,17 @@ def traverse(url: str, capture_xhr: str, max_steps: int = 40) -> tuple[int, list
                 browser_urls.update(_browser_media_urls(page))
 
         seeds = {u for u in (set(media_responses) | set(browser_urls)) if u.startswith(("http://", "https://"))}
-        if "poleknig.com" not in host:
+        if not is_poleknig:
             expanded_urls.update(_expand_numbered(page, seeds))
 
     page = DynamicFetcher.fetch(
         url, headless=True, capture_xhr=capture_xhr, page_setup=setup, page_action=action,
-        wait=350, timeout=50000, network_idle=False,
+        wait=350, timeout=45000 if is_poleknig else 50000, network_idle=False,
     )
 
     found = {c.url for c in collect_network_responses(network)}
     found.update(media_responses)
+    found.update(redirect_media)
     found.update(browser_urls)
     found.update(expanded_urls)
 

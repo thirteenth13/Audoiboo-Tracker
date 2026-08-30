@@ -10,7 +10,9 @@ sealed interface DeclarativeEntrypoint {
         val title: String,
         val description: String? = null,
         val remoteId: String? = null,
-        val books: RepeatedFields? = null
+        val books: RepeatedFields? = null,
+        val followLink: String? = null,
+        val titleRegex: String? = null
     ) : DeclarativeEntrypoint
 
     data class BookLookup(
@@ -20,7 +22,8 @@ sealed interface DeclarativeEntrypoint {
         val seriesTitle: String? = null,
         val seriesNumber: String? = null,
         val coverUrl: String? = null,
-        val description: String? = null
+        val description: String? = null,
+        val titleRegex: String? = null
     ) : DeclarativeEntrypoint
 
     data class DownloadResolution(
@@ -53,7 +56,9 @@ object JsonDeclarativeEntrypointDecoder : DeclarativeEntrypointDecoder {
                     title = series.getString("title"),
                     description = series.optString("description").takeIf { it.isNotBlank() },
                     remoteId = series.optString("remoteId").takeIf { it.isNotBlank() },
-                    books = series.optJSONObject("books")?.toRepeatedFields()
+                    books = series.optJSONObject("books")?.toRepeatedFields(),
+                    followLink = series.optString("followLink").takeIf { it.isNotBlank() },
+                    titleRegex = series.optString("titleRegex").takeIf { it.isNotBlank() }
                 )
             }
             "bookLookup" -> {
@@ -65,7 +70,8 @@ object JsonDeclarativeEntrypointDecoder : DeclarativeEntrypointDecoder {
                     seriesTitle = book.optString("seriesTitle").takeIf { it.isNotBlank() },
                     seriesNumber = book.optString("seriesNumber").takeIf { it.isNotBlank() },
                     coverUrl = book.optString("coverUrl").takeIf { it.isNotBlank() },
-                    description = book.optString("description").takeIf { it.isNotBlank() }
+                    description = book.optString("description").takeIf { it.isNotBlank() },
+                    titleRegex = book.optString("titleRegex").takeIf { it.isNotBlank() }
                 )
             }
             "downloadResolution" -> {
@@ -103,10 +109,25 @@ class DeclarativePluginRuntime(
         val spec = loadEntrypoint(manifest, packageDir, "seriesLookup") as? DeclarativeEntrypoint.SeriesLookup
             ?: throw PluginSandboxViolation("seriesLookup entrypoint has wrong operation")
         val session = sandbox.open(manifest)
-        val response = session.httpGet(url)
+        var response = session.httpGet(url)
         if (response.statusCode !in 200..299) return null
-        val document = Jsoup.parse(response.body, response.finalUrl)
-        val title = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
+        var document = Jsoup.parse(response.body, response.finalUrl)
+
+        spec.followLink?.let { selector ->
+            val link = extract(document, selector)?.takeIf { it.isNotBlank() }
+            if (link != null) {
+                val target = resolveUrl(document, link)
+                if (normalizeNavigationUrl(target) != normalizeNavigationUrl(response.finalUrl)) {
+                    val followed = session.httpGet(target)
+                    if (followed.statusCode !in 200..299) return null
+                    response = followed
+                    document = Jsoup.parse(followed.body, followed.finalUrl)
+                }
+            }
+        }
+
+        val rawTitle = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
+        val title = applyRegex(rawTitle, spec.titleRegex) ?: return null
         val books = spec.books?.let { fields ->
             document.select(fields.item).mapNotNull { item ->
                 val link = extract(item, fields.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -116,7 +137,7 @@ class DeclarativePluginRuntime(
                     title = fields.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
                     number = fields.number?.let { extract(item, it) }?.toDoubleOrNull()
                 )
-            }
+            }.distinctBy { it.url }
         }.orEmpty()
         session.requireOutputSize(books.size)
         val authors = spec.books?.author?.let { selector ->
@@ -144,7 +165,8 @@ class DeclarativePluginRuntime(
         val response = session.httpGet(url)
         if (response.statusCode !in 200..299) return null
         val document = Jsoup.parse(response.body, response.finalUrl)
-        val title = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
+        val rawTitle = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
+        val title = applyRegex(rawTitle, spec.titleRegex) ?: return null
         val author = spec.author?.let { extract(document, it) }?.takeIf { it.isNotBlank() }
         val cover = spec.coverUrl?.let { extract(document, it) }
             ?.takeIf { it.isNotBlank() }
@@ -211,8 +233,18 @@ class DeclarativePluginRuntime(
         }
     }
 
+    private fun applyRegex(value: String, pattern: String?): String? {
+        if (pattern.isNullOrBlank()) return value.trim()
+        val regex = runCatching { Regex(pattern) }
+            .getOrElse { throw PluginSandboxViolation("Invalid extraction regex") }
+        val match = regex.find(value) ?: return null
+        return (match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: match.value).trim()
+    }
+
     private fun resolveUrl(element: Element, value: String): String {
         if (value.startsWith("http://") || value.startsWith("https://")) return value
         return java.net.URI(element.baseUri()).resolve(value).toString()
     }
+
+    private fun normalizeNavigationUrl(value: String): String = value.trim().trimEnd('/')
 }

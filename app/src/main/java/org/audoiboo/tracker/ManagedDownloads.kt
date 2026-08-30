@@ -27,6 +27,12 @@ internal data class ManagedDownloadRecord(
 )
 
 internal object ManagedDownloads {
+    private val TERMINAL_HISTORY_STATES = setOf(
+        ManagedDownloadState.COMPLETED,
+        ManagedDownloadState.CANCELLED,
+        ManagedDownloadState.FAILED
+    )
+
     fun initialize(context: Context) = ManagedDownloadRoomStore.initialize(context.applicationContext)
 
     fun enqueue(
@@ -81,6 +87,20 @@ internal object ManagedDownloads {
         if (state != record.state) saveOne(context, record.copy(state = state))
         DownloadScheduler.cancel(context, id)
         if (state == ManagedDownloadState.CANCELLED) send(context, ManagedDownloadService.ACTION_CANCEL, id)
+    }
+
+    /** Emergency brake for a runaway resolver/queue. Completed items are left untouched. */
+    fun cancelAll(context: Context) {
+        list(context)
+            .filter { it.state !in setOf(ManagedDownloadState.COMPLETED, ManagedDownloadState.CANCELLED) }
+            .forEach { cancel(context, it.id) }
+    }
+
+    /** Clears only UI/history records; downloaded audiobook files are deliberately preserved. */
+    fun clearHistory(context: Context) {
+        list(context)
+            .filter { it.state in TERMINAL_HISTORY_STATES }
+            .forEach { remove(context, it.id) }
     }
 
     fun remove(context: Context, id: String) {

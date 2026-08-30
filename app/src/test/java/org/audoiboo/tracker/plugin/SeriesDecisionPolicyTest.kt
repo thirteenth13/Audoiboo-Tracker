@@ -52,4 +52,34 @@ class SeriesDecisionPolicyTest {
 
         assertTrue(SeriesDecisionPolicy.allowsAutomaticLink("series-a", decisions))
     }
+
+    @Test
+    fun newAmbiguousFindingIsQueuedOnce() {
+        assertTrue(SeriesDecisionPolicy.shouldQueueReview("series-a", emptyList()))
+
+        val pending = listOf(
+            SeriesMatchDecisionEntity(
+                canonicalSeriesId = "series-a",
+                sourceId = "baza-knig",
+                remoteKey = "remote-1",
+                decision = "REVIEW_PENDING"
+            )
+        )
+        assertFalse(SeriesDecisionPolicy.shouldQueueReview("series-a", pending))
+    }
+
+    @Test
+    fun finalDecisionSuppressesPendingReview() {
+        listOf("USER_ACCEPTED", "USER_REJECTED", "AUTO_ACCEPTED").forEach { decision ->
+            val decisions = listOf(
+                SeriesMatchDecisionEntity(
+                    canonicalSeriesId = "series-a",
+                    sourceId = "baza-knig",
+                    remoteKey = "remote-1",
+                    decision = decision
+                )
+            )
+            assertFalse(SeriesDecisionPolicy.shouldQueueReview("series-a", decisions))
+        }
+    }
 }

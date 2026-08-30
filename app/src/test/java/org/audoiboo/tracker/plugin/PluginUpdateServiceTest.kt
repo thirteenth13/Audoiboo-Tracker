@@ -10,6 +10,40 @@ import kotlin.io.path.createTempDirectory
 
 class PluginUpdateServiceTest {
     @Test
+    fun catalogCheckReturnsInstallablePluginAndDescription() {
+        val service = PluginUpdateService(
+            catalogFetcher = PluginCatalogFetcher { _, _ ->
+                """
+                {
+                  "formatVersion": 1,
+                  "plugins": [
+                    {
+                      "id": "baza-knig",
+                      "name": "Baza-Knig",
+                      "version": 1,
+                      "apiVersion": $SOURCE_PLUGIN_API_VERSION,
+                      "url": "https://example.org/baza-knig-1.abplugin",
+                      "sha256": "${"a".repeat(64)}",
+                      "description": "Baza-Knig source"
+                    }
+                  ]
+                }
+                """.trimIndent()
+            },
+            downloader = PluginUpdateDownloader { _, _, _ -> error("not used") }
+        )
+
+        val result = service.check(emptyList())
+
+        assertTrue(result is PluginUpdateCheckResult.Success)
+        result as PluginUpdateCheckResult.Success
+        assertTrue(result.updates.isEmpty())
+        assertEquals(1, result.installable.size)
+        assertEquals("baza-knig", result.installable.single().id)
+        assertEquals("Baza-Knig source", result.installable.single().description)
+    }
+
+    @Test
     fun verifiedPackageIsReturnedFromCache() = withTempDir { root ->
         val bytes = "plugin-package".toByteArray()
         val update = update(sha256(bytes))
@@ -27,6 +61,24 @@ class PluginUpdateServiceTest {
         val file = result.getOrThrow()
         assertTrue(file.isFile)
         assertEquals(bytes.toList(), file.readBytes().toList())
+    }
+
+    @Test
+    fun catalogEntryCanBeDownloadedBeforeFirstInstall() = withTempDir { root ->
+        val bytes = "first-install-package".toByteArray()
+        val entry = update(sha256(bytes)).entry.copy(id = "new-source")
+        val service = PluginUpdateService(
+            catalogFetcher = PluginCatalogFetcher { _, _ -> error("not used") },
+            downloader = PluginUpdateDownloader { _, target, _ ->
+                target.writeBytes(bytes)
+                bytes.size.toLong()
+            }
+        )
+
+        val result = service.downloadVerified(entry, root)
+
+        assertTrue(result.isSuccess)
+        assertEquals(bytes.toList(), result.getOrThrow().readBytes().toList())
     }
 
     @Test

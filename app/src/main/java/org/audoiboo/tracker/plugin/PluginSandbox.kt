@@ -1,16 +1,17 @@
 package org.audoiboo.tracker.plugin
 
 import java.net.URI
-import java.util.concurrent.ConcurrentHashMap
 
 /** Limits enforced by the host for every external plugin invocation. */
 data class PluginSandboxLimits(
     val maxRequestsPerInvocation: Int = 32,
+    val maxRedirectsPerRequest: Int = 8,
     val maxResponseBytes: Long = 8L * 1024 * 1024,
     val maxOutputItems: Int = 1000
 ) {
     init {
         require(maxRequestsPerInvocation > 0)
+        require(maxRedirectsPerRequest >= 0)
         require(maxResponseBytes > 0)
         require(maxOutputItems > 0)
     }
@@ -29,6 +30,7 @@ data class PluginHttpResponse(
 )
 
 fun interface PluginHttpTransport {
+    /** Executes exactly one request. Redirect following belongs to PluginSandboxSession. */
     fun get(request: PluginHttpRequest, maxResponseBytes: Long): PluginHttpResponse
 }
 
@@ -45,27 +47,47 @@ class PluginSandboxSession internal constructor(
 
     @Synchronized
     fun httpGet(url: String, headers: Map<String, String> = emptyMap()): PluginHttpResponse {
-        if (requestCount >= limits.maxRequestsPerInvocation) {
-            throw PluginSandboxViolation("Network request budget exceeded")
+        val safeHeaders = sanitizeHeaders(headers)
+        var currentUrl = url
+        var redirects = 0
+
+        while (true) {
+            requirePermittedUrl(currentUrl)
+            if (requestCount >= limits.maxRequestsPerInvocation) {
+                throw PluginSandboxViolation("Network request budget exceeded")
+            }
+            requestCount++
+
+            val response = transport.get(PluginHttpRequest(currentUrl, safeHeaders), limits.maxResponseBytes)
+            requirePermittedUrl(response.finalUrl)
+            if (response.body.toByteArray(Charsets.UTF_8).size.toLong() > limits.maxResponseBytes) {
+                throw PluginSandboxViolation("Response exceeds sandbox byte limit")
+            }
+
+            if (response.statusCode !in REDIRECT_CODES) return response
+            if (redirects >= limits.maxRedirectsPerRequest) {
+                throw PluginSandboxViolation("Redirect limit exceeded")
+            }
+            val location = response.headerValue("location")
+                ?: throw PluginSandboxViolation("Redirect response has no Location header")
+            currentUrl = runCatching { URI(response.finalUrl).resolve(location).toString() }
+                .getOrElse { throw PluginSandboxViolation("Invalid redirect URL") }
+            // Validate before the next transport call so an untrusted package can never cause
+            // the host HTTP client to contact an undeclared domain.
+            requirePermittedUrl(currentUrl)
+            redirects++
         }
-        val host = validatedHost(url)
-        if (host !in manifest.permissions.networkHosts) {
-            throw PluginSandboxViolation("Network access to $host is not permitted")
-        }
-        requestCount++
-        val response = transport.get(PluginHttpRequest(url, sanitizeHeaders(headers)), limits.maxResponseBytes)
-        val finalHost = validatedHost(response.finalUrl)
-        if (finalHost !in manifest.permissions.networkHosts) {
-            throw PluginSandboxViolation("Redirected to unpermitted host $finalHost")
-        }
-        if (response.body.toByteArray(Charsets.UTF_8).size.toLong() > limits.maxResponseBytes) {
-            throw PluginSandboxViolation("Response exceeds sandbox byte limit")
-        }
-        return response
     }
 
     fun requireOutputSize(size: Int) {
         if (size > limits.maxOutputItems) throw PluginSandboxViolation("Plugin output item limit exceeded")
+    }
+
+    private fun requirePermittedUrl(url: String) {
+        val host = validatedHost(url)
+        if (host !in manifest.permissions.networkHosts) {
+            throw PluginSandboxViolation("Network access to $host is not permitted")
+        }
     }
 
     private fun validatedHost(url: String): String {
@@ -78,6 +100,13 @@ class PluginSandboxSession internal constructor(
     private fun sanitizeHeaders(headers: Map<String, String>): Map<String, String> {
         val blocked = setOf("host", "connection", "content-length", "cookie", "authorization", "proxy-authorization")
         return headers.filterKeys { it.lowercase() !in blocked }
+    }
+
+    private fun PluginHttpResponse.headerValue(name: String): String? =
+        headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value?.firstOrNull()
+
+    private companion object {
+        val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
     }
 }
 

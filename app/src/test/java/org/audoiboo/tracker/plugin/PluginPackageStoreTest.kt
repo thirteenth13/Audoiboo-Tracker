@@ -25,6 +25,22 @@ class PluginPackageStoreTest {
     }
 
     @Test
+    fun enabledMarkerIsExplicitAndDisableClearsIt() = withTempDir { root ->
+        writeVersion(root, "source", 1, validManifest("source", 1))
+        File(root, "installed/source/active-version").writeText("1")
+        val manager = SourcePluginManager(emptyList())
+        val store = testStore(root, manager)
+        store.scanInstalled()
+
+        assertFalse(store.isEnabled("source"))
+        assertTrue(store.enable("source"))
+        assertTrue(store.isEnabled("source"))
+        assertTrue(store.disable("source"))
+        assertFalse(store.isEnabled("source"))
+        assertTrue(store.isDisabled("source"))
+    }
+
+    @Test
     fun corruptActiveVersionIsQuarantinedAndPreviousVersionRecovered() = withTempDir { root ->
         writeVersion(root, "baza-knig", 1, validManifest("baza-knig", 1))
         writeVersion(root, "baza-knig", 2, "not json")

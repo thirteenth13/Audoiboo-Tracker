@@ -7,6 +7,7 @@ import org.audoiboo.tracker.plugin.DownloadResolutionPlanner
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 import org.audoiboo.tracker.plugin.SourceAuthor
 import org.audoiboo.tracker.plugin.SourceBook
+import org.audoiboo.tracker.plugin.SourceKeys
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
 
 internal object RoomArchiveResolver {
@@ -26,7 +27,7 @@ internal object RoomArchiveResolver {
         val mapped = SourceMetadataRepository.sourcesForBook(context, book.id).map { source ->
             SourceBook(
                 sourceId = source.sourceId,
-                remoteId = source.remoteKey.takeIf { it != source.url },
+                remoteId = source.remoteKey.takeIf { it != SourceKeys.normalizeUrl(source.url) },
                 url = source.url,
                 title = source.remoteTitle ?: book.title,
                 authors = source.remoteAuthor?.takeIf { it.isNotBlank() }?.let { listOf(SourceAuthor(it)) }

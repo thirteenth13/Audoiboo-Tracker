@@ -105,6 +105,7 @@ data class BookWithTags(
 interface LibraryDao {
     @Transaction @Query("SELECT * FROM series ORDER BY name COLLATE NOCASE") fun observeLibrary(): Flow<List<SeriesWithBooks>>
     @Transaction @Query("SELECT * FROM series ORDER BY name COLLATE NOCASE") suspend fun library(): List<SeriesWithBooks>
+    @Transaction @Query("SELECT * FROM series WHERE id=:id LIMIT 1") suspend fun seriesWithBooks(id: String): SeriesWithBooks?
     @Query("SELECT * FROM series WHERE id=:id LIMIT 1") suspend fun seriesById(id: String): SeriesEntity?
     @Query("SELECT * FROM series WHERE url=:url LIMIT 1") suspend fun seriesByUrl(url: String): SeriesEntity?
     @Query("SELECT * FROM books ORDER BY updatedAt DESC") fun pagedBooks(): PagingSource<Int, BookEntity>

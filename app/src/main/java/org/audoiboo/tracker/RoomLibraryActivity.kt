@@ -25,6 +25,8 @@ import androidx.compose.ui.unit.dp
 import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
+import org.audoiboo.tracker.plugin.SeriesMatchDecisionEntity
+import org.audoiboo.tracker.plugin.SourceMetadataRepository
 
 class RoomLibraryActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -34,6 +36,12 @@ class RoomLibraryActivity : ComponentActivity() {
 }
 
 private enum class RoomLibraryTab { SERIES, BOOKS, DOWNLOADS }
+
+private data class PendingSeriesReview(
+    val url: String,
+    val fallbackToBrowser: Boolean,
+    val review: RoomSeriesMatchReview
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,26 +54,72 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
     var addUrl by remember { mutableStateOf("") }
     var syncing by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var pendingReview by remember { mutableStateOf<PendingSeriesReview?>(null) }
+    var discoveryReviews by remember { mutableStateOf<List<SeriesMatchDecisionEntity>>(emptyList()) }
+    var reviewRefreshKey by remember { mutableIntStateOf(0) }
+    var resolvingDiscoveryReview by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val library by LibraryRepository.observe(activity).collectAsState(initial = emptyList())
     val pagingFlow = remember(query, bookFilter) { LibraryRepository.pagedBooks(activity, query, bookFilter) }
     val paged = pagingFlow.collectAsLazyPagingItems()
     val series = library.firstOrNull { it.series.id == selectedSeries }
 
-    fun syncUrl(url: String, fallbackToBrowser: Boolean) {
+    LaunchedEffect(selectedSeries, reviewRefreshKey) {
+        discoveryReviews = selectedSeries
+            ?.let { SourceMetadataRepository.pendingSeriesReviews(activity, it) }
+            .orEmpty()
+    }
+
+    fun syncUrl(url: String, fallbackToBrowser: Boolean, resolution: RoomSeriesReviewResolution? = null) {
         if (url.isBlank() || syncing) return
         syncing = true
         scope.launch {
-            val result = runCatching { RoomSeriesSync.sync(activity, url) }.getOrNull()
+            val result = runCatching { RoomSeriesSync.sync(activity, url, resolution) }.getOrNull()
             syncing = false
-            if (result != null) {
-                selectedSeries = result.seriesId
-                tab = RoomLibraryTab.SERIES
-                Toast.makeText(activity, "${result.name}: ${result.books} книг", Toast.LENGTH_SHORT).show()
-            } else if (fallbackToBrowser) {
-                Toast.makeText(activity, "HTTP parser не пройшов — відкриваю WebView fallback", Toast.LENGTH_LONG).show()
-                activity.startActivity(Intent(activity, MainActivity::class.java))
-            } else Toast.makeText(activity, "Не вдалося оновити серію", Toast.LENGTH_LONG).show()
+            when {
+                result?.review != null -> {
+                    pendingReview = PendingSeriesReview(url, fallbackToBrowser, result.review)
+                }
+                result?.seriesId != null -> {
+                    selectedSeries = result.seriesId
+                    tab = RoomLibraryTab.SERIES
+                    reviewRefreshKey++
+                    Toast.makeText(activity, "${result.name}: ${result.books} книг", Toast.LENGTH_SHORT).show()
+                }
+                fallbackToBrowser -> {
+                    Toast.makeText(activity, "HTTP parser не пройшов — відкриваю WebView fallback", Toast.LENGTH_LONG).show()
+                    activity.startActivity(Intent(activity, MainActivity::class.java))
+                }
+                else -> Toast.makeText(activity, "Не вдалося оновити серію", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    fun resolveDiscoveryReview(review: SeriesMatchDecisionEntity, accept: Boolean) {
+        val currentSeries = series ?: return
+        if (resolvingDiscoveryReview) return
+        resolvingDiscoveryReview = true
+        scope.launch {
+            val resolved = runCatching {
+                SourceMetadataRepository.resolvePendingSeriesReview(
+                    context = activity,
+                    canonicalSeriesId = currentSeries.series.id,
+                    sourceId = review.sourceId,
+                    remoteKey = review.remoteKey,
+                    accept = accept,
+                    confidence = review.confidence
+                )
+            }.isSuccess
+            resolvingDiscoveryReview = false
+            reviewRefreshKey++
+            if (!resolved) {
+                Toast.makeText(activity, "Не вдалося зберегти рішення", Toast.LENGTH_LONG).show()
+            } else if (accept) {
+                Toast.makeText(activity, "Джерело підтверджено — оновлюю серію", Toast.LENGTH_SHORT).show()
+                syncUrl(currentSeries.series.url, false)
+            } else {
+                Toast.makeText(activity, "Джерело відхилено", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -94,7 +148,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
         }
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            if (syncing) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (syncing || resolvingDiscoveryReview) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (series == null && tab != RoomLibraryTab.DOWNLOADS) {
                 OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth().padding(12.dp), singleLine = true,
                     leadingIcon = { Icon(Icons.Filled.Search, null) }, label = { Text(if (tab == RoomLibraryTab.BOOKS) "Книга, автор або тег" else "Пошук серії") })
@@ -106,7 +160,12 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
                 }
             }
             when {
-                series != null -> RoomSeriesDetail(series)
+                series != null -> RoomSeriesDetail(
+                    item = series,
+                    pendingReviews = discoveryReviews,
+                    reviewBusy = resolvingDiscoveryReview,
+                    onResolveReview = ::resolveDiscoveryReview
+                )
                 tab == RoomLibraryTab.SERIES -> RoomSeriesList(library.filter { query.isBlank() || it.series.name.contains(query, true) }, onOpen = { selectedSeries = it })
                 tab == RoomLibraryTab.DOWNLOADS -> ManagedDownloadsScreen(activity)
                 else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -121,9 +180,48 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
     }
 
     if (showAdd) AlertDialog(onDismissRequest = { showAdd = false }, title = { Text("Додати серію") },
-        text = { OutlinedTextField(addUrl, { addUrl = it }, label = { Text("URL серії або книги Audioboo") }, modifier = Modifier.fillMaxWidth(), singleLine = true) },
+        text = { OutlinedTextField(addUrl, { addUrl = it }, label = { Text("URL серії або книги") }, modifier = Modifier.fillMaxWidth(), singleLine = true) },
         confirmButton = { TextButton(onClick = { val value = addUrl.trim(); showAdd = false; syncUrl(value, true) }, enabled = addUrl.startsWith("http")) { Text("Додати") } },
         dismissButton = { TextButton(onClick = { showAdd = false }) { Text("Скасувати") } })
+
+    pendingReview?.let { pending ->
+        val percent = (pending.review.confidence * 100).toInt()
+        AlertDialog(
+            onDismissRequest = { pendingReview = null },
+            title = { Text("Це та сама серія?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Нове джерело: ${pending.review.incomingName}")
+                    Text("У бібліотеці: ${pending.review.candidateName}")
+                    Text("Впевненість зіставлення: $percent%", style = MaterialTheme.typography.bodySmall)
+                    if (pending.review.evidence.isNotEmpty()) {
+                        Text("Ознаки: ${pending.review.evidence.joinToString(" • ")}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text("Підтвердження прив’яже нове джерело до існуючої серії. Відхилення збереже рішення і не пропонуватиме цей самий збіг повторно.", style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingReview = null
+                    syncUrl(
+                        pending.url,
+                        pending.fallbackToBrowser,
+                        RoomSeriesReviewResolution(pending.review.candidateSeriesId, accept = true, confidence = pending.review.confidence)
+                    )
+                }) { Text("Так, та сама") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingReview = null
+                    syncUrl(
+                        pending.url,
+                        pending.fallbackToBrowser,
+                        RoomSeriesReviewResolution(pending.review.candidateSeriesId, accept = false, confidence = pending.review.confidence)
+                    )
+                }) { Text("Ні, окрема") }
+            }
+        )
+    }
 
     if (confirmDelete && series != null) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("Видалити серію?") },
         text = { Text("${series.series.name}\n\nЗапис серії буде видалено з бібліотеки. Завантажені аудіофайли не видаляються.") },
@@ -151,8 +249,37 @@ private fun RoomSeriesList(library: List<SeriesWithBooks>, onOpen: (String) -> U
 }
 
 @Composable
-private fun RoomSeriesDetail(item: SeriesWithBooks) {
+private fun RoomSeriesDetail(
+    item: SeriesWithBooks,
+    pendingReviews: List<SeriesMatchDecisionEntity>,
+    reviewBusy: Boolean,
+    onResolveReview: (SeriesMatchDecisionEntity, Boolean) -> Unit
+) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (pendingReviews.isNotEmpty()) {
+            item(key = "source-reviews") {
+                ElevatedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Rule, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Потрібна перевірка джерел", fontWeight = FontWeight.SemiBold)
+                        }
+                        pendingReviews.forEach { review ->
+                            val percent = ((review.confidence ?: 0f) * 100).toInt()
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(review.sourceId, fontWeight = FontWeight.Medium)
+                                Text("Збіг із цією серією: $percent%", style = MaterialTheme.typography.bodySmall)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TextButton(onClick = { onResolveReview(review, true) }, enabled = !reviewBusy) { Text("Підтвердити") }
+                                    TextButton(onClick = { onResolveReview(review, false) }, enabled = !reviewBusy) { Text("Відхилити") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         items(item.books.sortedBy { it.sortIndex }, key = { it.id }) { book -> RoomBookCard(book, item.series.name) }
     }
 }
@@ -162,10 +289,16 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tags by remember(book.id) { mutableStateOf<List<String>>(emptyList()) }
+    var sourceIds by remember(book.id) { mutableStateOf<List<String>>(emptyList()) }
     var editTags by remember(book.id) { mutableStateOf(false) }
     var tagText by remember(book.id) { mutableStateOf("") }
     var resolvingArchive by remember(book.id) { mutableStateOf(false) }
-    LaunchedEffect(book.id) { tags = LibraryRepository.bookWithTags(context, book.id)?.tags?.map { it.name }.orEmpty() }
+    LaunchedEffect(book.id, book.updatedAt) {
+        tags = LibraryRepository.bookWithTags(context, book.id)?.tags?.map { it.name }.orEmpty()
+        sourceIds = SourceMetadataRepository.sourcesForBook(context, book.id)
+            .map { it.sourceId }
+            .distinct()
+    }
 
     ElevatedCard(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -175,6 +308,12 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
                 Text(book.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (!seriesName.isNullOrBlank()) Text(seriesName, style = MaterialTheme.typography.bodySmall)
                 if (!book.author.isNullOrBlank()) Text(book.author, style = MaterialTheme.typography.bodySmall)
+                if (sourceIds.isNotEmpty()) {
+                    Text(
+                        "${if (sourceIds.size == 1) "Джерело" else "Джерела"}: ${sourceIds.joinToString(" • ") { roomSourceLabel(it) }}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     AssistChip(onClick = { scope.launch { LibraryRepository.updateBookStatus(context, book.id, nextRoomStatus(book.status)) } }, label = { Text(roomStatusLabel(book.status)) })
                     AssistChip(onClick = { tagText = tags.joinToString(", "); editTags = true }, leadingIcon = { Icon(Icons.Filled.Label, null) }, label = { Text(if (tags.isEmpty()) "Теги" else tags.joinToString(" • "), maxLines = 1) })
@@ -208,6 +347,12 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
         text = { OutlinedTextField(tagText, { tagText = it }, label = { Text("Через кому") }) },
         confirmButton = { TextButton(onClick = { val values = tagText.split(',').map { it.trim() }.filter { it.isNotBlank() }; scope.launch { LibraryRepository.setBookTags(context, book.id, values); tags = LibraryRepository.bookWithTags(context, book.id)?.tags?.map { it.name }.orEmpty(); editTags = false } }) { Text("Зберегти") } },
         dismissButton = { TextButton(onClick = { editTags = false }) { Text("Скасувати") } })
+}
+
+private fun roomSourceLabel(sourceId: String): String = when (sourceId) {
+    "audioboo" -> "Audioboo"
+    "baza-knig" -> "Baza-Knig"
+    else -> sourceId
 }
 
 private fun roomFilterLabel(filter: RoomBookFilter): String = when (filter) { RoomBookFilter.ALL -> "Усі"; RoomBookFilter.NEW -> "Нові"; RoomBookFilter.READING -> "Читаю"; RoomBookFilter.READ -> "Прочитані"; RoomBookFilter.TAGGED -> "З тегами"; RoomBookFilter.UNTAGGED -> "Без тегів" }

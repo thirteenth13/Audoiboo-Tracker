@@ -1,0 +1,26 @@
+{
+  "operation": "seriesLookup",
+  "series": {
+    "title": "h1",
+    "titleRegex": "(?i)(?:серии|цикл)\\s*[«\"“]?(.+?)(?:[»\"”]?\\s*(?:—\\s*все\\s+книги\\s+)?слушать)",
+    "followLink": "a[href*='/series-'], a[href*='/xfsearch/cikl/']@href",
+    "description": "meta[name='description']@content",
+    "books": {
+      "item": "article.card",
+      "title": "h2.card__title a[href]",
+      "link": "h2.card__title a[href]@href",
+      "author": "a[href*='/avtor-'], a[href*='/xfsearch/autor/']"
+    },
+    "supplement": {
+      "startLink": "a[href*='/avtor-'], a[href*='/xfsearch/autor/']@href",
+      "maxPages": 1,
+      "seriesTitle": "a[href*='/series-'], a[href*='/xfsearch/cikl/']",
+      "items": {
+        "item": "article.card",
+        "title": "h2.card__title a[href]",
+        "link": "h2.card__title a[href]@href",
+        "author": "a[href*='/avtor-'], a[href*='/xfsearch/autor/']"
+      }
+    }
+  }
+}

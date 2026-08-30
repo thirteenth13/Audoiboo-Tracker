@@ -140,7 +140,13 @@ internal object PlayerExtras {
         PlayerStateStore.clearBroken(context)
     }
 
-    fun brokenUris(context: Context): Set<String> = PlayerStateStore.brokenUris(context)
+    fun brokenUris(context: Context): Set<String> {
+        val broken = PlayerStateStore.brokenUris(context)
+        if (broken.isEmpty()) return broken
+        val resumedUri = resume(context)?.uri?.takeIf { it.isNotBlank() } ?: return broken
+        val stillRegistered = PlayerLibrary.all(context).any { it.uri == resumedUri }
+        return if (stillRegistered) broken - resumedUri else broken
+    }
 
     fun setTags(context: Context, dir: String, tags: List<String>) {
         PlayerTagStore.setTags(context, dir, tags)

@@ -1,0 +1,11 @@
+{
+  "operation": "bookLookup",
+  "book": {
+    "title": "h1",
+    "titleRegex": "(?i)^(?:скачать\\s+аудиокнигу\\s+)?(.+?)(?=\\s+-\\s+.+?(?:\\s+автор\\b|$)|\\s+автор\\b|$)",
+    "author": "a[href*='/avtor-'], a[href*='/xfsearch/autor/']",
+    "seriesTitle": "a[href*='/series-'], a[href*='/xfsearch/cikl/']",
+    "coverUrl": "meta[property='og:image']@content",
+    "description": "meta[name='description']@content"
+  }
+}

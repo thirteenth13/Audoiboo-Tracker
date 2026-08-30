@@ -221,7 +221,8 @@ class ManagedDownloadService : Service() {
 
     private fun finishDownloadedPart(record: ManagedDownloadRecord, part: File, id: String) {
         var current = record.copy(downloaded = part.length())
-        if (AppPrefs.unpack(this) && current.fileName.endsWith(".zip", true)) {
+        val bookRelativeDir = DownloadDestinationPolicy.bookRelativeDir(current)
+        if (DownloadDestinationPolicy.shouldExtract(current.fileName, AppPrefs.unpack(this))) {
             current = current.copy(state = ManagedDownloadState.EXTRACTING)
             update(current)
             try {
@@ -234,10 +235,10 @@ class ManagedDownloadService : Service() {
             }
             ensureRunning(id)
             clearBookFolder(current)
-            extractZipToDownloads(part, "${current.relativeDir}/${current.bookDir}", current)
+            extractZipToDownloads(part, bookRelativeDir, current)
             part.delete()
         } else {
-            publishFile(part, current.relativeDir, current.fileName, current)
+            publishFile(part, bookRelativeDir, current.fileName, current)
             part.delete()
         }
         update(current.copy(

@@ -8,8 +8,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -24,6 +24,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.launch
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 
+private const val SOURCE_BROWSER_DEFAULT_HOME = "https://audioboo.org/"
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,7 +35,7 @@ class MainActivity : ComponentActivity() {
                 SourceBrowserScreen(
                     activity = this,
                     initialUrl = intent.getStringExtra(EXTRA_URL)?.takeIf { it.startsWith("http") }
-                        ?: DEFAULT_HOME
+                        ?: SOURCE_BROWSER_DEFAULT_HOME
                 )
             }
         }
@@ -41,7 +43,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_URL = "source_url"
-        private const val DEFAULT_HOME = "https://audioboo.org/"
     }
 }
 
@@ -99,7 +100,7 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
                     }) { Icon(Icons.Filled.ArrowBack, "Назад") }
                 },
                 actions = {
-                    IconButton(onClick = { webView?.loadUrl(DEFAULT_HOME) }) { Icon(Icons.Filled.Home, "Головна") }
+                    IconButton(onClick = { webView?.loadUrl(SOURCE_BROWSER_DEFAULT_HOME) }) { Icon(Icons.Filled.Home, "Головна") }
                     IconButton(onClick = { webView?.reload() }) { Icon(Icons.Filled.Refresh, "Оновити") }
                     IconButton(onClick = ::addCurrentPage, enabled = !syncing) { Icon(Icons.Filled.Add, "Додати поточну сторінку") }
                 }

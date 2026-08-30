@@ -1,5 +1,6 @@
 package org.audoiboo.tracker.plugin
 
+import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.net.URI
 
@@ -10,7 +11,9 @@ import java.net.URI
 class DeclarativeSourcePlugin(
     private val manifest: PluginPackageManifest,
     private val packageDir: File,
-    private val runtime: DeclarativePluginRuntime
+    private val runtime: DeclarativePluginRuntime,
+    private val onRuntimeSuccess: (String, Int) -> Unit = { _, _ -> },
+    private val onRuntimeFailure: (String, Int, Throwable) -> Unit = { _, _, _ -> }
 ) : SourcePlugin, SeriesProvider, BookProvider, DownloadResolver {
     override val descriptor: SourceDescriptor = SourceDescriptor(
         id = manifest.id,
@@ -28,39 +31,53 @@ class DeclarativeSourcePlugin(
 
     override suspend fun resolveSeries(url: String): SourceSeries? {
         if (!supports(url)) return null
-        return runtime.resolveSeries(manifest, packageDir, url)
+        return guarded { runtime.resolveSeries(manifest, packageDir, url) }
     }
 
     override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> {
         if (series.sourceId != manifest.id) return emptyList()
         val canLookup = SourceCapability.BOOK_LOOKUP in manifest.capabilities && manifest.entrypoints.containsKey("bookLookup")
-        return series.books.mapNotNull { ref ->
-            if (canLookup) {
-                runtime.resolveBook(manifest, packageDir, ref.url)
-            } else {
-                SourceBook(
-                    sourceId = manifest.id,
-                    remoteId = ref.remoteId,
-                    url = ref.url,
-                    title = ref.title ?: return@mapNotNull null,
-                    authors = series.authors,
-                    seriesTitle = series.title,
-                    seriesNumber = ref.number
-                )
+        return guarded {
+            series.books.mapNotNull { ref ->
+                if (canLookup) {
+                    runtime.resolveBook(manifest, packageDir, ref.url)
+                } else {
+                    SourceBook(
+                        sourceId = manifest.id,
+                        remoteId = ref.remoteId,
+                        url = ref.url,
+                        title = ref.title ?: return@mapNotNull null,
+                        authors = series.authors,
+                        seriesTitle = series.title,
+                        seriesNumber = ref.number
+                    )
+                }
             }
         }
     }
 
     override suspend fun loadBook(url: String): SourceBook? {
         if (!supports(url)) return null
-        return runtime.resolveBook(manifest, packageDir, url)
+        return guarded { runtime.resolveBook(manifest, packageDir, url) }
     }
 
     override suspend fun resolveDownloads(book: SourceBook): List<DownloadCandidate> {
         if (book.sourceId != manifest.id || !supports(book.url)) return emptyList()
-        return PluginDownloadPolicy.filter(
-            manifest,
-            runtime.resolveDownloads(manifest, packageDir, book.url)
-        )
+        return guarded {
+            PluginDownloadPolicy.filter(
+                manifest,
+                runtime.resolveDownloads(manifest, packageDir, book.url)
+            )
+        }
+    }
+
+    private suspend fun <T> guarded(block: suspend () -> T): T {
+        return try {
+            block().also { onRuntimeSuccess(manifest.id, manifest.version) }
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            onRuntimeFailure(manifest.id, manifest.version, t)
+            throw t
+        }
     }
 }

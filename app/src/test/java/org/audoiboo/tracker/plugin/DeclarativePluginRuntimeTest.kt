@@ -47,6 +47,47 @@ class DeclarativePluginRuntimeTest {
     }
 
     @Test
+    fun supplementsSeriesFromAuthorPageButKeepsOnlyMatchingSeries() = withTempDir { root ->
+        File(root, "series.rule").writeText("series")
+        val manifest = manifest(entrypoints = mapOf("seriesLookup" to "series.rule"))
+        val decoder = DeclarativeEntrypointDecoder {
+            DeclarativeEntrypoint.SeriesLookup(
+                title = "h1",
+                books = RepeatedFields(item = ".book", title = ".title", link = "a@href"),
+                supplement = SeriesSupplement(
+                    startLink = "a.author@href",
+                    items = RepeatedFields(item = "article", title = "h2 a", link = "h2 a@href"),
+                    seriesTitle = ".series"
+                )
+            )
+        }
+        val sandbox = PluginSandbox(PluginHttpTransport { request, _ ->
+            val body = when (request.url) {
+                "https://example.org/series/star-blood" -> """
+                    <h1>Star Blood</h1>
+                    <a class='author' href='/author/a'>Author A</a>
+                    <div class='book'><a href='/book/10'><span class='title'>Roads</span></a></div>
+                """.trimIndent()
+                "https://example.org/author/a" -> """
+                    <article><h2><a href='/book/11'>Alpha Colony</a></h2><a class='series'>Star Blood</a></article>
+                    <article><h2><a href='/book/spin'>White Devil</a></h2><a class='series'>Star Blood. White Devil</a></article>
+                    <article><h2><a href='/book/other'>Other</a></h2><a class='series'>Other Series</a></article>
+                """.trimIndent()
+                else -> error("unexpected ${request.url}")
+            }
+            PluginHttpResponse(200, request.url, body)
+        })
+        val runtime = DeclarativePluginRuntime(sandbox, decoder)
+
+        val series = runtime.resolveSeries(manifest, root, "https://example.org/series/star-blood")!!
+
+        assertEquals(
+            listOf("https://example.org/book/10", "https://example.org/book/11"),
+            series.books.map { it.url }
+        )
+    }
+
+    @Test
     fun followsCanonicalSeriesLinkFromBookPageAndCleansTitle() = withTempDir { root ->
         File(root, "series.rule").writeText("series")
         val manifest = manifest(entrypoints = mapOf("seriesLookup" to "series.rule"))

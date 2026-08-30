@@ -6,7 +6,7 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 
-from service import _dynamic, _dynamic_interactive, _http
+from service import _dynamic, _dynamic_interactive, _dynamic_network, _http
 
 
 TARGETS = [
@@ -18,7 +18,7 @@ TARGETS = [
 ]
 
 CAPTURE_XHR = r"(?i).*(audio|media|player|playlist|stream|track|api|m3u8|mp3|m4b|m4a|aac|opus|ogg|flac|zip|rar).*"
-SITE_TIMEOUT_SECONDS = 75
+SITE_TIMEOUT_SECONDS = 90
 
 
 @dataclass
@@ -35,6 +35,10 @@ class ProbeResult:
     interactive_media: int = 0
     interactive_xhr: int = 0
     interactive_added_media: int = 0
+    network_status: int | None = None
+    network_media: int = 0
+    network_responses: int = 0
+    network_added_media: int = 0
     media_urls: list[str] = field(default_factory=list)
     timed_out: bool = False
     error: str | None = None
@@ -65,7 +69,8 @@ def run_one(name: str, url: str) -> ProbeResult:
         result.error = f"{result.error}; {suffix}" if result.error else suffix
 
     all_urls = set(http_urls) | set(dynamic_urls)
-    if not dynamic_urls and name in {"knigavuhe", "izib"}:
+
+    if not all_urls and name in {"knigavuhe", "izib"}:
         try:
             interactive = _dynamic_interactive(url, CAPTURE_XHR, 1200)
             result.interactive_status = interactive.status
@@ -76,6 +81,19 @@ def run_one(name: str, url: str) -> ProbeResult:
             all_urls |= interactive_urls
         except Exception as exc:
             suffix = f"interactive:{type(exc).__name__}:{exc}"
+            result.error = f"{result.error}; {suffix}" if result.error else suffix
+
+    if not all_urls and name in {"poleknig", "knigavuhe", "izib"}:
+        try:
+            network = _dynamic_network(url, CAPTURE_XHR, 1200, activate=True)
+            result.network_status = network.status
+            result.network_media = len(network.media)
+            result.network_responses = network.network_count
+            network_urls = {item["url"] for item in network.media}
+            result.network_added_media = len(network_urls - all_urls)
+            all_urls |= network_urls
+        except Exception as exc:
+            suffix = f"network:{type(exc).__name__}:{exc}"
             result.error = f"{result.error}; {suffix}" if result.error else suffix
 
     result.media_urls = sorted(all_urls)
@@ -115,8 +133,8 @@ def run_isolated(name: str, url: str) -> ProbeResult:
         f"DONE {name} http={result.http_status}/{result.http_media} "
         f"dynamic={result.dynamic_status}/{result.dynamic_media} "
         f"interactive={result.interactive_status}/{result.interactive_media} "
-        f"xhr={result.dynamic_xhr}+{result.interactive_xhr} "
-        f"added={result.dynamic_added_media}+{result.interactive_added_media} "
+        f"network={result.network_status}/{result.network_media}/{result.network_responses} "
+        f"added={result.dynamic_added_media}+{result.interactive_added_media}+{result.network_added_media} "
         f"error={result.error or '-'}",
         flush=True,
     )
@@ -147,24 +165,19 @@ def main() -> int:
     print("SUMMARY")
     print(json.dumps([asdict(row) for row in rows], ensure_ascii=False, indent=2))
 
-    reachable = [row for row in rows if row.http_status or row.dynamic_status or row.interactive_status]
+    reachable = [row for row in rows if row.http_status or row.dynamic_status or row.interactive_status or row.network_status]
     if not reachable:
         print("No target was reachable", file=sys.stderr)
         return 2
 
     media_useful = [
         row for row in rows
-        if row.dynamic_added_media > 0 or row.interactive_added_media > 0
-    ]
-    xhr_observed = [
-        row for row in rows
-        if row.dynamic_xhr > 0 or row.interactive_xhr > 0
+        if row.dynamic_added_media > 0 or row.interactive_added_media > 0 or row.network_added_media > 0
     ]
     timed_out = [row.name for row in rows if row.timed_out]
     print(
         f"reachable={len(reachable)}/{len(rows)} "
         f"media_useful={len(media_useful)}/{len(rows)} "
-        f"xhr_observed={len(xhr_observed)}/{len(rows)} "
         f"timeouts={','.join(timed_out) if timed_out else '-'}"
     )
     return 0

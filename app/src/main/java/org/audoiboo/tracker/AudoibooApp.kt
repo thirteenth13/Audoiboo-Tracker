@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.audoiboo.tracker.plugin.DeviceWebViewResolutionRuntime
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 
 class AudoibooApp : Application() {
@@ -55,6 +56,7 @@ class AudoibooApp : Application() {
         PlayerExtrasStore.initialize(this)
         PlayerTagStore.initialize(this)
         PlayerStateStore.initialize(this)
+        DeviceWebViewResolutionRuntime.initialize(this)
 
         registerActivityLifecycleCallbacks(legacyLifecycle)
         ContinueListeningWidget.updateAll(this)

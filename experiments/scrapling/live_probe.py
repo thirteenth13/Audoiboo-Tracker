@@ -6,7 +6,8 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 
-from poleknig_fast import resolve as resolve_poleknig
+from poleknig_browser import resolve as resolve_poleknig_browser
+from poleknig_fast import resolve as resolve_poleknig_http
 from service import _dynamic, _http
 from track_traversal import traverse
 
@@ -54,18 +55,29 @@ def run_one(name: str, url: str) -> ProbeResult:
 
     if name == "poleknig":
         try:
-            probe = resolve_poleknig(url, limit=40)
-            result.traversal_responses = probe.requests
-            result.traversal_media = len(probe.media)
-            result.traversal_added_media = len(probe.media)
-            all_urls.update(probe.media)
-            result.diagnostics = [
-                f"discovered={len(probe.discovered)}",
-                *[f"resolver={u}" for u in probe.discovered[:8]],
-                *probe.statuses[:16],
-            ]
+            browser_probe = resolve_poleknig_browser(url, max_tracks=60)
+            result.traversal_responses = len(browser_probe.resolver_urls)
+            result.traversal_media = len(browser_probe.media)
+            result.traversal_added_media = len(browser_probe.media)
+            all_urls.update(browser_probe.media)
+            result.diagnostics.extend(browser_probe.diagnostics[:24])
+            result.diagnostics.extend(f"resolver={u}" for u in browser_probe.resolver_urls[:12])
         except Exception as exc:
-            _add_error(result, "poleknig-fast", exc)
+            _add_error(result, "poleknig-browser", exc)
+
+        # Keep the cheap HTTP resolver as a fallback/diagnostic only.
+        if not all_urls:
+            try:
+                http_probe = resolve_poleknig_http(url, limit=40)
+                result.traversal_responses += http_probe.requests
+                result.diagnostics.append(f"http-discovered={len(http_probe.discovered)}")
+                result.diagnostics.extend(http_probe.statuses[:12])
+                all_urls.update(http_probe.media)
+                result.traversal_media = len(all_urls)
+                result.traversal_added_media = len(all_urls)
+            except Exception as exc:
+                _add_error(result, "poleknig-fast", exc)
+
         result.media_urls = sorted(all_urls)
         return result
 

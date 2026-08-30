@@ -8,6 +8,9 @@ internal object RoomCoverSync {
     private const val INDEX_PREFS = "cover_index"
 
     suspend fun enqueueAll(context: Context) = withContext(Dispatchers.IO) {
+        // Metadata providers are intentionally low-volume. Process only a small pending batch on
+        // each normal library sync, then rebuild the cover index from the enriched Room snapshot.
+        BookMetadataEnrichment.enrichPending(context, limit = 8)
         val library = LibraryRepository.snapshot(context)
         val editor = context.getSharedPreferences(INDEX_PREFS, Context.MODE_PRIVATE).edit().clear()
         library.forEach { group ->

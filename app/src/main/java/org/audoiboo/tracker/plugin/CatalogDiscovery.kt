@@ -24,7 +24,7 @@ data class InferredSeries(
 /** Conservative fallback for catalog records that do not expose an explicit series field. */
 object CatalogSeriesHeuristics {
     private val numberedSuffix = Regex(
-        pattern = """^(.+?)[\\s:,.\\-–—]*(?:(?:книга|кн|том|часть|частина|book|volume|vol)\\.?\\s*)?#?([0-9]{1,3}(?:[.,][0-9]+)?)$""",
+        pattern = """^(.+?)[\s:,.-–—]*(?:(?:книга|кн|том|часть|частина|book|volume|vol)\.?\s*)?#?([0-9]{1,3}(?:[.,][0-9]+)?)$""",
         option = RegexOption.IGNORE_CASE
     )
 

@@ -13,7 +13,7 @@ class PluginPackageStoreTest {
         writeVersion(root, "baza-knig", 2, validManifest("baza-knig", 2))
         File(root, "installed/baza-knig/active-version").writeText("2")
         val manager = SourcePluginManager(emptyList())
-        val store = PluginPackageStore(root, manager)
+        val store = testStore(root, manager)
 
         val result = store.scanInstalled()
 
@@ -29,7 +29,7 @@ class PluginPackageStoreTest {
         writeVersion(root, "baza-knig", 1, validManifest("baza-knig", 1))
         writeVersion(root, "baza-knig", 2, "not json")
         File(root, "installed/baza-knig/active-version").writeText("2")
-        val store = PluginPackageStore(root, SourcePluginManager(emptyList()), clockMillis = { 1234L })
+        val store = testStore(root, SourcePluginManager(emptyList()), clockMillis = { 1234L })
 
         val result = store.scanInstalled()
 
@@ -44,7 +44,7 @@ class PluginPackageStoreTest {
     fun manifestIdentityMismatchIsQuarantined() = withTempDir { root ->
         writeVersion(root, "expected", 1, validManifest("other", 1))
         File(root, "installed/expected/active-version").writeText("1")
-        val store = PluginPackageStore(root, SourcePluginManager(emptyList()), clockMillis = { 9L })
+        val store = testStore(root, SourcePluginManager(emptyList()), clockMillis = { 9L })
 
         val result = store.scanInstalled()
 
@@ -59,7 +59,7 @@ class PluginPackageStoreTest {
         writeVersion(root, "source", 2, validManifest("source", 2))
         File(root, "installed/source/active-version").writeText("2")
         val manager = SourcePluginManager(emptyList())
-        val store = PluginPackageStore(root, manager, clockMillis = { 77L })
+        val store = testStore(root, manager, clockMillis = { 77L })
         store.scanInstalled()
 
         assertTrue(store.quarantineActive("source", "runtime failures"))
@@ -73,7 +73,7 @@ class PluginPackageStoreTest {
         writeVersion(root, "source", 1, validManifest("source", 1))
         File(root, "installed/source/active-version").writeText("1")
         val manager = SourcePluginManager(emptyList())
-        val store = PluginPackageStore(root, manager, clockMillis = { 100L })
+        val store = testStore(root, manager, clockMillis = { 100L })
         store.scanInstalled()
         assertTrue(store.quarantineActive("source", "manual test"))
 
@@ -86,15 +86,46 @@ class PluginPackageStoreTest {
     fun disabledMarkerPersistsAcrossManagerRecreation() = withTempDir { root ->
         writeVersion(root, "source", 1, validManifest("source", 1))
         File(root, "installed/source/active-version").writeText("1")
-        val firstStore = PluginPackageStore(root, SourcePluginManager(emptyList()))
+        val firstStore = testStore(root, SourcePluginManager(emptyList()))
         firstStore.scanInstalled()
         assertTrue(firstStore.disable("source"))
 
-        val secondStore = PluginPackageStore(root, SourcePluginManager(emptyList()))
+        val secondStore = testStore(root, SourcePluginManager(emptyList()))
         secondStore.scanInstalled()
         assertTrue(secondStore.isDisabled("source"))
         assertTrue(secondStore.clearDisabled("source"))
         assertFalse(secondStore.isDisabled("source"))
+    }
+
+    private fun testStore(
+        root: File,
+        manager: SourcePluginManager,
+        clockMillis: () -> Long = { System.currentTimeMillis() }
+    ) = PluginPackageStore(
+        pluginRoot = root,
+        manager = manager,
+        manifestDecoder = PluginManifestDecoder(::decodeTestManifest),
+        clockMillis = clockMillis
+    )
+
+    private fun decodeTestManifest(json: String): PluginPackageManifest {
+        if (!json.trimStart().startsWith("{")) error("invalid json")
+        fun stringField(name: String): String = Regex("\\\"$name\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
+            .find(json)?.groupValues?.get(1) ?: error("missing $name")
+        fun intField(name: String): Int = Regex("\\\"$name\\\"\\s*:\\s*(\\d+)")
+            .find(json)?.groupValues?.get(1)?.toInt() ?: error("missing $name")
+
+        return PluginPackageManifest(
+            id = stringField("id"),
+            name = stringField("name"),
+            version = intField("version"),
+            apiVersion = intField("apiVersion"),
+            runtime = PluginRuntime.DECLARATIVE,
+            hosts = setOf("example.org"),
+            capabilities = setOf(SourceCapability.SERIES_LOOKUP),
+            permissions = PluginPermissions(networkHosts = setOf("example.org")),
+            entrypoints = emptyMap()
+        )
     }
 
     private fun writeVersion(root: File, id: String, version: Int, manifest: String) {

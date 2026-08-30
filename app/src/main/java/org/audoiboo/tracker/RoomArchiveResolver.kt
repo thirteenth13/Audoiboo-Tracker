@@ -3,17 +3,19 @@ package org.audoiboo.tracker
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.audoiboo.tracker.plugin.DownloadCandidate
 import org.audoiboo.tracker.plugin.DownloadResolver
 import org.audoiboo.tracker.plugin.DownloadType
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 import org.audoiboo.tracker.plugin.SourceAuthor
 import org.audoiboo.tracker.plugin.SourceBook
+import org.audoiboo.tracker.plugin.SourceCapability
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
 
 internal object RoomArchiveResolver {
     suspend fun resolve(context: Context, book: BookEntity): String? = withContext(Dispatchers.IO) {
         PluginPackageRuntime.initialize(context.filesDir)
-        val plugin = PluginPackageRuntime.registry.forUrl(book.url) ?: return@withContext null
+        val plugin = PluginPackageRuntime.registry.forUrl(book.url, SourceCapability.DOWNLOAD_RESOLUTION) ?: return@withContext null
         val resolver = plugin as? DownloadResolver ?: return@withContext null
         val sourceBook = SourceBook(
             sourceId = plugin.descriptor.id,
@@ -24,7 +26,7 @@ internal object RoomArchiveResolver {
         )
         val candidate = resolver.resolveDownloads(sourceBook)
             .filter { it.type == DownloadType.ARCHIVE || it.type == DownloadType.DIRECT_FILE }
-            .maxWithOrNull(compareBy<org.audoiboo.tracker.plugin.DownloadCandidate> { it.priority }.thenBy { it.type == DownloadType.ARCHIVE })
+            .maxWithOrNull(compareBy<DownloadCandidate> { it.priority }.thenBy { it.type == DownloadType.ARCHIVE })
             ?: return@withContext null
 
         LibraryRepository.updateBookArchive(context, book.id, candidate.url)

@@ -6,7 +6,7 @@
       "name": "Baza-Knig",
       "version": 4,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/experiment/knigavuhe-webview-adapter/plugins/packages/baza-knig-4.abplugin",
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/baza-knig-4.abplugin",
       "sha256": "dd5f5464e51ca7a8301da6fa46a372c806410007f753b11cf25305d0255eae0b",
       "description": "Серії, пошук серій та книги Baza-Knig; пряме визначення аудіотреків через device-side Android WebView, коли MP3 створюються динамічно."
     },
@@ -15,7 +15,7 @@
       "name": "Knigavuhe",
       "version": 2,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/experiment/knigavuhe-webview-adapter/plugins/packages/knigavuhe-2.abplugin",
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-2.abplugin",
       "sha256": "9ebd825d8ccc743e11083de3a79c32f56cd5aee84c1ec7e978c4679f6940cceb",
       "description": "Цикли й книги Knigavuhe; пряме визначення аудіотреків через device-side Android WebView, коли сайт віддає повний плеєр на телефоні."
     }

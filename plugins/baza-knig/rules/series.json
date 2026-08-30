@@ -1,0 +1,14 @@
+{
+  "operation": "seriesLookup",
+  "series": {
+    "title": "h1",
+    "titleRegex": "(?i)(?:серии|цикл)\\s*[«\"“]?(.+?)(?:[»\"”]?\\s*(?:—\\s*все\\s+книги\\s+)?слушать)",
+    "followLink": "a[href*='/series-'], a[href*='/xfsearch/cikl/']@href",
+    "description": "meta[name='description']@content",
+    "books": {
+      "item": "h2 a[href*='/audio-'], h3 a[href*='/audio-'], h2 a[href$='.html'], h3 a[href$='.html']",
+      "title": "@text",
+      "link": "@href"
+    }
+  }
+}

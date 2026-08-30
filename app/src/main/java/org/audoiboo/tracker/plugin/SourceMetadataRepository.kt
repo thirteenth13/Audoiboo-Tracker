@@ -7,7 +7,8 @@ import org.audoiboo.tracker.AudoibooDatabase
 
 data class CanonicalSourceBookLink(
     val canonicalBookId: String,
-    val book: SourceBook
+    val book: SourceBook,
+    val confidence: Float = 1f
 )
 
 object SourceMetadataRepository {
@@ -18,11 +19,28 @@ object SourceMetadataRepository {
         plugins.forEach { dao.registerPlugin(it.descriptor) }
     }
 
+    suspend fun canonicalSeriesIdForSource(context: Context, series: SourceSeries): String? = withContext(Dispatchers.IO) {
+        val dao = SourceMetadataDatabase.get(context).dao()
+        val remoteKey = SourceKeys.remoteKey(series.remoteId, series.url)
+        dao.seriesSource(series.sourceId, remoteKey)?.canonicalSeriesId
+            ?: dao.seriesSourceByUrl(series.sourceId, series.url)?.canonicalSeriesId
+    }
+
+    suspend fun canonicalBookIdForSource(context: Context, book: SourceBook): String? = withContext(Dispatchers.IO) {
+        val dao = SourceMetadataDatabase.get(context).dao()
+        val remoteKey = SourceKeys.remoteKey(book.remoteId, book.url)
+        dao.bookSource(book.sourceId, remoteKey)?.canonicalBookId
+            ?: dao.bookSourceByUrl(book.sourceId, book.url)?.canonicalBookId
+    }
+
     suspend fun recordSeriesSnapshot(
         context: Context,
         canonicalSeriesId: String,
         series: SourceSeries,
-        books: List<CanonicalSourceBookLink>
+        books: List<CanonicalSourceBookLink>,
+        relationship: String = "SAME_SERIES",
+        confidence: Float = 1f,
+        userVerified: Boolean = true
     ) = withContext(Dispatchers.IO) {
         val dao = SourceMetadataDatabase.get(context).dao()
         val now = System.currentTimeMillis()
@@ -36,9 +54,9 @@ object SourceMetadataRepository {
                 remoteKey = seriesRemoteKey,
                 url = series.url,
                 remoteTitle = series.title,
-                relationship = existingSeries?.relationship ?: "SAME_SERIES",
-                confidence = existingSeries?.confidence ?: 1f,
-                userVerified = existingSeries?.userVerified ?: true,
+                relationship = existingSeries?.relationship ?: relationship,
+                confidence = existingSeries?.confidence ?: confidence.coerceIn(0f, 1f),
+                userVerified = existingSeries?.userVerified ?: userVerified,
                 firstSeenAt = existingSeries?.firstSeenAt ?: now,
                 lastSeenAt = now,
                 lastCheckedAt = now
@@ -62,13 +80,34 @@ object SourceMetadataRepository {
                     remoteTitle = book.title,
                     remoteAuthor = book.authors.joinToString(", ") { it.name }.takeIf { it.isNotBlank() },
                     remoteOrder = book.seriesNumber,
-                    confidence = existing?.confidence ?: 1f,
+                    confidence = existing?.confidence ?: link.confidence.coerceIn(0f, 1f),
                     firstSeenAt = existing?.firstSeenAt ?: now,
                     lastSeenAt = now,
                     lastCheckedAt = now
                 )
             )
         }
+    }
+
+    suspend fun recordSeriesMatchDecision(
+        context: Context,
+        canonicalSeriesId: String,
+        series: SourceSeries,
+        decision: String,
+        relationship: String,
+        confidence: Float
+    ) = withContext(Dispatchers.IO) {
+        val remoteKey = SourceKeys.remoteKey(series.remoteId, series.url)
+        SourceMetadataDatabase.get(context).dao().upsertMatchDecision(
+            SeriesMatchDecisionEntity(
+                canonicalSeriesId = canonicalSeriesId,
+                sourceId = series.sourceId,
+                remoteKey = remoteKey,
+                decision = decision,
+                relationship = relationship,
+                confidence = confidence.coerceIn(0f, 1f)
+            )
+        )
     }
 
     suspend fun recordAvailability(

@@ -12,6 +12,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import java.net.URI
+import java.util.Collections
+import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -35,7 +37,7 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
     ) {
         require(isAllowedPage(pageUrl)) { "Unsupported Knigavuhe URL" }
         Handler(Looper.getMainLooper()).post {
-            val found = linkedSetOf<String>()
+            val found = Collections.synchronizedSet(LinkedHashSet<String>())
             val diagnostics = mutableListOf<String>()
             val finished = AtomicBoolean(false)
             val handler = Handler(Looper.getMainLooper())
@@ -46,10 +48,13 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
                 if (isBookAudio(url)) found += url
             }
 
+            fun snapshot(): List<String> = synchronized(found) { found.toList() }
+
             fun finish(reason: String) {
                 if (!finished.compareAndSet(false, true)) return
+                val media = snapshot()
                 diagnostics += reason
-                diagnostics += "media=${found.size}"
+                diagnostics += "media=${media.size}"
                 handler.removeCallbacksAndMessages(null)
                 runCatching {
                     webView.stopLoading()
@@ -58,7 +63,7 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
                     (webView.parent as? ViewGroup)?.removeView(webView)
                     webView.destroy()
                 }
-                onComplete(Result(pageUrl, found.toList(), diagnostics.toList()))
+                onComplete(Result(pageUrl, media, diagnostics.toList()))
             }
 
             @SuppressLint("SetJavaScriptEnabled")
@@ -75,7 +80,7 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
 
                 @JavascriptInterface
                 fun event(message: String?) = handler.post {
-                    if (!message.isNullOrBlank() && diagnostics.size < 40) diagnostics += "js:$message"
+                    if (!message.isNullOrBlank() && diagnostics.size < 60) diagnostics += "js:$message"
                 }
             }, BRIDGE)
 
@@ -92,12 +97,14 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
                     handler.postDelayed({
                         if (!finished.get()) view.evaluateJavascript(ACTIVATE_PLAYER, null)
                     }, 900L)
+                    listOf(2_500L, 6_500L, 10_000L).forEach { delay ->
+                        handler.postDelayed({
+                            if (!finished.get()) view.evaluateJavascript(SCAN_PAGE, null)
+                        }, delay)
+                    }
                     handler.postDelayed({
-                        if (!finished.get()) view.evaluateJavascript(SCAN_PAGE, null)
-                    }, 2_500L)
-                    handler.postDelayed({
-                        if (!finished.get() && found.isNotEmpty()) finish("captured")
-                    }, 5_500L)
+                        if (!finished.get() && snapshot().isNotEmpty()) finish("captured")
+                    }, 12_500L)
                 }
             }
 
@@ -109,6 +116,9 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
     companion object {
         private const val BRIDGE = "AudoibooMediaCapture"
         private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac")
+        private val TRACK_LABEL = Regex(
+            """(?ix)^\s*(?:\d{1,3}(?:[\s._:)-]+.+)?|.+_\d+)(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*$"""
+        )
 
         // Keep URL validation on the JVM so local unit tests do not depend on Android Uri stubs.
         fun isAllowedPage(url: String): Boolean = runCatching {
@@ -129,6 +139,9 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
                 (host == "knigavuhe.org" || host.endsWith(".knigavuhe.org")) &&
                 path.contains("/audio/") && ext in AUDIO_EXTENSIONS
         }.getOrDefault(false)
+
+        fun isLikelyTrackLabel(text: String): Boolean =
+            text.trim().length in 1..180 && TRACK_LABEL.matches(text.trim())
 
         private val INSTALL_HOOKS = """
             (() => {
@@ -156,12 +169,36 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
 
         private val ACTIVATE_PLAYER = """
             (() => {
+              const norm = s => (s || '').replace(/\s+/g, ' ').trim();
               const visible = e => { const r=e.getBoundingClientRect(); const s=getComputedStyle(e); return r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none'; };
-              const candidates = [...document.querySelectorAll('button,a,div,span')].filter(visible);
-              const full = candidates.find(e => /слушать полностью/i.test((e.innerText||'').trim()));
-              if (full) { full.click(); AudoibooMediaCapture.event('clicked-full'); }
-              const tracks = candidates.filter(e => /^\s*(?:\d{2}|.*_\d+)\s*(?:\d+:\d+(?::\d+)?)?\s*$/.test((e.innerText||'').trim())).slice(0, 60);
-              for (const t of tracks) { try { t.click(); } catch (_) {} }
+              const all = [...document.querySelectorAll('button,a,div,span,li,label')].filter(visible);
+              const full = all.find(e => /слушать полностью/i.test(norm(e.innerText)));
+              if (full) { try { full.click(); AudoibooMediaCapture.event('clicked-full'); } catch (_) {} }
+
+              const largeLabel = all.find(e => /большие отрезки/i.test(norm(e.innerText)));
+              if (largeLabel) {
+                const checkbox = largeLabel.matches('input[type=checkbox]') ? largeLabel :
+                  (largeLabel.querySelector('input[type=checkbox]') || document.querySelector('input[type=checkbox][name*=large i],input[type=checkbox][id*=large i]'));
+                if (checkbox && !checkbox.checked) {
+                  try {
+                    checkbox.click();
+                    checkbox.dispatchEvent(new Event('change', {bubbles:true}));
+                    AudoibooMediaCapture.event('enabled-large-segments');
+                  } catch (_) {}
+                }
+              }
+
+              const leaf = e => ![...e.children].some(c => {
+                const t = norm(c.innerText || c.textContent);
+                return t && t.length <= 180 && (/^\d{1,3}(?:[\s._:)-]+.+)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(t) || /_\d+(?:\s|$)/.test(t));
+              });
+              const tracks = all.filter(e => {
+                const t = norm(e.innerText || e.textContent);
+                return t && t.length <= 180 && leaf(e) &&
+                  (/^\d{1,3}(?:[\s._:)-]+.+)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(t) || /_\d+(?:\s|$)/.test(t));
+              }).slice(0, 100);
+
+              tracks.forEach((t, i) => setTimeout(() => { try { t.click(); } catch (_) {} }, i * 180));
               AudoibooMediaCapture.event('track-candidates='+tracks.length);
               return tracks.length;
             })();
@@ -171,6 +208,7 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
             (() => {
               const emit = u => { try { if (u) AudoibooMediaCapture.media(String(u)); } catch (_) {} };
               document.querySelectorAll('audio[src],source[src],a[href]').forEach(e => emit(e.src || e.href));
+              try { performance.getEntriesByType('resource').forEach(e => emit(e.name)); } catch (_) {}
               const html = document.documentElement.innerHTML.replaceAll('\\/','/');
               const urls = html.match(/https?:[^\"'<>\\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac)(?:\?[^\"'<>\\s]*)?/gi) || [];
               urls.forEach(emit);

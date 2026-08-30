@@ -17,6 +17,24 @@ class KnigavuheWebViewMediaCaptureTest {
         ))
     }
 
+    @Test fun acceptsNumberedTrackWithTitle() {
+        assertTrue(KnigavuheWebViewMediaCapture.isLikelyTrackLabel(
+            "01 Закрытый мир Коты Хираги (I) 01 09:41"
+        ))
+    }
+
+    @Test fun acceptsLargeSegmentLabel() {
+        assertTrue(KnigavuheWebViewMediaCapture.isLikelyTrackLabel(
+            "Игра престолов_4 1:59:31"
+        ))
+    }
+
+    @Test fun rejectsOrdinaryPageTextAsTrack() {
+        assertFalse(KnigavuheWebViewMediaCapture.isLikelyTrackLabel(
+            "Автор: Джордж Мартин"
+        ))
+    }
+
     @Test fun rejectsAdvertisingMedia() {
         assertFalse(KnigavuheWebViewMediaCapture.isBookAudio(
             "https://rutube.ru/video/ad-player.webm"

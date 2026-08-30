@@ -289,10 +289,16 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tags by remember(book.id) { mutableStateOf<List<String>>(emptyList()) }
+    var sourceIds by remember(book.id) { mutableStateOf<List<String>>(emptyList()) }
     var editTags by remember(book.id) { mutableStateOf(false) }
     var tagText by remember(book.id) { mutableStateOf("") }
     var resolvingArchive by remember(book.id) { mutableStateOf(false) }
-    LaunchedEffect(book.id) { tags = LibraryRepository.bookWithTags(context, book.id)?.tags?.map { it.name }.orEmpty() }
+    LaunchedEffect(book.id, book.updatedAt) {
+        tags = LibraryRepository.bookWithTags(context, book.id)?.tags?.map { it.name }.orEmpty()
+        sourceIds = SourceMetadataRepository.sourcesForBook(context, book.id)
+            .map { it.sourceId }
+            .distinct()
+    }
 
     ElevatedCard(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -302,6 +308,12 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
                 Text(book.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (!seriesName.isNullOrBlank()) Text(seriesName, style = MaterialTheme.typography.bodySmall)
                 if (!book.author.isNullOrBlank()) Text(book.author, style = MaterialTheme.typography.bodySmall)
+                if (sourceIds.isNotEmpty()) {
+                    Text(
+                        "${if (sourceIds.size == 1) "Джерело" else "Джерела"}: ${sourceIds.joinToString(" • ") { roomSourceLabel(it) }}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     AssistChip(onClick = { scope.launch { LibraryRepository.updateBookStatus(context, book.id, nextRoomStatus(book.status)) } }, label = { Text(roomStatusLabel(book.status)) })
                     AssistChip(onClick = { tagText = tags.joinToString(", "); editTags = true }, leadingIcon = { Icon(Icons.Filled.Label, null) }, label = { Text(if (tags.isEmpty()) "Теги" else tags.joinToString(" • "), maxLines = 1) })
@@ -335,6 +347,12 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
         text = { OutlinedTextField(tagText, { tagText = it }, label = { Text("Через кому") }) },
         confirmButton = { TextButton(onClick = { val values = tagText.split(',').map { it.trim() }.filter { it.isNotBlank() }; scope.launch { LibraryRepository.setBookTags(context, book.id, values); tags = LibraryRepository.bookWithTags(context, book.id)?.tags?.map { it.name }.orEmpty(); editTags = false } }) { Text("Зберегти") } },
         dismissButton = { TextButton(onClick = { editTags = false }) { Text("Скасувати") } })
+}
+
+private fun roomSourceLabel(sourceId: String): String = when (sourceId) {
+    "audioboo" -> "Audioboo"
+    "baza-knig" -> "Baza-Knig"
+    else -> sourceId
 }
 
 private fun roomFilterLabel(filter: RoomBookFilter): String = when (filter) { RoomBookFilter.ALL -> "Усі"; RoomBookFilter.NEW -> "Нові"; RoomBookFilter.READING -> "Читаю"; RoomBookFilter.READ -> "Прочитані"; RoomBookFilter.TAGGED -> "З тегами"; RoomBookFilter.UNTAGGED -> "Без тегів" }

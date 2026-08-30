@@ -29,14 +29,28 @@ internal data class ManagedDownloadRecord(
 internal object ManagedDownloads {
     fun initialize(context: Context) = ManagedDownloadRoomStore.initialize(context.applicationContext)
 
-    fun enqueue(context: Context, title: String, series: String, author: String?, bookUrl: String, archiveUrl: String) {
+    fun enqueue(
+        context: Context,
+        title: String,
+        series: String,
+        author: String?,
+        bookUrl: String,
+        archiveUrl: String,
+        fileNameHint: String? = null
+    ) {
         val base = cleanPath(AppPrefs.baseFolder(context))
         val parts = mutableListOf(base)
         if (AppPrefs.useAuthorFolder(context) && !author.isNullOrBlank()) parts += cleanPath(author)
         parts += cleanPath(series)
         val relativeDir = parts.joinToString("/")
         val bookDir = cleanPath(title).take(120)
-        val fileName = bookDir + DownloadFilePolicy.extension(archiveUrl)
+        val fileName = fileNameHint
+            ?.substringAfterLast('/')
+            ?.substringBefore('?')
+            ?.takeIf { it.isNotBlank() }
+            ?.let(::cleanPath)
+            ?.take(180)
+            ?: (bookDir + DownloadFilePolicy.extension(archiveUrl))
         val record = ManagedDownloadRecord(
             UUID.randomUUID().toString(), title, series, author, bookUrl, archiveUrl,
             relativeDir, bookDir, fileName, ManagedDownloadState.QUEUED

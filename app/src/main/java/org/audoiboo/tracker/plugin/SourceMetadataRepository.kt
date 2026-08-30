@@ -38,6 +38,30 @@ object SourceMetadataRepository {
         SourceMetadataDatabase.get(context).dao().matchDecisions(series.sourceId, remoteKey)
     }
 
+    suspend fun pendingSeriesReviews(context: Context, canonicalSeriesId: String): List<SeriesMatchDecisionEntity> = withContext(Dispatchers.IO) {
+        SourceMetadataDatabase.get(context).dao().pendingMatchDecisions(canonicalSeriesId)
+    }
+
+    suspend fun resolvePendingSeriesReview(
+        context: Context,
+        canonicalSeriesId: String,
+        sourceId: String,
+        remoteKey: String,
+        accept: Boolean,
+        confidence: Float?
+    ) = withContext(Dispatchers.IO) {
+        SourceMetadataDatabase.get(context).dao().upsertMatchDecision(
+            SeriesMatchDecisionEntity(
+                canonicalSeriesId = canonicalSeriesId,
+                sourceId = sourceId,
+                remoteKey = remoteKey,
+                decision = if (accept) "USER_ACCEPTED" else "USER_REJECTED",
+                relationship = "SAME_SERIES",
+                confidence = confidence?.coerceIn(0f, 1f)
+            )
+        )
+    }
+
     suspend fun recordSeriesSnapshot(
         context: Context,
         canonicalSeriesId: String,

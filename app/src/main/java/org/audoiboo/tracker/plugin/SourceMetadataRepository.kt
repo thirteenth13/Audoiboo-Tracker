@@ -5,12 +5,110 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.audoiboo.tracker.AudoibooDatabase
 
+data class CanonicalSourceBookLink(
+    val canonicalBookId: String,
+    val book: SourceBook
+)
+
 object SourceMetadataRepository {
     const val AUDIOBOO_SOURCE_ID = "audioboo"
 
     suspend fun registerBuiltInPlugins(context: Context, plugins: Collection<SourcePlugin>) = withContext(Dispatchers.IO) {
         val dao = SourceMetadataDatabase.get(context).dao()
         plugins.forEach { dao.registerPlugin(it.descriptor) }
+    }
+
+    suspend fun recordSeriesSnapshot(
+        context: Context,
+        canonicalSeriesId: String,
+        series: SourceSeries,
+        books: List<CanonicalSourceBookLink>
+    ) = withContext(Dispatchers.IO) {
+        val dao = SourceMetadataDatabase.get(context).dao()
+        val now = System.currentTimeMillis()
+        val seriesRemoteKey = SourceKeys.remoteKey(series.remoteId, series.url)
+        val existingSeries = dao.seriesSource(series.sourceId, seriesRemoteKey)
+        dao.upsertSeriesSource(
+            SeriesSourceEntity(
+                canonicalSeriesId = canonicalSeriesId,
+                sourceId = series.sourceId,
+                remoteKey = seriesRemoteKey,
+                url = series.url,
+                remoteTitle = series.title,
+                relationship = existingSeries?.relationship ?: "SAME_SERIES",
+                confidence = existingSeries?.confidence ?: 1f,
+                userVerified = existingSeries?.userVerified ?: true,
+                firstSeenAt = existingSeries?.firstSeenAt ?: now,
+                lastSeenAt = now,
+                lastCheckedAt = now
+            )
+        )
+
+        books.forEach { link ->
+            val book = link.book
+            val remoteKey = SourceKeys.remoteKey(book.remoteId, book.url)
+            val key = SourceKeys.bookSourceKey(book.sourceId, remoteKey)
+            val existing = dao.bookSource(book.sourceId, remoteKey)
+            dao.upsertBookSource(
+                BookSourceEntity(
+                    key = key,
+                    canonicalBookId = link.canonicalBookId,
+                    canonicalSeriesId = canonicalSeriesId,
+                    sourceId = book.sourceId,
+                    remoteKey = remoteKey,
+                    url = book.url,
+                    remoteTitle = book.title,
+                    remoteAuthor = book.authors.joinToString(", ") { it.name }.takeIf { it.isNotBlank() },
+                    remoteOrder = book.seriesNumber,
+                    confidence = existing?.confidence ?: 1f,
+                    firstSeenAt = existing?.firstSeenAt ?: now,
+                    lastSeenAt = now,
+                    lastCheckedAt = now
+                )
+            )
+        }
+    }
+
+    suspend fun recordAvailability(
+        context: Context,
+        canonicalBookId: String,
+        sourceId: String,
+        bookUrl: String,
+        candidate: DownloadCandidate
+    ) = withContext(Dispatchers.IO) {
+        val dao = SourceMetadataDatabase.get(context).dao()
+        val now = System.currentTimeMillis()
+        val remoteKey = SourceKeys.remoteKey(null, bookUrl)
+        val key = SourceKeys.bookSourceKey(sourceId, remoteKey)
+        val existingBook = dao.bookSource(sourceId, remoteKey)
+        if (existingBook == null) {
+            dao.upsertBookSource(
+                BookSourceEntity(
+                    key = key,
+                    canonicalBookId = canonicalBookId,
+                    canonicalSeriesId = null,
+                    sourceId = sourceId,
+                    remoteKey = remoteKey,
+                    url = bookUrl,
+                    firstSeenAt = now,
+                    lastSeenAt = now,
+                    lastCheckedAt = now
+                )
+            )
+        }
+        val existingAvailability = dao.availability(key).firstOrNull { it.type == candidate.type.name }
+        dao.upsertAvailability(
+            SourceAvailabilityEntity(
+                bookSourceKey = key,
+                sourceId = sourceId,
+                type = candidate.type.name,
+                status = "AVAILABLE",
+                uri = candidate.url,
+                firstSeenAt = existingAvailability?.firstSeenAt ?: now,
+                lastSeenAt = now,
+                lastCheckedAt = now
+            )
+        )
     }
 
     suspend fun backfillAudiobooMappings(context: Context) = withContext(Dispatchers.IO) {

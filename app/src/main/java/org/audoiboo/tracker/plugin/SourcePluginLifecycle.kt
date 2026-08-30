@@ -48,6 +48,18 @@ class SourcePluginManager(
             .sortedWith(compareBy<SourcePluginRegistration> { it.displayName.lowercase() }.thenBy { it.packageId })
     }
 
+    fun packageRegistration(id: String): SourcePluginRegistration? = packageRegistrations[id]
+
+    fun clearPackageRegistrations() {
+        packageRegistrations.clear()
+    }
+
+    fun markPackageState(id: String, state: PluginState, reason: String? = null): SourcePluginRegistration? {
+        val current = packageRegistrations[id] ?: return null
+        require(current.origin == PluginOrigin.PACKAGE)
+        return current.copy(state = state, failureReason = reason).also { packageRegistrations[id] = it }
+    }
+
     fun registerPackageManifest(
         manifest: PluginPackageManifest,
         packagePath: String

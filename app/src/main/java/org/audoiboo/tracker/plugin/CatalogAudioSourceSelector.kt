@@ -6,7 +6,10 @@ object CatalogAudioSourceSelector {
         val finding: SeriesDiscoveryFinding,
         val matchedBooks: Int,
         val totalBooks: Int
-    )
+    ) {
+        val isComplete: Boolean
+            get() = totalBooks > 0 && matchedBooks >= totalBooks
+    }
 
     fun rank(match: CatalogSourceMatch): List<Candidate> = match.sources
         .filter { it.disposition == MatchDisposition.AUTO_ACCEPT }
@@ -24,6 +27,16 @@ object CatalogAudioSourceSelector {
         )
 
     fun best(match: CatalogSourceMatch): Candidate? = rank(match).firstOrNull()
+
+    /**
+     * Explicit selection never silently falls back to another provider. This is important when the
+     * user deliberately chooses a source with different narration, track layout, or completeness.
+     */
+    fun select(match: CatalogSourceMatch, preferredSourceId: String?): Candidate? {
+        val ranked = rank(match)
+        if (preferredSourceId.isNullOrBlank()) return ranked.firstOrNull()
+        return ranked.firstOrNull { it.finding.sourceId == preferredSourceId }
+    }
 
     private fun matchedBookCount(match: CatalogSourceMatch, finding: SeriesDiscoveryFinding): Int {
         val remaining = match.canonical.books.toMutableList()

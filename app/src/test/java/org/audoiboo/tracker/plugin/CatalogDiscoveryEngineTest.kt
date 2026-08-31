@@ -1,5 +1,6 @@
 package org.audoiboo.tracker.plugin
 
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -51,6 +52,25 @@ class CatalogDiscoveryEngineTest {
     }
 
     @Test
+    fun catalogProvidersRunConcurrently() = runBlocking {
+        val engine = CatalogDiscoveryEngine(
+            SourcePluginRegistry(
+                listOf(
+                    FakeCatalogPlugin("one", delayMs = 180),
+                    FakeCatalogPlugin("two", delayMs = 180)
+                )
+            )
+        )
+
+        val started = System.nanoTime()
+        val results = engine.discoverByAuthor("Author")
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+
+        assertEquals(2, results.size)
+        assertTrue("catalog providers ran too slowly: ${elapsedMs}ms", elapsedMs < 650)
+    }
+
+    @Test
     fun blankAuthorDoesNotCallProviders() = runBlocking {
         val results = CatalogDiscoveryEngine(SourcePluginRegistry(listOf(FakeCatalogPlugin("good"))))
             .discoverByAuthor("   ")
@@ -60,7 +80,8 @@ class CatalogDiscoveryEngineTest {
 
     private class FakeCatalogPlugin(
         private val id: String,
-        private val broken: Boolean = false
+        private val broken: Boolean = false,
+        private val delayMs: Long = 0
     ) : SourcePlugin, AuthorCatalogProvider {
         override val descriptor = SourceDescriptor(
             id = id,
@@ -73,11 +94,13 @@ class CatalogDiscoveryEngineTest {
         override fun supports(url: String): Boolean = url.contains("$id.example.org")
 
         override suspend fun searchAuthors(query: String, limit: Int): List<CatalogAuthor> {
+            if (delayMs > 0) delay(delayMs)
             if (broken) error("broken provider")
             return listOf(CatalogAuthor(id, "a1", "Author", confidence = 1f))
         }
 
         override suspend fun loadAuthorCatalog(author: CatalogAuthor, limit: Int): AuthorCatalog {
+            if (delayMs > 0) delay(delayMs)
             if (broken) error("broken provider")
             return AuthorCatalog(
                 author,

@@ -1,7 +1,7 @@
 {
   "id": "knigavuhe",
   "name": "Knigavuhe",
-  "version": 4,
+  "version": 5,
   "apiVersion": 1,
   "runtime": "DECLARATIVE",
   "hosts": [
@@ -10,6 +10,7 @@
   ],
   "capabilities": [
     "SERIES_LOOKUP",
+    "SERIES_SEARCH",
     "BOOK_LOOKUP",
     "DOWNLOAD_RESOLUTION"
   ],
@@ -26,6 +27,7 @@
   },
   "entrypoints": {
     "seriesLookup": "rules/series.json",
+    "seriesSearch": "rules/search.json",
     "bookLookup": "rules/book.json",
     "downloadResolution": "rules/download.json"
   }

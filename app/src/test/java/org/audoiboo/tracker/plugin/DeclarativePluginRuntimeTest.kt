@@ -117,6 +117,76 @@ class DeclarativePluginRuntimeTest {
     }
 
     @Test
+    fun discoversIzibSeriesThroughBoundedAuthorDirectory() {
+        val manifest = PluginPackageManifest(
+            id = "izib",
+            name = "Izib",
+            version = 3,
+            apiVersion = SOURCE_PLUGIN_API_VERSION,
+            hosts = setOf("pda.izib.uk", "izib.uk"),
+            capabilities = setOf(SourceCapability.SERIES_DISCOVERY),
+            permissions = PluginPermissions(networkHosts = setOf("pda.izib.uk", "izib.uk"))
+        )
+        val requested = mutableListOf<String>()
+        val sandbox = PluginSandbox(PluginHttpTransport { request, _ ->
+            requested += request.url
+            val body = when (request.url) {
+                "https://pda.izib.uk/authors" -> "<a href='/author1'>Other Author</a>"
+                "https://pda.izib.uk/authors?p=2" -> "<a href='/author2176'>Роман Прокофьев</a>"
+                "https://pda.izib.uk/author2176" -> """
+                    <a href='/serie8524'>Звездная Кровь</a>
+                    <a href='/serie9999'>Стеллар</a>
+                """.trimIndent()
+                else -> error("unexpected ${request.url}")
+            }
+            PluginHttpResponse(200, request.url, body)
+        })
+        val runtime = DeclarativePluginRuntime(sandbox)
+
+        val results = runtime.discoverIzibSeries(
+            manifest,
+            CanonicalSeriesMatchInput(
+                id = "star-blood",
+                title = "Звёздная кровь",
+                authors = listOf("Роман Прокофьев")
+            ),
+            maxAuthorPages = 2
+        )
+
+        assertEquals(1, results.size)
+        assertEquals("https://pda.izib.uk/serie8524", results.single().series.url)
+        assertEquals("Звездная Кровь", results.single().series.title)
+        assertEquals(3, requested.size)
+    }
+
+    @Test
+    fun izibDiscoveryStopsAtConfiguredAuthorPageBound() {
+        val manifest = PluginPackageManifest(
+            id = "izib",
+            name = "Izib",
+            version = 3,
+            apiVersion = SOURCE_PLUGIN_API_VERSION,
+            hosts = setOf("pda.izib.uk", "izib.uk"),
+            capabilities = setOf(SourceCapability.SERIES_DISCOVERY),
+            permissions = PluginPermissions(networkHosts = setOf("pda.izib.uk", "izib.uk"))
+        )
+        var requests = 0
+        val runtime = DeclarativePluginRuntime(PluginSandbox(PluginHttpTransport { request, _ ->
+            requests++
+            PluginHttpResponse(200, request.url, "<a href='/author1'>Someone Else</a>")
+        }))
+
+        val results = runtime.discoverIzibSeries(
+            manifest,
+            CanonicalSeriesMatchInput("c", "Star Blood", authors = listOf("Missing Author")),
+            maxAuthorPages = 3
+        )
+
+        assertTrue(results.isEmpty())
+        assertEquals(3, requests)
+    }
+
+    @Test
     fun resolvesBookMetadataFromSelectorsInsideSandbox() = withTempDir { root ->
         File(root, "book.rule").writeText("book")
         val manifest = manifest(

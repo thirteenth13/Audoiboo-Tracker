@@ -16,9 +16,9 @@ data class SeriesDiscoveryFinding(
 )
 
 /**
- * Searches all enabled SERIES_SEARCH providers for alternate observations of a canonical series.
- * Independent sources run concurrently, while queries and candidate hydration stay sequential inside
- * each source to avoid flooding any one site. Individual plugin failures remain isolated.
+ * Searches enabled SERIES_SEARCH providers and also runs bounded SERIES_DISCOVERY providers for
+ * sources that cannot expose a normal text search. Independent sources run concurrently, while
+ * work inside one source stays sequential to avoid flooding a site. Individual failures are isolated.
  */
 class SourceDiscoveryEngine(
     private val registry: SourcePluginRegistry,
@@ -48,12 +48,13 @@ class SourceDiscoveryEngine(
         }.distinctBy { SourceIdentityMatcher.normalizeTitle(it.title) }
 
         val findings = supervisorScope {
-            registry.withCapability(SourceCapability.SERIES_SEARCH)
+            registry.plugins
                 .filterNot { it.descriptor.id == excludeSourceId }
-                .mapNotNull { plugin ->
-                    val search = plugin as? SeriesSearchProvider ?: return@mapNotNull null
-                    async { discoverSource(plugin, search, canonical, searchQueries) }
+                .filter { plugin ->
+                    SourceCapability.SERIES_SEARCH in plugin.descriptor.capabilities ||
+                        SourceCapability.SERIES_DISCOVERY in plugin.descriptor.capabilities
                 }
+                .map { plugin -> async { discoverSource(plugin, canonical, searchQueries) } }
                 .awaitAll()
                 .flatten()
         }
@@ -65,24 +66,34 @@ class SourceDiscoveryEngine(
 
     private suspend fun discoverSource(
         plugin: SourcePlugin,
-        search: SeriesSearchProvider,
         canonical: CanonicalSeriesMatchInput,
         searchQueries: List<SeriesSearchQuery>
     ): List<SeriesDiscoveryFinding> {
         val candidates = mutableListOf<SeriesCandidate>()
-        searchQueries.forEach queryLoop@ { query ->
+
+        val directDiscovery = plugin as? SeriesDiscoveryProvider
+        if (SourceCapability.SERIES_DISCOVERY in plugin.descriptor.capabilities && directDiscovery != null) {
             val hits = try {
-                search.searchSeries(query)
+                directDiscovery.discoverSeries(canonical)
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
-                return@queryLoop
+                emptyList()
             }
-            hits.forEach { hit ->
-                if (candidates.none { SourceKeys.normalizeUrl(it.series.url) == SourceKeys.normalizeUrl(hit.series.url) }) {
-                    candidates += hit
+            hits.forEach { addCandidate(candidates, it) }
+        }
+
+        val search = plugin as? SeriesSearchProvider
+        if (SourceCapability.SERIES_SEARCH in plugin.descriptor.capabilities && search != null) {
+            searchQueries.forEach queryLoop@ { query ->
+                if (candidates.size >= maxCandidatesPerSource) return@queryLoop
+                val hits = try {
+                    search.searchSeries(query)
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                    return@queryLoop
                 }
+                hits.forEach { addCandidate(candidates, it) }
             }
-            if (candidates.size >= maxCandidatesPerSource) return@queryLoop
         }
 
         val findings = mutableListOf<SeriesDiscoveryFinding>()
@@ -126,5 +137,11 @@ class SourceDiscoveryEngine(
             }
         }
         return findings
+    }
+
+    private fun addCandidate(target: MutableList<SeriesCandidate>, candidate: SeriesCandidate) {
+        if (target.size >= maxCandidatesPerSource) return
+        val normalized = SourceKeys.normalizeUrl(candidate.series.url)
+        if (target.none { SourceKeys.normalizeUrl(it.series.url) == normalized }) target += candidate
     }
 }

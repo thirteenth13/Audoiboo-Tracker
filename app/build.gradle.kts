@@ -84,5 +84,6 @@ dependencies {
     implementation(libs.androidx.paging.compose)
 
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20250517")
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

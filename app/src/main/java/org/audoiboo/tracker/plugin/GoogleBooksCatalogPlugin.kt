@@ -55,6 +55,7 @@ object GoogleBooksCatalogPlugin : SourcePlugin, AuthorCatalogProvider {
         require(author.providerId == descriptor.id) { "Author belongs to another catalog provider" }
         val safeLimit = limit.coerceIn(1, 200)
         val books = mutableListOf<CatalogBook>()
+        val seenIds = mutableSetOf<String>()
         var startIndex = 0
         while (books.size < safeLimit) {
             val pageSize = minOf(40, safeLimit - books.size)
@@ -62,13 +63,19 @@ object GoogleBooksCatalogPlugin : SourcePlugin, AuthorCatalogProvider {
                 volumesUrl("inauthor:\"${author.name}\"", maxResults = pageSize, startIndex = startIndex),
                 4L * 1024 * 1024
             ) ?: break
-            val page = parseBooks(author, json)
-            if (page.isEmpty()) break
-            books += page
-            if (page.size < pageSize) break
-            startIndex += pageSize
+            val rawCount = json.optJSONArray("items")?.length() ?: 0
+            if (rawCount == 0) break
+
+            parseBooks(author, json).forEach { book ->
+                if (seenIds.add(book.remoteId) && books.size < safeLimit) books += book
+            }
+
+            // Advance by what Google actually returned, not by how many entries survived
+            // author/title filtering. Otherwise a partially filtered page can truncate the catalog.
+            startIndex += rawCount
+            if (rawCount < pageSize) break
         }
-        return AuthorCatalog(author, books.distinctBy { it.remoteId }.take(safeLimit))
+        return AuthorCatalog(author, books)
     }
 
     internal fun parseBooks(author: CatalogAuthor, json: JSONObject): List<CatalogBook> {

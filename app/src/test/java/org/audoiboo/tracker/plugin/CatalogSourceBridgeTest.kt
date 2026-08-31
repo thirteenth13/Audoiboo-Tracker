@@ -26,6 +26,43 @@ class CatalogSourceBridgeTest {
     }
 
     @Test
+    fun prefersStrongerDuplicateSeriesFromAnotherCatalogProvider() {
+        val weak = CatalogDiscoveryResult(
+            providerId = "weak",
+            author = CatalogAuthor("weak", "a1", "Author A", confidence = 0.7f),
+            series = listOf(
+                CatalogSeries(
+                    title = "Star Blood",
+                    authors = listOf("Author A"),
+                    books = listOf(CatalogBook("weak", "b1", "Book One", listOf("Author A")))
+                )
+            ),
+            standaloneBooks = emptyList()
+        )
+        val strong = CatalogDiscoveryResult(
+            providerId = "strong",
+            author = CatalogAuthor("strong", "a9", "author a", confidence = 0.95f),
+            series = listOf(
+                CatalogSeries(
+                    title = "STAR BLOOD",
+                    authors = listOf("Author A"),
+                    books = listOf(
+                        CatalogBook("strong", "b1", "Book One", listOf("Author A"), seriesNumber = 1.0),
+                        CatalogBook("strong", "b2", "Book Two", listOf("Author A"), seriesNumber = 2.0)
+                    )
+                )
+            ),
+            standaloneBooks = emptyList()
+        )
+
+        val selected = CatalogSeriesDeduplicationPolicy.select(listOf(weak, strong))
+
+        assertEquals(1, selected.size)
+        assertEquals("strong", selected.single().providerId)
+        assertEquals(2, selected.single().series.books.size)
+    }
+
+    @Test
     fun discoversAudioSourcesForCatalogSeries() = runBlocking {
         val catalog = FakeCatalogPlugin()
         val audio = FakeAudioSeriesPlugin()

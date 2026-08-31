@@ -36,31 +36,48 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
     var importingId by remember { mutableStateOf<String?>(null) }
     var results by remember { mutableStateOf<List<CatalogSourceMatch>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    var cacheHit by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val cache = CatalogSearchCaches.authorDiscovery
 
     fun openSource(url: String) {
         activity.startActivity(Intent(activity, MainActivity::class.java).apply { putExtra(MainActivity.EXTRA_URL, url) })
     }
 
-    fun search() {
+    fun search(forceRefresh: Boolean = false) {
         val value = query.trim()
         if (value.isBlank() || loading) return
-        loading = true
         searched = true
         error = null
+
+        if (!forceRefresh) {
+            cache.get(value)?.let {
+                results = it
+                cacheHit = true
+                return
+            }
+        } else {
+            cache.invalidate(value)
+        }
+
+        loading = true
+        cacheHit = false
         scope.launch {
-            runCatching { CatalogSourceBridge(BuiltInSourcePluginManager.registry).discoverByAuthor(value) }
-                .onSuccess { results = it }
+            runCatching { CatalogSourceBridge(PluginPackageRuntime.registry).discoverByAuthor(value) }
+                .onSuccess {
+                    results = it
+                    cache.put(value, it)
+                }
                 .onFailure { error = it.message ?: "Не вдалося виконати пошук" }
             loading = false
         }
     }
 
-    fun addToLibrary(result: CatalogSourceMatch) {
+    fun addToLibrary(result: CatalogSourceMatch, preferredSourceId: String? = null) {
         if (importingId != null) return
         importingId = result.canonical.id
         scope.launch {
-            when (val imported = runCatching { CatalogLibraryImport.add(activity, result) }.getOrNull()) {
+            when (val imported = runCatching { CatalogLibraryImport.add(activity, result, preferredSourceId) }.getOrNull()) {
                 is CatalogLibraryImportResult.Added -> {
                     Toast.makeText(activity, "${imported.name}: додано ${imported.books} книг", Toast.LENGTH_LONG).show()
                     activity.startActivity(Intent(activity, RoomLibraryActivity::class.java))
@@ -70,7 +87,7 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
                     openSource(imported.sourceUrl)
                 }
                 CatalogLibraryImportResult.NoAudioSource, null ->
-                    Toast.makeText(activity, "Немає достатньо надійного аудіоджерела для додавання", Toast.LENGTH_LONG).show()
+                    Toast.makeText(activity, "Не вдалося додати вибране аудіоджерело", Toast.LENGTH_LONG).show()
             }
             importingId = null
         }
@@ -90,10 +107,19 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
                 label = { Text("Автор") },
                 placeholder = { Text("Наприклад: Роман Прокофьев") },
                 leadingIcon = { Icon(Icons.Filled.Search, null) },
-                trailingIcon = { TextButton(onClick = ::search, enabled = query.isNotBlank() && !loading) { Text("Знайти") } },
+                trailingIcon = { TextButton(onClick = { search(false) }, enabled = query.isNotBlank() && !loading) { Text("Знайти") } },
                 singleLine = true
             )
             if (loading || importingId != null) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (cacheHit && results.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Показано кешований результат", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { search(true) }, enabled = !loading) { Text("Оновити") }
+                }
+            }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
             if (!loading && error == null && results.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -106,7 +132,7 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
                             result = result,
                             importing = importingId == result.canonical.id,
                             actionsEnabled = importingId == null,
-                            onAdd = { addToLibrary(result) },
+                            onAdd = { sourceId -> addToLibrary(result, sourceId) },
                             onOpenSource = ::openSource
                         )
                     }
@@ -121,10 +147,13 @@ private fun CatalogSeriesCard(
     result: CatalogSourceMatch,
     importing: Boolean,
     actionsEnabled: Boolean,
-    onAdd: () -> Unit,
+    onAdd: (String?) -> Unit,
     onOpenSource: (String) -> Unit
 ) {
     val bookAvailability = remember(result) { CatalogBookAvailabilityResolver.resolve(result) }
+    val rankedSources = remember(result) { CatalogAudioSourceSelector.rank(result) }
+    val best = rankedSources.firstOrNull()
+
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(result.series.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -143,11 +172,42 @@ private fun CatalogSeriesCard(
             if (result.series.books.isNotEmpty()) {
                 Text("Книги з підтвердженим аудіо: $availableBooks/${result.series.books.size}", style = MaterialTheme.typography.bodySmall)
             }
-            Button(
-                onClick = onAdd,
-                enabled = actionsEnabled && accepted > 0,
-                modifier = Modifier.fillMaxWidth()
-            ) { Text(if (importing) "Додаю…" else "Додати в бібліотеку") }
+
+            best?.let { candidate ->
+                if (!candidate.isComplete) {
+                    Text(
+                        "Найкраще джерело неповне: ${candidate.matchedBooks}/${candidate.totalBooks} книг. Відсутні книги залишаться поза імпортом, доки не знайдеться інше джерело.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                }
+                Button(
+                    onClick = { onAdd(null) },
+                    enabled = actionsEnabled,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (importing) "Додаю…"
+                        else "Додати найкраще джерело (${candidate.matchedBooks}/${candidate.totalBooks})"
+                    )
+                }
+            }
+
+            if (rankedSources.size > 1) {
+                Text("Вибрати аудіоджерело", fontWeight = FontWeight.Medium)
+                rankedSources.forEach { candidate ->
+                    val finding = candidate.finding
+                    val percent = (finding.confidence * 100).toInt()
+                    OutlinedButton(
+                        onClick = { onAdd(finding.sourceId) },
+                        enabled = actionsEnabled,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("${finding.sourceId} • ${candidate.matchedBooks}/${candidate.totalBooks} книг • $percent%")
+                    }
+                }
+            }
+
             HorizontalDivider()
             bookAvailability.forEach { availability ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {

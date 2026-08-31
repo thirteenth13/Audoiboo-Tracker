@@ -1,6 +1,9 @@
 package org.audoiboo.tracker.plugin
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.supervisorScope
 
 /** A normalized catalog series assembled from bibliographic providers before audio-source matching. */
 data class CatalogSeries(
@@ -102,30 +105,44 @@ class CatalogDiscoveryEngine(
 
     suspend fun discoverByAuthor(authorQuery: String): List<CatalogDiscoveryResult> {
         if (authorQuery.isBlank()) return emptyList()
-        val results = mutableListOf<CatalogDiscoveryResult>()
-        registry.withCapability(SourceCapability.AUTHOR_CATALOG).forEach pluginLoop@ { plugin ->
-            val provider = plugin as? AuthorCatalogProvider ?: return@pluginLoop
-            val authors = try {
-                provider.searchAuthors(authorQuery, maxAuthorsPerProvider)
-            } catch (t: Throwable) {
-                if (t is CancellationException) throw t
-                return@pluginLoop
-            }
-            authors.take(maxAuthorsPerProvider).forEach authorLoop@ { author ->
-                if (author.providerId != plugin.descriptor.id) return@authorLoop
-                val catalog = try {
-                    provider.loadAuthorCatalog(author, maxBooksPerAuthor)
-                } catch (t: Throwable) {
-                    if (t is CancellationException) throw t
-                    return@authorLoop
+        val results = supervisorScope {
+            registry.withCapability(SourceCapability.AUTHOR_CATALOG).mapNotNull { plugin ->
+                val provider = plugin as? AuthorCatalogProvider ?: return@mapNotNull null
+                async {
+                    discoverProvider(plugin, provider, authorQuery)
                 }
-                results += CatalogSeriesHeuristics.group(catalog)
-            }
+            }.awaitAll().flatten()
         }
         return results.sortedWith(
             compareByDescending<CatalogDiscoveryResult> { it.author.confidence }
                 .thenByDescending { it.series.size }
                 .thenBy { it.author.name.lowercase() }
         )
+    }
+
+    private suspend fun discoverProvider(
+        plugin: SourcePlugin,
+        provider: AuthorCatalogProvider,
+        authorQuery: String
+    ): List<CatalogDiscoveryResult> {
+        val authors = try {
+            provider.searchAuthors(authorQuery, maxAuthorsPerProvider)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            return emptyList()
+        }
+        return supervisorScope {
+            authors.take(maxAuthorsPerProvider).mapNotNull { author ->
+                if (author.providerId != plugin.descriptor.id) return@mapNotNull null
+                async {
+                    try {
+                        CatalogSeriesHeuristics.group(provider.loadAuthorCatalog(author, maxBooksPerAuthor))
+                    } catch (t: Throwable) {
+                        if (t is CancellationException) throw t
+                        null
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
     }
 }

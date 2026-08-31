@@ -1,0 +1,11 @@
+{
+  "operation": "seriesSearch",
+  "searchUrl": "https://izib.uk/search?q={query}&p=1",
+  "maxResults": 10,
+  "items": {
+    "item": "#books_list > div > div",
+    "title": "a[href^='/art']:not(:has(>img))",
+    "link": "a[href^='/art']:not(:has(>img))@href",
+    "author": "a[href^='/author']"
+  }
+}

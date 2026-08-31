@@ -1,6 +1,9 @@
 package org.audoiboo.tracker.plugin
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.supervisorScope
 
 /** A source candidate linked back to one canonical series by the explainable matcher. */
 data class SeriesDiscoveryFinding(
@@ -14,7 +17,8 @@ data class SeriesDiscoveryFinding(
 
 /**
  * Searches all enabled SERIES_SEARCH providers for alternate observations of a canonical series.
- * Individual plugin failures are isolated so a broken source cannot abort discovery on other sources.
+ * Independent sources run concurrently, while queries and candidate hydration stay sequential inside
+ * each source to avoid flooding any one site. Individual plugin failures remain isolated.
  */
 class SourceDiscoveryEngine(
     private val registry: SourcePluginRegistry,
@@ -43,71 +47,84 @@ class SourceDiscoveryEngine(
                 .forEach { add(baseQuery.copy(title = it)) }
         }.distinctBy { SourceIdentityMatcher.normalizeTitle(it.title) }
 
-        val findings = mutableListOf<SeriesDiscoveryFinding>()
-
-        registry.withCapability(SourceCapability.SERIES_SEARCH)
-            .filterNot { it.descriptor.id == excludeSourceId }
-            .forEach pluginLoop@ { plugin ->
-                val search = plugin as? SeriesSearchProvider ?: return@pluginLoop
-                val candidates = mutableListOf<SeriesCandidate>()
-                searchQueries.forEach queryLoop@ { query ->
-                    val hits = try {
-                        search.searchSeries(query)
-                    } catch (t: Throwable) {
-                        if (t is CancellationException) throw t
-                        return@queryLoop
-                    }
-                    hits.forEach { hit ->
-                        if (candidates.none { SourceKeys.normalizeUrl(it.series.url) == SourceKeys.normalizeUrl(hit.series.url) }) {
-                            candidates += hit
-                        }
-                    }
-                    if (candidates.size >= maxCandidatesPerSource) return@queryLoop
+        val findings = supervisorScope {
+            registry.withCapability(SourceCapability.SERIES_SEARCH)
+                .filterNot { it.descriptor.id == excludeSourceId }
+                .mapNotNull { plugin ->
+                    val search = plugin as? SeriesSearchProvider ?: return@mapNotNull null
+                    async { discoverSource(plugin, search, canonical, searchQueries) }
                 }
-
-                candidates.take(maxCandidatesPerSource).forEach candidateLoop@ { candidate ->
-                    if (candidate.series.sourceId != plugin.descriptor.id) return@candidateLoop
-                    val provider = plugin as? SeriesProvider
-                    val hydrated = if (provider != null) {
-                        try {
-                            provider.resolveSeries(candidate.series.url) ?: candidate.series
-                        } catch (t: Throwable) {
-                            if (t is CancellationException) throw t
-                            candidate.series
-                        }
-                    } else candidate.series
-                    if (hydrated.sourceId != plugin.descriptor.id) return@candidateLoop
-
-                    val books = if (provider != null) {
-                        try {
-                            provider.loadSeriesBooks(hydrated)
-                                .filter { it.sourceId == plugin.descriptor.id }
-                        } catch (t: Throwable) {
-                            if (t is CancellationException) throw t
-                            emptyList()
-                        }
-                    } else emptyList()
-
-                    val match = SourceIdentityMatcher.bestSeriesMatch(
-                        incoming = hydrated,
-                        incomingBooks = books,
-                        candidates = listOf(canonical)
-                    ) ?: return@candidateLoop
-                    if (match.disposition != MatchDisposition.REJECT) {
-                        findings += SeriesDiscoveryFinding(
-                            sourceId = plugin.descriptor.id,
-                            series = hydrated,
-                            books = books,
-                            confidence = match.confidence,
-                            disposition = match.disposition,
-                            evidence = match.evidence
-                        )
-                    }
-                }
-            }
+                .awaitAll()
+                .flatten()
+        }
 
         return findings
             .distinctBy { it.sourceId to SourceKeys.normalizeUrl(it.series.url) }
             .sortedWith(compareByDescending<SeriesDiscoveryFinding> { it.confidence }.thenBy { it.sourceId })
+    }
+
+    private suspend fun discoverSource(
+        plugin: SourcePlugin,
+        search: SeriesSearchProvider,
+        canonical: CanonicalSeriesMatchInput,
+        searchQueries: List<SeriesSearchQuery>
+    ): List<SeriesDiscoveryFinding> {
+        val candidates = mutableListOf<SeriesCandidate>()
+        searchQueries.forEach queryLoop@ { query ->
+            val hits = try {
+                search.searchSeries(query)
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                return@queryLoop
+            }
+            hits.forEach { hit ->
+                if (candidates.none { SourceKeys.normalizeUrl(it.series.url) == SourceKeys.normalizeUrl(hit.series.url) }) {
+                    candidates += hit
+                }
+            }
+            if (candidates.size >= maxCandidatesPerSource) return@queryLoop
+        }
+
+        val findings = mutableListOf<SeriesDiscoveryFinding>()
+        candidates.take(maxCandidatesPerSource).forEach candidateLoop@ { candidate ->
+            if (candidate.series.sourceId != plugin.descriptor.id) return@candidateLoop
+            val provider = plugin as? SeriesProvider
+            val hydrated = if (provider != null) {
+                try {
+                    provider.resolveSeries(candidate.series.url) ?: candidate.series
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                    candidate.series
+                }
+            } else candidate.series
+            if (hydrated.sourceId != plugin.descriptor.id) return@candidateLoop
+
+            val books = if (provider != null) {
+                try {
+                    provider.loadSeriesBooks(hydrated)
+                        .filter { it.sourceId == plugin.descriptor.id }
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                    emptyList()
+                }
+            } else emptyList()
+
+            val match = SourceIdentityMatcher.bestSeriesMatch(
+                incoming = hydrated,
+                incomingBooks = books,
+                candidates = listOf(canonical)
+            ) ?: return@candidateLoop
+            if (match.disposition != MatchDisposition.REJECT) {
+                findings += SeriesDiscoveryFinding(
+                    sourceId = plugin.descriptor.id,
+                    series = hydrated,
+                    books = books,
+                    confidence = match.confidence,
+                    disposition = match.disposition,
+                    evidence = match.evidence
+                )
+            }
+        }
+        return findings
     }
 }

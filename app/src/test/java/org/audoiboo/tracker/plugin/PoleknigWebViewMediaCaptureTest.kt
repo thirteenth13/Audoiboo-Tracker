@@ -1,5 +1,6 @@
 package org.audoiboo.tracker.plugin
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -10,11 +11,33 @@ class PoleknigWebViewMediaCaptureTest {
     }
 
     @Test fun acceptsFilesResolver() {
-        assertTrue(PoleknigWebViewMediaCapture.isResolverOrAudio("https://poleknig.com/files/123456"))
+        assertTrue(PoleknigWebViewMediaCapture.isResolverUrl("https://poleknig.com/files/123456"))
     }
 
     @Test fun acceptsExternalAudioAfterResolver() {
+        assertTrue(PoleknigWebViewMediaCapture.isDirectAudio("https://cdn.example.net/audio/track-01.mp3"))
         assertTrue(PoleknigWebViewMediaCapture.isResolverOrAudio("https://cdn.example.net/audio/track-01.mp3"))
+    }
+
+    @Test fun prefersResolvedAudioOverResolverEndpoint() {
+        assertEquals(
+            listOf("https://cdn.example.net/audio/track-01.mp3"),
+            PoleknigWebViewMediaCapture.selectResolvedMedia(
+                listOf(
+                    "https://poleknig.com/files/123456",
+                    "https://cdn.example.net/audio/track-01.mp3"
+                )
+            )
+        )
+    }
+
+    @Test fun fallsBackToResolverWhenNoAudioWasExposed() {
+        assertEquals(
+            listOf("https://poleknig.com/files/123456"),
+            PoleknigWebViewMediaCapture.selectResolvedMedia(
+                listOf("https://poleknig.com/files/123456")
+            )
+        )
     }
 
     @Test fun rejectsUnrelatedPoleknigPage() {

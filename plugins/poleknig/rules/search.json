@@ -1,0 +1,10 @@
+{
+  "operation": "seriesSearch",
+  "searchUrl": "https://poleknig.com/?p=1&q={query}",
+  "maxResults": 12,
+  "items": {
+    "item": "a[href*='/books/']",
+    "title": "@text",
+    "link": "@href"
+  }
+}

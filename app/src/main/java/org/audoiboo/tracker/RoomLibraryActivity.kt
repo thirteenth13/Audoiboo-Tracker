@@ -143,6 +143,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
                     } else if (tab == RoomLibraryTab.SERIES) IconButton(onClick = { addUrl = ""; showAdd = true }) { Icon(Icons.Filled.Add, "Додати серію") }
                     IconButton(onClick = { activity.startActivity(Intent(activity, PlayerActivity::class.java)) }) { Icon(Icons.Filled.Headphones, "Плеєр") }
                     IconButton(onClick = { openSourceBrowser() }) { Icon(Icons.Filled.Public, "Браузер джерел") }
+                    IconButton(onClick = { activity.startActivity(Intent(activity, CatalogDiscoveryActivity::class.java)) }) { Icon(Icons.Filled.Search, "Каталог авторів") }
                     IconButton(onClick = { activity.startActivity(Intent(activity, SettingsActivity::class.java)) }) { Icon(Icons.Filled.Settings, "Налаштування") }
                 }
             )

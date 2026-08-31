@@ -133,7 +133,7 @@ class SourcePluginManager(
 
 object BuiltInSourcePluginManager {
     val instance: SourcePluginManager by lazy {
-        SourcePluginManager(listOf(AudiobooSourcePlugin, OpenLibraryMetadataPlugin))
+        SourcePluginManager(listOf(AudiobooSourcePlugin, OpenLibraryMetadataPlugin, GoogleBooksCatalogPlugin))
     }
 
     val registry: SourcePluginRegistry

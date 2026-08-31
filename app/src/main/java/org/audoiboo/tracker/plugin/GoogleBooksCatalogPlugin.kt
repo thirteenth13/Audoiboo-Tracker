@@ -101,14 +101,14 @@ object GoogleBooksCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBo
         val inferred = CatalogSeriesHeuristics.infer(title)
         val seriesInfo = info.optJSONObject("seriesInfo")
         val orderNumber = seriesInfo?.optJSONArray("volumeSeries")?.let { array ->
-            (0 until array.length()).mapNotNull { index -> array.optJSONObject(index)?.optDouble("orderNumber", Double.NaN)?.takeUnless(Double::isNaN) }.minOrNull()
+            (0 until array.length()).mapNotNull { index ->
+                array.optJSONObject(index)?.optDouble("orderNumber", Double.NaN)?.takeUnless(Double::isNaN)
+            }.minOrNull()
         }
         val displayNumber = seriesInfo?.optString("bookDisplayNumber")?.trim()?.replace(',', '.')?.toDoubleOrNull()
-        val seriesTitle = seriesInfo?.optJSONArray("volumeSeries")?.let { array ->
-            (0 until array.length()).firstNotNullOfOrNull { index -> array.optJSONObject(index)?.optString("seriesId")?.trim()?.takeIf(String::isNotBlank) }
-        }
         val cover = info.optJSONObject("imageLinks")?.let { links ->
-            listOf("extraLarge", "large", "medium", "thumbnail", "smallThumbnail").firstNotNullOfOrNull { key -> links.optString(key).trim().takeIf(String::isNotBlank) }
+            listOf("extraLarge", "large", "medium", "thumbnail", "smallThumbnail")
+                .firstNotNullOfOrNull { key -> links.optString(key).trim().takeIf(String::isNotBlank) }
         }?.replace("http://", "https://")
         val year = Regex("^(\\d{4})").find(info.optString("publishedDate"))?.groupValues?.getOrNull(1)?.toIntOrNull()
         return CatalogBook(
@@ -116,7 +116,9 @@ object GoogleBooksCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBo
             remoteId = id,
             title = title,
             authors = authors,
-            seriesTitles = seriesTitle?.let(::listOf) ?: inferred?.let { listOf(it.title) }.orEmpty(),
+            // Google exposes seriesId as a machine identifier, not a human-readable series title.
+            // Keep the existing title heuristic for display/matching and use seriesInfo only for order.
+            seriesTitles = inferred?.let { listOf(it.title) }.orEmpty(),
             seriesNumber = orderNumber ?: displayNumber ?: inferred?.number,
             firstPublishYear = year,
             coverUrl = cover

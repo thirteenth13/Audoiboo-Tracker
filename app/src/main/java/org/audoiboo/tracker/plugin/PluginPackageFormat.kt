@@ -108,7 +108,9 @@ object PluginDownloadPolicy {
         if (scheme != "http" && scheme != "https") return false
         if (uri.userInfo != null) return false
         val host = uri.host?.lowercase()?.trimEnd('.') ?: return false
-        return host in manifest.permissions.effectiveDownloadHosts
+        return manifest.permissions.effectiveDownloadHosts.any { allowed ->
+            host == allowed || host.endsWith(".$allowed")
+        }
     }
 
     fun filter(manifest: PluginPackageManifest, candidates: List<DownloadCandidate>): List<DownloadCandidate> =

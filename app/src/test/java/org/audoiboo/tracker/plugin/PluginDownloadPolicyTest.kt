@@ -29,6 +29,26 @@ class PluginDownloadPolicyTest {
     }
 
     @Test
+    fun allowsSubdomainOfDeclaredDownloadHost() {
+        assertTrue(
+            PluginDownloadPolicy.isAllowed(
+                manifest,
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://u11.cdn.example/audio/book.mp3")
+            )
+        )
+    }
+
+    @Test
+    fun rejectsLookalikeDownloadHost() {
+        assertFalse(
+            PluginDownloadPolicy.isAllowed(
+                manifest,
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://evilcdn.example/audio/book.mp3")
+            )
+        )
+    }
+
+    @Test
     fun rejectsUndeclaredDownloadHost() {
         assertFalse(
             PluginDownloadPolicy.isAllowed(
@@ -79,6 +99,12 @@ class PluginDownloadPolicyTest {
             PluginDownloadPolicy.isAllowed(
                 legacy,
                 DownloadCandidate(DownloadType.DIRECT_FILE, "https://source.example/book.mp3")
+            )
+        )
+        assertTrue(
+            PluginDownloadPolicy.isAllowed(
+                legacy,
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://media.source.example/book.mp3")
             )
         )
         assertFalse(

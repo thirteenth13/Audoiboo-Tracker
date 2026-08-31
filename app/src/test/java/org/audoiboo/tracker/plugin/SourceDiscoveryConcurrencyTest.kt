@@ -23,7 +23,10 @@ class SourceDiscoveryConcurrencyTest {
         val elapsedMs = (System.nanoTime() - started) / 1_000_000
 
         assertEquals(setOf("audio-one", "audio-two"), findings.map { it.sourceId }.toSet())
-        assertTrue("audio sources ran too slowly: ${elapsedMs}ms", elapsedMs < 1050)
+        // Each source performs three delayed stages (search, resolve, load). Two sources in
+        // series take roughly 1320 ms; concurrent source pipelines take roughly 660 ms.
+        // Keep enough CI headroom without making the assertion so loose that serial execution passes.
+        assertTrue("audio sources ran too slowly: ${elapsedMs}ms", elapsedMs < 1100)
     }
 
     @Test

@@ -9,27 +9,28 @@ class GoogleBooksCatalogPluginTest {
     @Test
     fun parsesAuthorBooksAndUsesSeriesOrderWhenAvailable() {
         val author = CatalogAuthor("google-books", "roman-prokofev", "Roman Prokofiev")
-        val json = JSONObject(
-            """
-            {
-              "items": [
-                {
-                  "id": "volume-10",
-                  "volumeInfo": {
-                    "title": "Star Blood. Book 10",
-                    "authors": ["Roman Prokofiev"],
-                    "publishedDate": "2025-04-12",
-                    "imageLinks": {"thumbnail": "http://books.google.com/cover.jpg"},
-                    "seriesInfo": {
-                      "bookDisplayNumber": "10",
-                      "volumeSeries": [{"seriesId": "series-1", "orderNumber": 10}]
-                    }
-                  }
+        val json = JSONObject().apply {
+            put("items", org.json.JSONArray().put(
+                JSONObject().apply {
+                    put("id", "volume-10")
+                    put("volumeInfo", JSONObject().apply {
+                        put("title", "Star Blood. Book 10")
+                        put("authors", org.json.JSONArray().put("Roman Prokofiev"))
+                        put("publishedDate", "2025-04-12")
+                        put("imageLinks", JSONObject().put("thumbnail", "http://books.google.com/cover.jpg"))
+                        put("seriesInfo", JSONObject().apply {
+                            put("bookDisplayNumber", "10")
+                            put("volumeSeries", org.json.JSONArray().put(
+                                JSONObject().apply {
+                                    put("seriesId", "series-1")
+                                    put("orderNumber", 10)
+                                }
+                            ))
+                        })
+                    })
                 }
-              ]
-            }
-            """.trimIndent()
-        )
+            ))
+        }
 
         val books = GoogleBooksCatalogPlugin.parseBooks(author, json)
 
@@ -44,21 +45,17 @@ class GoogleBooksCatalogPluginTest {
     @Test
     fun ignoresClearlyDifferentAuthors() {
         val author = CatalogAuthor("google-books", "author-a", "Author A")
-        val json = JSONObject(
-            """
-            {
-              "items": [
-                {
-                  "id": "wrong",
-                  "volumeInfo": {
-                    "title": "Cycle 1",
-                    "authors": ["Completely Different Person"]
-                  }
+        val json = JSONObject().apply {
+            put("items", org.json.JSONArray().put(
+                JSONObject().apply {
+                    put("id", "wrong")
+                    put("volumeInfo", JSONObject().apply {
+                        put("title", "Cycle 1")
+                        put("authors", org.json.JSONArray().put("Completely Different Person"))
+                    })
                 }
-              ]
-            }
-            """.trimIndent()
-        )
+            ))
+        }
 
         assertTrue(GoogleBooksCatalogPlugin.parseBooks(author, json).isEmpty())
     }

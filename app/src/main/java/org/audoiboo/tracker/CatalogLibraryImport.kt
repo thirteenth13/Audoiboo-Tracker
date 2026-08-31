@@ -1,6 +1,7 @@
 package org.audoiboo.tracker
 
 import android.content.Context
+import org.audoiboo.tracker.plugin.CatalogAudioSourceSelector
 import org.audoiboo.tracker.plugin.CatalogSourceMatch
 import org.audoiboo.tracker.plugin.MatchDisposition
 
@@ -16,9 +17,7 @@ internal sealed interface CatalogLibraryImportResult {
  */
 internal object CatalogLibraryImport {
     suspend fun add(context: Context, match: CatalogSourceMatch): CatalogLibraryImportResult {
-        val accepted = match.sources
-            .filter { it.disposition == MatchDisposition.AUTO_ACCEPT }
-            .maxByOrNull { it.confidence }
+        val accepted = CatalogAudioSourceSelector.best(match)?.finding
 
         if (accepted != null) {
             val synced = RoomSeriesSync.sync(context, accepted.series.url)

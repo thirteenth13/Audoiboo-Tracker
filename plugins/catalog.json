@@ -13,11 +13,11 @@
     {
       "id": "knigavuhe",
       "name": "Knigavuhe",
-      "version": 4,
+      "version": 5,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-4.abplugin",
-      "sha256": "e8a114c4d85d45d66e82edded1adacbd624a213124ca864bf7d23ef6e2ccd5c4",
-      "description": "Цикли й книги Knigavuhe; WebView підтримує CDN-піддомени knigavuhe.org, а декларативний fallback витягує аудіо як з href, так і з src. Автоматичний SERIES_SEARCH поки не входить до пакета."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-5.abplugin",
+      "sha256": "a6e6277fd8e493bb87a350e78950b515075927bb766fe2405444c158cfc99d56",
+      "description": "Цикли, пошук серій та книги Knigavuhe; SERIES_SEARCH використовує публічний пошук /search/, підтримує актуальні /series/ URL і декларативний href/src fallback для аудіо."
     },
     {
       "id": "poleknig",

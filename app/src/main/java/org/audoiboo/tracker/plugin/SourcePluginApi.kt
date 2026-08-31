@@ -158,6 +158,14 @@ interface SeriesSearchProvider {
     suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate>
 }
 
+/**
+ * Direct canonical-series discovery for sources that cannot expose a conventional text search.
+ * Implementations may use author indexes, source-specific catalogs, or another bounded lookup path.
+ */
+interface SeriesDiscoveryProvider {
+    suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate>
+}
+
 interface AuthorCatalogProvider {
     suspend fun searchAuthors(query: String, limit: Int = 5): List<CatalogAuthor>
 

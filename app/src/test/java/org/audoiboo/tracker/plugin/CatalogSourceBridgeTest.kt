@@ -23,32 +23,47 @@ class CatalogSourceBridgeTest {
         assertEquals("Star Blood", canonical.title)
         assertEquals(listOf(1.0, 2.0), canonical.books.map { it.number })
         assertTrue(canonical.id.contains("catalog:a1:star blood"))
+        assertEquals(listOf("catalog:b1", "catalog:b2"), canonical.books.map { it.id })
     }
 
     @Test
-    fun prefersStrongerDuplicateSeriesFromAnotherCatalogProvider() {
+    fun federatesDuplicateSeriesAcrossCatalogProviders() {
         val weak = CatalogDiscoveryResult(
             providerId = "weak",
-            author = CatalogAuthor("weak", "a1", "Author A", confidence = 0.7f),
+            author = CatalogAuthor(
+                "weak",
+                "a1",
+                "Roman Prokofiev",
+                confidence = 0.7f
+            ),
             series = listOf(
                 CatalogSeries(
                     title = "Star Blood",
-                    authors = listOf("Author A"),
-                    books = listOf(CatalogBook("weak", "b1", "Book One", listOf("Author A")))
+                    authors = listOf("Roman Prokofiev"),
+                    books = listOf(
+                        CatalogBook("weak", "b1", "Book One", listOf("Roman Prokofiev"), seriesNumber = 1.0),
+                        CatalogBook("weak", "b3", "Book Three", listOf("Roman Prokofiev"), seriesNumber = 3.0)
+                    )
                 )
             ),
             standaloneBooks = emptyList()
         )
         val strong = CatalogDiscoveryResult(
             providerId = "strong",
-            author = CatalogAuthor("strong", "a9", "author a", confidence = 0.95f),
+            author = CatalogAuthor(
+                "strong",
+                "a9",
+                "Роман Прокофьев",
+                alternativeNames = listOf("Roman Prokofiev"),
+                confidence = 0.95f
+            ),
             series = listOf(
                 CatalogSeries(
                     title = "STAR BLOOD",
-                    authors = listOf("Author A"),
+                    authors = listOf("Роман Прокофьев"),
                     books = listOf(
-                        CatalogBook("strong", "b1", "Book One", listOf("Author A"), seriesNumber = 1.0),
-                        CatalogBook("strong", "b2", "Book Two", listOf("Author A"), seriesNumber = 2.0)
+                        CatalogBook("strong", "s1", "Book One", listOf("Роман Прокофьев"), seriesNumber = 1.0, coverUrl = "https://example.org/1.jpg"),
+                        CatalogBook("strong", "s2", "Book Two", listOf("Роман Прокофьев"), seriesNumber = 2.0)
                     )
                 )
             ),
@@ -58,8 +73,35 @@ class CatalogSourceBridgeTest {
         val selected = CatalogSeriesDeduplicationPolicy.select(listOf(weak, strong))
 
         assertEquals(1, selected.size)
-        assertEquals("strong", selected.single().providerId)
-        assertEquals(2, selected.single().series.books.size)
+        val merged = selected.single()
+        assertEquals("strong", merged.providerId)
+        assertEquals(listOf(1.0, 2.0, 3.0), merged.series.books.map { it.seriesNumber })
+        assertEquals(listOf("strong", "strong", "weak"), merged.series.books.map { it.providerId })
+        assertTrue(merged.series.authors.contains("Roman Prokofiev"))
+        assertTrue(merged.series.authors.contains("Роман Прокофьев"))
+
+        val canonical = CatalogCanonicalMapper.toCanonical(merged.providerId, merged.author, merged.series)
+        assertEquals(listOf("strong:s1", "strong:s2", "weak:b3"), canonical.books.map { it.id })
+    }
+
+    @Test
+    fun keepsSameSeriesTitleForDifferentAuthorsSeparate() {
+        val first = CatalogDiscoveryResult(
+            providerId = "one",
+            author = CatalogAuthor("one", "a1", "Author One"),
+            series = listOf(CatalogSeries("Legacy", listOf("Author One"), emptyList())),
+            standaloneBooks = emptyList()
+        )
+        val second = CatalogDiscoveryResult(
+            providerId = "two",
+            author = CatalogAuthor("two", "a2", "Author Two"),
+            series = listOf(CatalogSeries("Legacy", listOf("Author Two"), emptyList())),
+            standaloneBooks = emptyList()
+        )
+
+        val selected = CatalogSeriesDeduplicationPolicy.select(listOf(first, second))
+
+        assertEquals(2, selected.size)
     }
 
     @Test

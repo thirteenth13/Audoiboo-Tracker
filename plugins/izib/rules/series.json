@@ -2,6 +2,7 @@
   "operation": "seriesLookup",
   "series": {
     "title": "h1, h2, .book-title, .title",
+    "followLink": "a[href*='/serie']@href || a[href*='/series']@href",
     "titleRegex": "(?i)^(?:серия|серія|серії)\\s*[«\"“]?(.+?)[»\"”]?\\s*$",
     "books": {
       "item": "a[href*='/art']",

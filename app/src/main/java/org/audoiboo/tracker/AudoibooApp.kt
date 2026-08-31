@@ -58,12 +58,14 @@ class AudoibooApp : Application() {
         PlayerStateStore.initialize(this)
         DeviceWebViewResolutionRuntime.initialize(this)
 
+        // Source discovery must see enabled package plugins from the first Activity frame.
+        // initialize() is idempotent, so later callers remain safe and cheap.
+        runCatching { PluginPackageRuntime.initialize(filesDir) }
+
         registerActivityLifecycleCallbacks(legacyLifecycle)
         ContinueListeningWidget.updateAll(this)
 
         appScope.launch {
-            // Rebuild durable package metadata before any future sandbox runtime is allowed to use it.
-            runCatching { PluginPackageRuntime.initialize(filesDir) }
             // Tracking series are the only existing user data that still needs legacy import support.
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
             // Rebind stale MediaStore/SAF URIs after reboot, provider changes or an app restore.

@@ -14,7 +14,7 @@ class DeclarativeSourcePlugin(
     private val runtime: DeclarativePluginRuntime,
     private val onRuntimeSuccess: (String, Int) -> Unit = { _, _ -> },
     private val onRuntimeFailure: (String, Int, Throwable) -> Unit = { _, _, _ -> }
-) : SourcePlugin, SeriesProvider, BookProvider, SeriesSearchProvider, DownloadResolver {
+) : SourcePlugin, SeriesProvider, BookProvider, SeriesSearchProvider, SeriesDiscoveryProvider, DownloadResolver {
     override val descriptor: SourceDescriptor = SourceDescriptor(
         id = manifest.id,
         name = manifest.name,
@@ -117,6 +117,15 @@ class DeclarativeSourcePlugin(
     override suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate> {
         if (SourceCapability.SERIES_SEARCH !in manifest.capabilities) return emptyList()
         return guarded { runtime.searchSeries(manifest, packageDir, query) }
+    }
+
+    override suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
+        if (SourceCapability.SERIES_DISCOVERY !in manifest.capabilities) return emptyList()
+        // Izib exposes a stable authors directory and author pages, but no verified public generic
+        // search endpoint. The runtime therefore performs a bounded author-directory lookup and
+        // returns only series links whose visible title matches the canonical series.
+        if (manifest.id != "izib") return emptyList()
+        return guarded { runtime.discoverIzibSeries(manifest, canonical) }
     }
 
     override suspend fun resolveDownloads(book: SourceBook): List<DownloadCandidate> {

@@ -1,7 +1,7 @@
 {
   "id": "izib",
   "name": "Izib",
-  "version": 2,
+  "version": 3,
   "apiVersion": 1,
   "runtime": "DECLARATIVE",
   "hosts": [
@@ -10,6 +10,7 @@
   ],
   "capabilities": [
     "SERIES_LOOKUP",
+    "SERIES_DISCOVERY",
     "BOOK_LOOKUP",
     "DOWNLOAD_RESOLUTION"
   ],

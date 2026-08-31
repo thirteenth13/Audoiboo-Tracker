@@ -3,6 +3,6 @@
   "type": "DIRECT_FILE",
   "items": {
     "item": "a[href*=.mp3], audio[src*=.mp3], source[src*=.mp3]",
-    "link": "@href"
+    "link": "@href || @src"
   }
 }

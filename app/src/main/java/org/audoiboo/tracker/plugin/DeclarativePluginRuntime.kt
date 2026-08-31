@@ -215,6 +215,63 @@ class DeclarativePluginRuntime(
         return results
     }
 
+    /**
+     * Izib has a stable authors directory and author pages even though no stable generic search URL
+     * was verified. This bounded fallback uses the first canonical author: it scans only a small
+     * number of directory pages for that author's link, then reads that one author page and returns
+     * matching /serie links. All requests still pass through the normal sandbox host/budget checks.
+     */
+    fun discoverIzibSeries(
+        manifest: PluginPackageManifest,
+        canonical: CanonicalSeriesMatchInput,
+        maxAuthorPages: Int = 12
+    ): List<SeriesCandidate> {
+        requireCapability(manifest, SourceCapability.SERIES_DISCOVERY)
+        if (manifest.id != "izib") return emptyList()
+        val author = canonical.authors.firstOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val expectedAuthor = SourceIdentityMatcher.normalizeTitle(author)
+        val expectedSeries = SourceIdentityMatcher.normalizeTitle(canonical.title)
+        if (expectedAuthor.isBlank() || expectedSeries.isBlank()) return emptyList()
+        val session = sandbox.open(manifest)
+
+        var authorUrl: String? = null
+        for (page in 1..maxAuthorPages.coerceIn(1, 12)) {
+            val url = if (page == 1) "https://pda.izib.uk/authors" else "https://pda.izib.uk/authors?p=$page"
+            val response = session.httpGet(url)
+            if (response.statusCode !in 200..299) continue
+            val document = Jsoup.parse(response.body, response.finalUrl)
+            authorUrl = document.select("a[href*='/author']")
+                .firstOrNull { link -> SourceIdentityMatcher.normalizeTitle(link.text()) == expectedAuthor }
+                ?.let { link -> resolveUrl(link, link.attr("href")) }
+            if (authorUrl != null) break
+        }
+        val resolvedAuthorUrl = authorUrl ?: return emptyList()
+        val authorResponse = session.httpGet(resolvedAuthorUrl)
+        if (authorResponse.statusCode !in 200..299) return emptyList()
+        val authorDocument = Jsoup.parse(authorResponse.body, authorResponse.finalUrl)
+        val results = authorDocument.select("a[href*='/serie']")
+            .asSequence()
+            .mapNotNull { link ->
+                val title = link.text().trim().takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val normalized = SourceIdentityMatcher.normalizeTitle(title)
+                if (normalized != expectedSeries) return@mapNotNull null
+                val href = link.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                SeriesCandidate(
+                    SourceSeries(
+                        sourceId = manifest.id,
+                        url = resolveUrl(link, href),
+                        title = title,
+                        authors = listOf(SourceAuthor(author, resolvedAuthorUrl))
+                    )
+                )
+            }
+            .distinctBy { SourceKeys.normalizeUrl(it.series.url) }
+            .take(5)
+            .toList()
+        session.requireOutputSize(results.size)
+        return results
+    }
+
     fun resolveBook(manifest: PluginPackageManifest, packageDir: File, url: String): SourceBook? {
         requireCapability(manifest, SourceCapability.BOOK_LOOKUP)
         val spec = loadEntrypoint(manifest, packageDir, "bookLookup") as? DeclarativeEntrypoint.BookLookup
@@ -225,19 +282,18 @@ class DeclarativePluginRuntime(
         val document = Jsoup.parse(response.body, response.finalUrl)
         var title = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
         title = applyRegex(title, spec.titleRegex)
-        val author = spec.author?.let { extract(document, it) }?.takeIf { it.isNotBlank() }
-        val cover = spec.coverUrl?.let { extract(document, it) }
-            ?.takeIf { it.isNotBlank() }
-            ?.let { resolveUrl(document, it) }
         return SourceBook(
             sourceId = manifest.id,
             remoteId = spec.remoteId?.let { extract(document, it) }?.takeIf { it.isNotBlank() },
             url = response.finalUrl,
             title = title,
-            authors = author?.let { listOf(SourceAuthor(it)) }.orEmpty(),
+            authors = spec.author?.let { extract(document, it) }
+                ?.takeIf { it.isNotBlank() }
+                ?.let { listOf(SourceAuthor(it)) }
+                .orEmpty(),
             seriesTitle = spec.seriesTitle?.let { extract(document, it) }?.takeIf { it.isNotBlank() },
-            seriesNumber = spec.seriesNumber?.let { extract(document, it) }?.toDoubleOrNull(),
-            coverUrl = cover,
+            seriesNumber = spec.seriesNumber?.let { extract(document, it) }?.let(::parseNumber),
+            coverUrl = spec.coverUrl?.let { extract(document, it) }?.takeIf { it.isNotBlank() }?.let { resolveUrl(document, it) },
             description = spec.description?.let { extract(document, it) }?.takeIf { it.isNotBlank() }
         )
     }
@@ -250,14 +306,55 @@ class DeclarativePluginRuntime(
         val response = session.httpGet(url)
         if (response.statusCode !in 200..299) return emptyList()
         val document = Jsoup.parse(response.body, response.finalUrl)
-        val results = document.select(spec.items.item).mapNotNull { item ->
-            val link = extract(item, spec.items.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            DownloadCandidate(
-                type = spec.type,
-                url = resolveUrl(item, link),
-                fileName = spec.fileName?.let { extract(item, it) }?.takeIf { it.isNotBlank() }
-            )
-        }.distinctBy { it.url }
+        val results = document.select(spec.items.item)
+            .mapNotNull { item ->
+                val raw = extract(item, spec.items.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                DownloadCandidate(
+                    type = spec.type,
+                    url = resolveUrl(item, raw),
+                    fileName = spec.fileName
+                )
+            }
+            .distinctBy { it.url }
+        session.requireOutputSize(results.size)
+        return results
+    }
+
+    private fun loadSupplementRefs(
+        session: PluginSandboxSession,
+        seriesDocument: Element,
+        expectedTitle: String,
+        supplement: SeriesSupplement
+    ): List<SourceBookRef> {
+        val start = extract(seriesDocument, supplement.startLink)?.takeIf { it.isNotBlank() } ?: return emptyList()
+        var nextUrl: String? = resolveUrl(seriesDocument, start)
+        val expected = SourceIdentityMatcher.normalizeTitle(expectedTitle)
+        val results = mutableListOf<SourceBookRef>()
+        val visited = hashSetOf<String>()
+        repeat(supplement.maxPages) {
+            val current = nextUrl ?: return@repeat
+            if (!visited.add(current)) return@repeat
+            val response = session.httpGet(current)
+            if (response.statusCode !in 200..299) return@repeat
+            val document = Jsoup.parse(response.body, response.finalUrl)
+            document.select(supplement.items.item).forEach { item ->
+                val itemSeries = extract(item, supplement.seriesTitle)
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let(SourceIdentityMatcher::normalizeTitle)
+                if (itemSeries != expected) return@forEach
+                val link = extract(item, supplement.items.link)?.takeIf { it.isNotBlank() } ?: return@forEach
+                results += SourceBookRef(
+                    remoteId = supplement.items.remoteId?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
+                    url = resolveUrl(item, link),
+                    title = supplement.items.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
+                    number = supplement.items.number?.let { extract(item, it) }?.let(::parseNumber)
+                )
+            }
+            nextUrl = supplement.nextPage
+                ?.let { extract(document, it) }
+                ?.takeIf { it.isNotBlank() }
+                ?.let { resolveUrl(document, it) }
+        }
         session.requireOutputSize(results.size)
         return results
     }
@@ -269,91 +366,55 @@ class DeclarativePluginRuntime(
                 remoteId = fields.remoteId?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
                 url = resolveUrl(item, link),
                 title = fields.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
-                number = fields.number?.let { extract(item, it) }?.toDoubleOrNull()
+                number = fields.number?.let { extract(item, it) }?.let(::parseNumber)
             )
         }
 
-    private fun loadSupplementRefs(
-        session: PluginSandboxSession,
-        seriesDocument: Element,
-        expectedTitle: String,
-        spec: SeriesSupplement
-    ): List<SourceBookRef> {
-        val start = extract(seriesDocument, spec.startLink)?.takeIf { it.isNotBlank() } ?: return emptyList()
-        var nextUrl: String? = resolveUrl(seriesDocument, start)
-        val visited = linkedSetOf<String>()
-        val collected = mutableListOf<SourceBookRef>()
-        val expected = SourceIdentityMatcher.normalizeTitle(expectedTitle)
-        var pages = 0
-
-        while (!nextUrl.isNullOrBlank() && visited.add(nextUrl) && pages++ < spec.maxPages) {
-            val response = session.httpGet(nextUrl)
-            if (response.statusCode !in 200..299) break
-            val document = Jsoup.parse(response.body, response.finalUrl)
-            document.select(spec.items.item).forEach { item ->
-                val declared = extract(item, spec.seriesTitle)?.takeIf { it.isNotBlank() } ?: return@forEach
-                if (SourceIdentityMatcher.normalizeTitle(declared) != expected) return@forEach
-                val link = extract(item, spec.items.link)?.takeIf { it.isNotBlank() } ?: return@forEach
-                collected += SourceBookRef(
-                    remoteId = spec.items.remoteId?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
-                    url = resolveUrl(item, link),
-                    title = spec.items.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
-                    number = spec.items.number?.let { extract(item, it) }?.toDoubleOrNull()
-                )
-            }
-            nextUrl = spec.nextPage
-                ?.let { selector -> extract(document, selector)?.takeIf { it.isNotBlank() } }
-                ?.let { resolveUrl(document, it) }
-        }
-        return collected
-    }
-
     private fun loadEntrypoint(manifest: PluginPackageManifest, packageDir: File, name: String): DeclarativeEntrypoint {
-        if (manifest.runtime != PluginRuntime.DECLARATIVE) throw PluginSandboxViolation("Plugin is not declarative")
         val relative = manifest.entrypoints[name] ?: throw PluginSandboxViolation("Missing $name entrypoint")
         if (!PluginPackagePolicy.isSafeRelativePath(relative)) throw PluginSandboxViolation("Unsafe entrypoint path")
-        val root = packageDir.canonicalFile
-        val file = File(root, relative).canonicalFile
-        if (!file.toPath().startsWith(root.toPath()) || !file.isFile) throw PluginSandboxViolation("Entrypoint file is missing")
-        if (file.length() > 256L * 1024L) throw PluginSandboxViolation("Entrypoint file is too large")
-        return runCatching { decoder.decode(file.readText()) }
-            .getOrElse { throw PluginSandboxViolation("Invalid declarative entrypoint: ${it.message ?: "parse error"}") }
+        val root = packageDir.canonicalFile.toPath()
+        val file = File(packageDir, relative).canonicalFile
+        if (!file.toPath().startsWith(root)) throw PluginSandboxViolation("Entrypoint escapes package directory")
+        if (!file.isFile) throw PluginSandboxViolation("Entrypoint file is missing")
+        if (file.length() > MAX_PLUGIN_ENTRYPOINT_BYTES) throw PluginSandboxViolation("Entrypoint file exceeds size limit")
+        return decoder.decode(file.readText())
     }
 
     private fun requireCapability(manifest: PluginPackageManifest, capability: SourceCapability) {
-        if (capability !in manifest.capabilities) throw PluginSandboxViolation("Plugin does not declare $capability")
+        if (capability !in manifest.capabilities) throw PluginSandboxViolation("Plugin did not declare $capability")
     }
 
-    private fun applyRegex(value: String, regex: String?): String {
-        if (regex.isNullOrBlank()) return value
-        val match = runCatching { Regex(regex).find(value) }.getOrNull() ?: return value
-        return match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: match.value
-    }
-
-    private fun extract(root: Element, expression: String): String? {
-        return expression.split("||")
-            .asSequence()
-            .map(String::trim)
-            .filter(String::isNotEmpty)
-            .mapNotNull { extractSingle(root, it)?.takeIf(String::isNotBlank) }
-            .firstOrNull()
-    }
-
-    private fun extractSingle(root: Element, expression: String): String? {
-        val split = expression.lastIndexOf('@')
-        val selector = if (split >= 0) expression.substring(0, split) else expression
-        val attribute = if (split >= 0) expression.substring(split + 1) else null
-        val element = if (selector.isBlank()) root else root.selectFirst(selector) ?: return null
-        return when {
-            attribute == null -> element.text().trim()
-            attribute == "text" -> element.text().trim()
-            attribute.isBlank() -> null
-            else -> element.attr(attribute).trim()
+    private fun extract(element: Element, expression: String): String? {
+        val alternatives = expression.split("||").map { it.trim() }.filter { it.isNotBlank() }
+        alternatives.forEach { alternative ->
+            val (selector, attribute) = splitSelectorAttribute(alternative)
+            val target = if (selector.isBlank()) element else element.selectFirst(selector) ?: return@forEach
+            val value = when {
+                attribute == null -> target.text()
+                attribute.equals("text", true) -> target.text()
+                else -> target.attr(attribute)
+            }.trim()
+            if (value.isNotBlank()) return value
         }
+        return null
     }
 
-    private fun resolveUrl(element: Element, value: String): String {
-        if (value.startsWith("http://") || value.startsWith("https://")) return value
-        return java.net.URI(element.baseUri()).resolve(value).toString()
+    private fun splitSelectorAttribute(expression: String): Pair<String, String?> {
+        val marker = expression.lastIndexOf('@')
+        if (marker < 0) return expression to null
+        return expression.substring(0, marker).trim() to expression.substring(marker + 1).trim()
     }
+
+    private fun resolveUrl(element: Element, raw: String): String =
+        element.baseUri().let { base -> runCatching { java.net.URI(base).resolve(raw).toString() }.getOrDefault(raw) }
+
+    private fun applyRegex(value: String, pattern: String?): String {
+        if (pattern.isNullOrBlank()) return value.trim()
+        val match = Regex(pattern).find(value) ?: return value.trim()
+        return match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() }?.trim() ?: match.value.trim()
+    }
+
+    private fun parseNumber(value: String): Double? =
+        Regex("-?[0-9]+(?:[.,][0-9]+)?").find(value)?.value?.replace(',', '.')?.toDoubleOrNull()
 }

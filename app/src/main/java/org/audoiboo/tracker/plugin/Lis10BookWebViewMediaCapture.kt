@@ -23,16 +23,26 @@ class Lis10BookWebViewMediaCapture(private val context: Context) {
         require(isAllowedPage(pageUrl)) { "Unsupported Lis10book URL" }
         Handler(Looper.getMainLooper()).post {
             val found = Collections.synchronizedSet(LinkedHashSet<String>())
+            val foundKeys = Collections.synchronizedSet(LinkedHashSet<String>())
             val diagnostics = mutableListOf<String>()
             val finished = AtomicBoolean(false)
+            val armed = AtomicBoolean(false)
             val handler = Handler(Looper.getMainLooper())
             val webView = WebView(context)
 
             fun remember(raw: String?) {
+                if (!armed.get()) return
                 val url = raw?.trim().orEmpty()
-                if (isAudioUrl(url)) found += url
+                if (!isAudioUrl(url)) return
+                val key = mediaKey(url) ?: return
+                synchronized(found) {
+                    if (found.size >= MAX_MEDIA_URLS || !foundKeys.add(key)) return
+                    found += url
+                }
             }
-            fun snapshot(): List<String> = synchronized(found) { found.toList() }
+            fun snapshot(): List<String> = synchronized(found) {
+                found.toList().sortedWith(compareBy({ trackNumber(it) ?: Int.MAX_VALUE }, { it }))
+            }
             fun finish(reason: String) {
                 if (!finished.compareAndSet(false, true)) return
                 val media = snapshot()
@@ -74,7 +84,22 @@ class Lis10BookWebViewMediaCapture(private val context: Context) {
                     if (!isAllowedPage(url)) return
                     diagnostics += "loaded"
                     view.evaluateJavascript(INSTALL_HOOKS, null)
-                    listOf(1_000L, 3_500L, 6_500L, 10_000L, 14_000L).forEach { delay ->
+
+                    // Ignore media requests made while the page (ads/recommendations included) is
+                    // still bootstrapping. Once our hooks are installed, arm capture and actively
+                    // scan the actual audiobook player so late CDN requests are still observed.
+                    handler.postDelayed({
+                        if (!finished.get()) {
+                            synchronized(found) {
+                                found.clear()
+                                foundKeys.clear()
+                            }
+                            armed.set(true)
+                            diagnostics += "capture-armed"
+                            view.evaluateJavascript(ACTIVATE_AND_SCAN, null)
+                        }
+                    }, 900L)
+                    listOf(3_500L, 6_500L, 10_000L, 14_000L).forEach { delay ->
                         handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(ACTIVATE_AND_SCAN, null) }, delay)
                     }
                     handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("captured") }, 18_000L)
@@ -88,6 +113,7 @@ class Lis10BookWebViewMediaCapture(private val context: Context) {
 
     companion object {
         private const val BRIDGE = "AudoibooLis10Capture"
+        private const val MAX_MEDIA_URLS = 250
         private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac", "m3u8")
 
         fun isAllowedPage(url: String): Boolean = runCatching {
@@ -104,6 +130,21 @@ class Lis10BookWebViewMediaCapture(private val context: Context) {
             val path = uri.path.orEmpty().lowercase()
             scheme in setOf("http", "https") && path.substringAfterLast('.', "") in AUDIO_EXTENSIONS
         }.getOrDefault(false)
+
+        fun mediaKey(url: String): String? = runCatching {
+            val uri = URI(url.trim())
+            val scheme = uri.scheme?.lowercase() ?: return@runCatching null
+            val host = uri.host?.lowercase() ?: return@runCatching null
+            "$scheme://$host${uri.path}"
+        }.getOrNull()
+
+        fun trackNumber(url: String): Int? = runCatching {
+            val name = URI(url).path.substringAfterLast('/').substringBeforeLast('.')
+            Regex("(?<!\\d)(\\d{1,4})(?!\\d)")
+                .findAll(name)
+                .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
+                .lastOrNull()
+        }.getOrNull()
 
         private val INSTALL_HOOKS = """
             (() => {
@@ -138,7 +179,7 @@ class Lis10BookWebViewMediaCapture(private val context: Context) {
               document.querySelectorAll('audio[src],source[src],a[href]').forEach(e => emit(e.src || e.href));
               try { performance.getEntriesByType('resource').forEach(e => emit(e.name)); } catch (_) {}
               const html = document.documentElement.innerHTML.replaceAll('\\/','/');
-              (html.match(/https?:[^"'<>\\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)(?:\?[^"'<>\\s]*)?/gi) || []).forEach(emit);
+              (html.match(/https?:[^\"'<>\\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)(?:\?[^\"'<>\\s]*)?/gi) || []).forEach(emit);
               document.querySelectorAll('audio').forEach(a => { try { a.play(); } catch (_) {} });
               const nodes = [...document.querySelectorAll('button,a,div,span,li')];
               const likely = nodes.filter(e => {

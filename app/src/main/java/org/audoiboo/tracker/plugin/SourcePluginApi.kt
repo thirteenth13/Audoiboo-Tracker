@@ -104,6 +104,11 @@ data class CatalogBook(
     val coverUrl: String? = null
 )
 
+data class CatalogBookSearchHit(
+    val book: CatalogBook,
+    val confidence: Float
+)
+
 data class AuthorCatalog(
     val author: CatalogAuthor,
     val books: List<CatalogBook>
@@ -164,6 +169,10 @@ interface SeriesSearchProvider {
  */
 interface SeriesDiscoveryProvider {
     suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate>
+}
+
+interface CatalogBookSearchProvider {
+    suspend fun searchBooks(query: String, limit: Int = 20): List<CatalogBookSearchHit>
 }
 
 interface AuthorCatalogProvider {

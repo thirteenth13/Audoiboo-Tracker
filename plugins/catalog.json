@@ -22,11 +22,11 @@
     {
       "id": "poleknig",
       "name": "Poleknig",
-      "version": 2,
+      "version": 3,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/poleknig-2.abplugin",
-      "sha256": "78c76e4d028f3e43c2fd45905971ed8b131d9eed41bd146a2cdc110a46abcc24",
-      "description": "Книги й цикли Poleknig; стабілізований WebView resolver та декларативний fallback для href/src медіа."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/poleknig-3.abplugin",
+      "sha256": "ad7a0c68176c1e369c22f341373d40020d335ad2fad8fcae8cad97d8b7fd4543",
+      "description": "Книги й цикли Poleknig; SERIES_SEARCH через публічний пошук сайту, стабілізований WebView resolver та href/src fallback."
     },
     {
       "id": "lis10book",

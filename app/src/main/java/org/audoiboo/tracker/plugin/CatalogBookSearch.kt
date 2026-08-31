@@ -1,6 +1,7 @@
 package org.audoiboo.tracker.plugin
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.supervisorScope
@@ -18,28 +19,27 @@ class CatalogBookSearchEngine(
     suspend fun search(query: String): List<CatalogBookSearchHit> {
         val clean = query.trim()
         if (clean.isBlank()) return emptyList()
-        val hits = supervisorScope {
-            registry.withCapability(SourceCapability.BOOK_SEARCH)
-                .mapNotNull { plugin ->
-                    val provider = plugin as? CatalogBookSearchProvider ?: return@mapNotNull null
-                    async {
-                        try {
-                            provider.searchBooks(clean, maxResultsPerProvider)
-                                .filter { it.book.providerId == plugin.descriptor.id }
-                        } catch (t: Throwable) {
-                            if (t is CancellationException) throw t
-                            emptyList()
-                        }
+        val hits: List<CatalogBookSearchHit> = supervisorScope {
+            val tasks = mutableListOf<Deferred<List<CatalogBookSearchHit>>>()
+            for (plugin in registry.withCapability(SourceCapability.BOOK_SEARCH)) {
+                val provider = plugin as? CatalogBookSearchProvider ?: continue
+                tasks += async {
+                    try {
+                        provider.searchBooks(clean, maxResultsPerProvider)
+                            .filter { it.book.providerId == plugin.descriptor.id }
+                    } catch (t: Throwable) {
+                        if (t is CancellationException) throw t
+                        emptyList<CatalogBookSearchHit>()
                     }
                 }
-                .awaitAll()
-                .flatten()
+            }
+            tasks.awaitAll().flatten()
         }
         return deduplicate(hits).take(maxResults)
     }
 
     internal fun deduplicate(hits: List<CatalogBookSearchHit>): List<CatalogBookSearchHit> {
-        val grouped = hits.groupBy { hit ->
+        val grouped: Map<String, List<CatalogBookSearchHit>> = hits.groupBy { hit ->
             val title = SourceIdentityMatcher.normalizeTitle(hit.book.title)
             val author = hit.book.authors.firstOrNull()?.let(SourceIdentityMatcher::normalizeAuthor).orEmpty()
             "$title|$author"

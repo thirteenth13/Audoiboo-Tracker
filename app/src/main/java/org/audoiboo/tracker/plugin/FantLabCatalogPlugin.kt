@@ -11,7 +11,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider {
     override val descriptor = SourceDescriptor(
         id = "fantlab",
         name = "FantLab Catalog",
-        version = 1,
+        version = 2,
         hosts = setOf("api.fantlab.ru", "fantlab.ru", "www.fantlab.ru"),
         capabilities = setOf(SourceCapability.AUTHOR_CATALOG)
     )
@@ -43,7 +43,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider {
     internal fun parseAuthorSearch(expected: String, array: JSONArray): List<CatalogAuthor> = buildList {
         for (i in 0 until array.length()) {
             val item = array.optJSONObject(i) ?: continue
-            val id = item.optInt("autor_id", 0)
+            val id = flexibleInt(item, "autor_id") ?: continue
             if (id <= 0) continue
             val russianName = item.optString("rusname").trim()
             val originalName = item.optString("name").trim()
@@ -66,6 +66,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider {
                     remoteId = id.toString(),
                     name = displayName,
                     alternativeNames = alternatives,
+                    workCount = flexibleInt(item, "workcount"),
                     confidence = confidence
                 )
             )
@@ -77,9 +78,9 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider {
         parseCycles(author, json.optJSONObject("cycles_blocks"), books)
         parseStandalone(author, json.optJSONObject("works_blocks"), books)
         return books.values.sortedWith(
-            compareBy<CatalogBook> { it.firstPublishYear ?: Int.MAX_VALUE }
-                .thenBy { it.seriesTitles.firstOrNull()?.let(SourceIdentityMatcher::normalizeTitle).orEmpty() }
+            compareBy<CatalogBook> { it.seriesTitles.firstOrNull()?.let(SourceIdentityMatcher::normalizeTitle).orEmpty() }
                 .thenBy { it.seriesNumber ?: Double.MAX_VALUE }
+                .thenBy { it.firstPublishYear ?: Int.MAX_VALUE }
                 .thenBy { SourceIdentityMatcher.normalizeTitle(it.title) }
         )
     }
@@ -96,7 +97,16 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider {
                 val children = cycle.optJSONArray("children") ?: continue
                 for (bookIndex in 0 until children.length()) {
                     val child = children.optJSONObject(bookIndex) ?: continue
-                    val book = parseWork(author, child, seriesTitle, (bookIndex + 1).toDouble()) ?: continue
+                    val title = firstNonBlank(child, "work_name", "work_name_orig") ?: continue
+                    // FantLab's cycle payload does not expose a stable explicit volume-number field.
+                    // Prefer a number encoded in the title and only then fall back to bibliography order.
+                    val inferredNumber = CatalogSeriesHeuristics.infer(title)?.number
+                    val book = parseWork(
+                        author = author,
+                        work = child,
+                        seriesTitle = seriesTitle,
+                        seriesNumber = inferredNumber ?: (bookIndex + 1).toDouble()
+                    ) ?: continue
                     books.putIfAbsent(book.remoteId, book)
                 }
             }
@@ -123,7 +133,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider {
         seriesTitle: String?,
         seriesNumber: Double?
     ): CatalogBook? {
-        val id = work.optInt("work_id", 0)
+        val id = flexibleInt(work, "work_id") ?: return null
         val title = firstNonBlank(work, "work_name", "work_name_orig") ?: return null
         if (id <= 0) return null
         val authors = work.optJSONArray("authors")?.let { array ->
@@ -131,7 +141,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider {
                 array.optJSONObject(index)?.optString("name")?.trim()?.takeIf(String::isNotBlank)
             }
         }.orEmpty().ifEmpty { listOf(author.name) }
-        val year = work.optInt("work_year", 0).takeIf { it > 0 }
+        val year = flexibleInt(work, "work_year")?.takeIf { it > 0 }
         return CatalogBook(
             providerId = descriptor.id,
             remoteId = id.toString(),
@@ -154,6 +164,16 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider {
 
     private fun firstNonBlank(json: JSONObject, vararg keys: String): String? =
         keys.firstNotNullOfOrNull { key -> json.optString(key).trim().takeIf(String::isNotBlank) }
+
+    /** FantLab documents that numeric fields may be encoded as either JSON numbers or strings. */
+    private fun flexibleInt(json: JSONObject, key: String): Int? {
+        val value = json.opt(key) ?: return null
+        return when (value) {
+            is Number -> value.toInt()
+            is String -> value.trim().toIntOrNull()
+            else -> null
+        }
+    }
 
     private fun authorConfidence(expected: String, candidate: String): Float = when {
         candidate == expected -> 1f

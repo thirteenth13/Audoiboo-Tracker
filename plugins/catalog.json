@@ -31,11 +31,11 @@
     {
       "id": "lis10book",
       "name": "Lis10book",
-      "version": 2,
+      "version": 3,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/lis10book-2.abplugin",
-      "sha256": "46cbe87dcf495ce948f6559d0345c71b4a773e17188ba2f72d925863dff49602",
-      "description": "Книги й цикли Lis10book; стабілізований WebView-збір з дедуплікацією та впорядкуванням треків."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/lis10book-3.abplugin",
+      "sha256": "7801c1d187eecf8b732526aa1ee2e628c5adb86286529d5dab9cbab3fe8d97ee",
+      "description": "Книги й цикли Lis10book; SERIES_SEARCH через пошукову сторінку сайту та стабілізований WebView-збір аудіотреків."
     },
     {
       "id": "izib",

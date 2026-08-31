@@ -25,18 +25,26 @@ class PoleknigWebViewMediaCapture(private val context: Context) {
             val found = Collections.synchronizedSet(LinkedHashSet<String>())
             val diagnostics = mutableListOf<String>()
             val finished = AtomicBoolean(false)
+            val resolverSeen = AtomicBoolean(false)
             val handler = Handler(Looper.getMainLooper())
             val webView = WebView(context)
 
             fun remember(raw: String?) {
                 val url = raw?.trim().orEmpty()
-                if (isResolverOrAudio(url)) found += url
+                when {
+                    isResolverUrl(url) -> {
+                        resolverSeen.set(true)
+                        found += url
+                    }
+                    resolverSeen.get() && isDirectAudio(url) -> found += url
+                }
             }
             fun snapshot(): List<String> = synchronized(found) { found.toList() }
             fun finish(reason: String) {
                 if (!finished.compareAndSet(false, true)) return
-                val media = snapshot()
+                val media = selectResolvedMedia(snapshot())
                 diagnostics += reason
+                diagnostics += "resolverSeen=${resolverSeen.get()}"
                 diagnostics += "media=${media.size}"
                 handler.removeCallbacksAndMessages(null)
                 runCatching {
@@ -98,18 +106,32 @@ class PoleknigWebViewMediaCapture(private val context: Context) {
                 uri.path.orEmpty().startsWith("/books/")
         }.getOrDefault(false)
 
-        fun isResolverOrAudio(url: String): Boolean = runCatching {
+        fun isResolverUrl(url: String): Boolean = runCatching {
             val uri = URI(url.trim())
             val scheme = uri.scheme?.lowercase().orEmpty()
-            if (scheme !in setOf("http", "https")) return@runCatching false
             val host = uri.host?.lowercase().orEmpty()
             val path = uri.path.orEmpty().lowercase()
-            val sameHostResolver =
+            scheme in setOf("http", "https") &&
                 (host == "poleknig.com" || host.endsWith(".poleknig.com")) &&
-                    Regex("""^/files/\d+/?$""").matches(path)
-            val ext = path.substringAfterLast('.', "")
-            sameHostResolver || ext in AUDIO_EXTENSIONS
+                Regex("""^/files/\d+/?$""").matches(path)
         }.getOrDefault(false)
+
+        fun isDirectAudio(url: String): Boolean = runCatching {
+            val uri = URI(url.trim())
+            val scheme = uri.scheme?.lowercase().orEmpty()
+            val path = uri.path.orEmpty().lowercase()
+            scheme in setOf("http", "https") && path.substringAfterLast('.', "") in AUDIO_EXTENSIONS
+        }.getOrDefault(false)
+
+        /** Kept for tests/callers that only need coarse URL classification. */
+        fun isResolverOrAudio(url: String): Boolean = isResolverUrl(url) || isDirectAudio(url)
+
+        /** Prefer the final audio URL(s); /files/<id> is only a fallback when no media URL was exposed. */
+        fun selectResolvedMedia(urls: List<String>): List<String> {
+            val distinct = urls.distinct()
+            val audio = distinct.filter(::isDirectAudio)
+            return if (audio.isNotEmpty()) audio else distinct.filter(::isResolverUrl)
+        }
 
         private val INSTALL_HOOKS = """
             (() => {

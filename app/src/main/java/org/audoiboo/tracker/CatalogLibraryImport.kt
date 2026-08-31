@@ -16,8 +16,12 @@ internal sealed interface CatalogLibraryImportResult {
  * Catalog identity remains bibliographic; the selected audio source becomes the canonical Room source.
  */
 internal object CatalogLibraryImport {
-    suspend fun add(context: Context, match: CatalogSourceMatch): CatalogLibraryImportResult {
-        val accepted = CatalogAudioSourceSelector.best(match)?.finding
+    suspend fun add(
+        context: Context,
+        match: CatalogSourceMatch,
+        preferredSourceId: String? = null
+    ): CatalogLibraryImportResult {
+        val accepted = CatalogAudioSourceSelector.select(match, preferredSourceId)?.finding
 
         if (accepted != null) {
             val synced = RoomSeriesSync.sync(context, accepted.series.url)
@@ -25,6 +29,10 @@ internal object CatalogLibraryImport {
                 return CatalogLibraryImportResult.Added(synced.seriesId, synced.name, synced.books)
             }
         }
+
+        // When a user explicitly selected a source, do not silently redirect them to a different
+        // review candidate. The UI can keep the user on the catalog card and let them choose again.
+        if (!preferredSourceId.isNullOrBlank()) return CatalogLibraryImportResult.NoAudioSource
 
         val review = match.sources
             .filter { it.disposition == MatchDisposition.REVIEW }

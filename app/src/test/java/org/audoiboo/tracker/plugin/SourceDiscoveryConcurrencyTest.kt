@@ -5,6 +5,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class SourceDiscoveryConcurrencyTest {
@@ -71,6 +72,8 @@ class SourceDiscoveryConcurrencyTest {
         private val gate: ConcurrentStartGate? = null,
         private val broken: Boolean = false
     ) : SourcePlugin, SeriesSearchProvider, SeriesProvider {
+        private val gateUsed = AtomicBoolean(false)
+
         override val descriptor = SourceDescriptor(
             id = id,
             name = id,
@@ -82,7 +85,7 @@ class SourceDiscoveryConcurrencyTest {
         override fun supports(url: String): Boolean = url.contains("$id.example.org")
 
         override suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate> {
-            gate?.arriveAndAwait()
+            if (gate != null && gateUsed.compareAndSet(false, true)) gate.arriveAndAwait()
             if (broken) error("broken source")
             return listOf(
                 SeriesCandidate(

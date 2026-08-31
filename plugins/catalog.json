@@ -17,7 +17,7 @@
       "apiVersion": 1,
       "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-4.abplugin",
       "sha256": "e8a114c4d85d45d66e82edded1adacbd624a213124ca864bf7d23ef6e2ccd5c4",
-      "description": "Цикли й книги Knigavuhe; WebView підтримує CDN-піддомени knigavuhe.org, а декларативний fallback витягує аудіо як з href, так і з src."
+      "description": "Цикли й книги Knigavuhe; WebView підтримує CDN-піддомени knigavuhe.org, а декларативний fallback витягує аудіо як з href, так і з src. Автоматичний SERIES_SEARCH поки не входить до пакета."
     },
     {
       "id": "poleknig",
@@ -44,7 +44,7 @@
       "apiVersion": 1,
       "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/izib-2.abplugin",
       "sha256": "ca9da0014624c57b577d7283036b18043ecb375eb5dc51157d7fbc949d854bd0",
-      "description": "Книги й серії Izib/PDA; стабілізований WebView-збір та декларативний href/src fallback для аудіо."
+      "description": "Книги й серії Izib/PDA; стабілізований WebView-збір та декларативний href/src fallback для аудіо. Автоматичний SERIES_SEARCH поки не входить до пакета."
     }
   ]
 }

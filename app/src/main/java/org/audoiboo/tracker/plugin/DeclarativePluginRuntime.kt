@@ -331,6 +331,15 @@ class DeclarativePluginRuntime(
     }
 
     private fun extract(root: Element, expression: String): String? {
+        return expression.split("||")
+            .asSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .mapNotNull { extractSingle(root, it)?.takeIf(String::isNotBlank) }
+            .firstOrNull()
+    }
+
+    private fun extractSingle(root: Element, expression: String): String? {
         val split = expression.lastIndexOf('@')
         val selector = if (split >= 0) expression.substring(0, split) else expression
         val attribute = if (split >= 0) expression.substring(split + 1) else null

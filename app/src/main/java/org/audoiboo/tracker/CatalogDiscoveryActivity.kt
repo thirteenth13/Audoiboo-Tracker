@@ -124,12 +124,14 @@ private fun CatalogSeriesCard(
     onAdd: () -> Unit,
     onOpenSource: (String) -> Unit
 ) {
+    val bookAvailability = remember(result) { CatalogBookAvailabilityResolver.resolve(result) }
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(result.series.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(result.author.name, style = MaterialTheme.typography.bodyMedium)
             val accepted = result.sources.count { it.disposition == MatchDisposition.AUTO_ACCEPT }
             val review = result.sources.count { it.disposition == MatchDisposition.REVIEW }
+            val availableBooks = bookAvailability.count { availability -> availability.sources.any { it.disposition == MatchDisposition.AUTO_ACCEPT } }
             Text(
                 when {
                     accepted > 0 -> "Аудіоджерела: $accepted знайдено" + if (review > 0) " • $review потребує перевірки" else ""
@@ -138,18 +140,37 @@ private fun CatalogSeriesCard(
                 },
                 style = MaterialTheme.typography.bodySmall
             )
+            if (result.series.books.isNotEmpty()) {
+                Text("Книги з підтвердженим аудіо: $availableBooks/${result.series.books.size}", style = MaterialTheme.typography.bodySmall)
+            }
             Button(
                 onClick = onAdd,
                 enabled = actionsEnabled && accepted > 0,
                 modifier = Modifier.fillMaxWidth()
             ) { Text(if (importing) "Додаю…" else "Додати в бібліотеку") }
             HorizontalDivider()
-            result.series.books.forEach { book ->
+            bookAvailability.forEach { availability ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                    val book = availability.catalogBook
                     Text(book.seriesNumber?.let(::formatSeriesNumber) ?: "—", modifier = Modifier.width(42.dp), fontWeight = FontWeight.Medium)
-                    Column(Modifier.weight(1f)) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(book.title)
                         book.firstPublishYear?.let { Text(it.toString(), style = MaterialTheme.typography.bodySmall) }
+                        val auto = availability.sources.filter { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                        val pending = availability.sources.filter { it.disposition == MatchDisposition.REVIEW }
+                        when {
+                            auto.isNotEmpty() -> Text("Аудіо: ${auto.map { it.sourceId }.distinct().joinToString()}", style = MaterialTheme.typography.bodySmall)
+                            pending.isNotEmpty() -> Text("Аудіо: можливий збіг — потрібна перевірка", style = MaterialTheme.typography.bodySmall)
+                            else -> Text("Аудіо не знайдено", style = MaterialTheme.typography.bodySmall)
+                        }
+                        availability.sources.take(3).forEach { source ->
+                            val percent = (source.confidence * 100).toInt()
+                            TextButton(
+                                onClick = { onOpenSource(source.sourceBook.url) },
+                                enabled = actionsEnabled,
+                                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
+                            ) { Text("${source.sourceId} • $percent% • відкрити") }
+                        }
                     }
                 }
             }
@@ -164,7 +185,7 @@ private fun CatalogSeriesCard(
                     }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("${finding.sourceId}: $percent% • $status", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                        TextButton(onClick = { onOpenSource(finding.series.url) }, enabled = actionsEnabled) { Text("Відкрити") }
+                        TextButton(onClick = { onOpenSource(finding.series.url) }, enabled = actionsEnabled) { Text("Відкрити серію") }
                     }
                 }
             }

@@ -40,11 +40,11 @@
     {
       "id": "izib",
       "name": "Izib",
-      "version": 2,
+      "version": 3,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/izib-2.abplugin",
-      "sha256": "ca9da0014624c57b577d7283036b18043ecb375eb5dc51157d7fbc949d854bd0",
-      "description": "Книги й серії Izib/PDA; стабілізований WebView-збір та декларативний href/src fallback для аудіо. Автоматичний SERIES_SEARCH поки не входить до пакета."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/izib-3.abplugin",
+      "sha256": "b90fd53744c46dc1e78c7a79ceb5d4d637eec28974efd60d31598e483b5801d1",
+      "description": "Книги й серії Izib/PDA; SERIES_DISCOVERY через обмежений пошук автора в каталозі /authors і його /serie посилання, плюс стабілізований WebView-збір та декларативний href/src fallback для аудіо."
     }
   ]
 }

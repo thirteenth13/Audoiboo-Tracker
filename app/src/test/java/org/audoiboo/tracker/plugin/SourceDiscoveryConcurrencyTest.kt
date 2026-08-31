@@ -1,32 +1,31 @@
 package org.audoiboo.tracker.plugin
 
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicInteger
 
 class SourceDiscoveryConcurrencyTest {
     @Test
     fun independentAudioSourcesRunConcurrently() = runBlocking {
+        val gate = ConcurrentStartGate(expected = 2)
         val engine = SourceDiscoveryEngine(
             SourcePluginRegistry(
                 listOf(
-                    SlowAudioPlugin("audio-one", 220),
-                    SlowAudioPlugin("audio-two", 220)
+                    CoordinatedAudioPlugin("audio-one", gate),
+                    CoordinatedAudioPlugin("audio-two", gate)
                 )
             )
         )
 
-        val started = System.nanoTime()
-        val findings = engine.discoverSeries(canonical())
-        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        val findings = withTimeout(5_000) {
+            engine.discoverSeries(canonical())
+        }
 
         assertEquals(setOf("audio-one", "audio-two"), findings.map { it.sourceId }.toSet())
-        // Each source performs three delayed stages (search, resolve, load). Two sources in
-        // series take roughly 1320 ms; concurrent source pipelines take roughly 660 ms.
-        // Keep enough CI headroom without making the assertion so loose that serial execution passes.
-        assertTrue("audio sources ran too slowly: ${elapsedMs}ms", elapsedMs < 1100)
+        assertEquals(2, gate.startedCount())
     }
 
     @Test
@@ -34,8 +33,8 @@ class SourceDiscoveryConcurrencyTest {
         val engine = SourceDiscoveryEngine(
             SourcePluginRegistry(
                 listOf(
-                    SlowAudioPlugin("good", 0),
-                    SlowAudioPlugin("broken", 0, broken = true)
+                    CoordinatedAudioPlugin("good"),
+                    CoordinatedAudioPlugin("broken", broken = true)
                 )
             )
         )
@@ -55,9 +54,21 @@ class SourceDiscoveryConcurrencyTest {
         )
     )
 
-    private class SlowAudioPlugin(
+    private class ConcurrentStartGate(private val expected: Int) {
+        private val started = AtomicInteger(0)
+        private val allStarted = CompletableDeferred<Unit>()
+
+        suspend fun arriveAndAwait() {
+            if (started.incrementAndGet() >= expected) allStarted.complete(Unit)
+            allStarted.await()
+        }
+
+        fun startedCount(): Int = started.get()
+    }
+
+    private class CoordinatedAudioPlugin(
         private val id: String,
-        private val delayMs: Long,
+        private val gate: ConcurrentStartGate? = null,
         private val broken: Boolean = false
     ) : SourcePlugin, SeriesSearchProvider, SeriesProvider {
         override val descriptor = SourceDescriptor(
@@ -71,7 +82,7 @@ class SourceDiscoveryConcurrencyTest {
         override fun supports(url: String): Boolean = url.contains("$id.example.org")
 
         override suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate> {
-            if (delayMs > 0) delay(delayMs)
+            gate?.arriveAndAwait()
             if (broken) error("broken source")
             return listOf(
                 SeriesCandidate(
@@ -86,7 +97,6 @@ class SourceDiscoveryConcurrencyTest {
         }
 
         override suspend fun resolveSeries(url: String): SourceSeries? {
-            if (delayMs > 0) delay(delayMs)
             if (broken) error("broken source")
             return SourceSeries(
                 sourceId = id,
@@ -101,7 +111,6 @@ class SourceDiscoveryConcurrencyTest {
         }
 
         override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> {
-            if (delayMs > 0) delay(delayMs)
             if (broken) error("broken source")
             return listOf(
                 SourceBook(id, url = "https://$id.example.org/book/1", title = "Book One", authors = listOf(SourceAuthor("Author A")), seriesTitle = "Star Blood", seriesNumber = 1.0),

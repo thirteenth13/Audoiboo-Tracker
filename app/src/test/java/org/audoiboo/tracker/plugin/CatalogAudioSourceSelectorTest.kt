@@ -1,6 +1,9 @@
 package org.audoiboo.tracker.plugin
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CatalogAudioSourceSelectorTest {
@@ -17,6 +20,7 @@ class CatalogAudioSourceSelectorTest {
 
         assertEquals("complete", best?.finding?.sourceId)
         assertEquals(3, best?.matchedBooks)
+        assertTrue(best?.isComplete == true)
     }
 
     @Test
@@ -28,7 +32,9 @@ class CatalogAudioSourceSelectorTest {
             )
         )
 
-        assertEquals("higher", CatalogAudioSourceSelector.best(match)?.finding?.sourceId)
+        val best = CatalogAudioSourceSelector.best(match)
+        assertEquals("higher", best?.finding?.sourceId)
+        assertFalse(best?.isComplete == true)
     }
 
     @Test
@@ -38,6 +44,19 @@ class CatalogAudioSourceSelectorTest {
         val match = catalogMatch(listOf(review, auto))
 
         assertEquals("auto", CatalogAudioSourceSelector.best(match)?.finding?.sourceId)
+    }
+
+    @Test
+    fun `explicit source selection does not fall back to ranked source`() {
+        val match = catalogMatch(
+            listOf(
+                finding("partial", 0.99f, listOf(1)),
+                finding("complete", 0.96f, listOf(1, 2, 3))
+            )
+        )
+
+        assertEquals("partial", CatalogAudioSourceSelector.select(match, "partial")?.finding?.sourceId)
+        assertNull(CatalogAudioSourceSelector.select(match, "missing"))
     }
 
     private fun catalogMatch(findings: List<SeriesDiscoveryFinding>): CatalogSourceMatch {

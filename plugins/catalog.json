@@ -22,29 +22,29 @@
     {
       "id": "poleknig",
       "name": "Poleknig",
-      "version": 1,
+      "version": 2,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/poleknig-1.abplugin",
-      "sha256": "22b966c8eff9b60712a6032afd522b84f4b8017cc76d5ded3626a88d8107d3a8",
-      "description": "Книги й цикли Poleknig; device-side WebView перехоплює динамічні /files/<id> resolver-и та аудіо запити."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/poleknig-2.abplugin",
+      "sha256": "78c76e4d028f3e43c2fd45905971ed8b131d9eed41bd146a2cdc110a46abcc24",
+      "description": "Книги й цикли Poleknig; стабілізований WebView resolver та декларативний fallback для href/src медіа."
     },
     {
       "id": "lis10book",
       "name": "Lis10book",
-      "version": 1,
+      "version": 2,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/lis10book-1.abplugin",
-      "sha256": "5bed31341f4d732d85f9639b078ebd77687b66fb1b7920366a653150593e2a3d",
-      "description": "Книги й цикли Lis10book; device-side WebView активує динамічний плеєр і збирає аудіотреки/HLS."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/lis10book-2.abplugin",
+      "sha256": "46cbe87dcf495ce948f6559d0345c71b4a773e17188ba2f72d925863dff49602",
+      "description": "Книги й цикли Lis10book; стабілізований WebView-збір з дедуплікацією та впорядкуванням треків."
     },
     {
       "id": "izib",
       "name": "Izib",
-      "version": 1,
+      "version": 2,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/izib-1.abplugin",
-      "sha256": "839b7631561f46906b33bcb032b1f2ecc5b140aaafdf1773515ad5058609231d",
-      "description": "Книги й серії Izib/PDA; device-side WebView збирає фактичні аудіозапити зі сторінок art<id>."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/izib-2.abplugin",
+      "sha256": "ca9da0014624c57b577d7283036b18043ecb375eb5dc51157d7fbc949d854bd0",
+      "description": "Книги й серії Izib/PDA; стабілізований WebView-збір та декларативний href/src fallback для аудіо."
     }
   ]
 }

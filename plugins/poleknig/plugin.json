@@ -1,7 +1,7 @@
 {
   "id": "poleknig",
   "name": "Poleknig",
-  "version": 1,
+  "version": 2,
   "apiVersion": 1,
   "runtime": "DECLARATIVE",
   "hosts": [

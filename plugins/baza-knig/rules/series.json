@@ -2,11 +2,11 @@
   "operation": "seriesLookup",
   "series": {
     "title": "meta[property='og:title']@content || title || h1 || a[href*='/series-']",
-    "titleRegex": "(?i)^\\s*(?:аудиокниги\\s+серии\\s*[«\"“]?|серия\\s*:?)?\\s*[«\"“]?(.+?)[»\"”]?\\s*(?:\\([0-9]+\\))?\\s*(?:слушать\\s+онлайн)?(?:\\s*[-|]\\s*Baza-Knig.*)?\\s*$",
+    "titleRegex": "(?i)^\\s*(?:аудиокниги\\s+серии\\s*[-|]?\\s*[« \\\"“]?|серия\\s*:?)?\\s*[« \\\"“]?(.+?)(?:\\s+слушать\\s+онлайн)?[» \\\"”]?\\s*(?:\\([0-9]+\\))?\\s*(?:слушать\\s+онлайн)?(?:\\s*[-|]?\\s*Baza-Knig\\.\\w+)?\\s*$",
     "followLink": "a[href*='/series-']@href || a[href*='/xfsearch/cikl/']@href",
     "description": "meta[name='description']@content",
     "books": {
-      "item": "a[href*='/audio-']",
+      "item": "article.abook-item h2.abook-title a",
       "title": "@text",
       "link": "@href"
     },
@@ -16,7 +16,7 @@
       "nextPage": "a[rel='next']@href || .navigation a.next@href",
       "seriesTitle": "a[href*='/series-'] || a[href*='/xfsearch/cikl/']",
       "items": {
-        "item": "a[href*='/audio-']",
+        "item": "article.abook-item h2.abook-title a",
         "title": "@text",
         "link": "@href"
       }

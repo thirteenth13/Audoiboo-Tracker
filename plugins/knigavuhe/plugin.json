@@ -1,34 +1,7 @@
 {
-  "id": "knigavuhe",
-  "name": "Knigavuhe",
-  "version": 5,
-  "apiVersion": 1,
-  "runtime": "DECLARATIVE",
-  "hosts": [
-    "knigavuhe.org",
-    "m.knigavuhe.org"
-  ],
-  "capabilities": [
-    "SERIES_LOOKUP",
-    "SERIES_SEARCH",
-    "BOOK_LOOKUP",
-    "DOWNLOAD_RESOLUTION"
-  ],
-  "permissions": {
-    "networkHosts": [
-      "knigavuhe.org",
-      "m.knigavuhe.org"
-    ],
-    "downloadHosts": [
-      "knigavuhe.org"
-    ],
-    "cookies": false,
-    "javascript": false
-  },
-  "entrypoints": {
-    "seriesLookup": "rules/series.json",
-    "seriesSearch": "rules/search.json",
-    "bookLookup": "rules/book.json",
-    "downloadResolution": "rules/download.json"
-  }
+  "id": "knigavuhe", "name": "Knigavuhe", "version": 6, "apiVersion": 1, "runtime": "DECLARATIVE",
+  "hosts": ["knigavuhe.org", "m.knigavuhe.org"],
+  "capabilities": ["SERIES_LOOKUP", "SERIES_SEARCH", "BOOK_LOOKUP", "DOWNLOAD_RESOLUTION"],
+  "permissions": {"networkHosts": ["knigavuhe.org", "m.knigavuhe.org"], "downloadHosts": ["knigavuhe.org"], "cookies": false, "javascript": false},
+  "entrypoints": {"seriesLookup": "rules/series.json", "seriesSearch": "rules/search.json", "bookLookup": "rules/book.json", "downloadResolution": "rules/download.json", "mediaCapture": "rules/media-capture.json"}
 }

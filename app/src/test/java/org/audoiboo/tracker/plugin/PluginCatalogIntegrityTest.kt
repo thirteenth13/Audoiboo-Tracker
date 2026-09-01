@@ -2,14 +2,16 @@ package org.audoiboo.tracker.plugin
 
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.security.MessageDigest
+import java.util.zip.ZipFile
 
 class PluginCatalogIntegrityTest {
     @Test
-    fun catalogChecksumsMatchCommittedPackages() {
+    fun catalogPackagesMatchChecksumsAndAreReadableArchives() {
         val pluginsDir = sequenceOf(File("plugins"), File("../plugins"))
             .firstOrNull { File(it, "catalog.json").isFile }
             ?: error("plugins/catalog.json not found from ${File(".").absolutePath}")
@@ -25,6 +27,18 @@ class PluginCatalogIntegrityTest {
             val packageFile = File(pluginsDir, "packages/$id-$version.abplugin")
             assertTrue("Missing package for $id v$version", packageFile.isFile)
             assertEquals("Checksum mismatch for $id v$version", expected, sha256(packageFile))
+
+            ZipFile(packageFile).use { zip ->
+                assertNotNull("plugin.json missing from $id v$version", zip.getEntry("plugin.json"))
+                val entriesInZip = zip.entries().asSequence().filterNot { it.isDirectory }.toList()
+                assertTrue("Empty plugin archive for $id v$version", entriesInZip.isNotEmpty())
+                entriesInZip.forEach { zipEntry ->
+                    zip.getInputStream(zipEntry).use { input ->
+                        val buffer = ByteArray(16 * 1024)
+                        while (input.read(buffer) >= 0) Unit
+                    }
+                }
+            }
         }
     }
 

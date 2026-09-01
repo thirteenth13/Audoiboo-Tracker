@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.launch
+import org.audoiboo.tracker.plugin.HostPluginHttpTransport
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 
 private const val SOURCE_BROWSER_DEFAULT_HOME = "https://audioboo.org/"
@@ -67,6 +68,8 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
     fun addCurrentPage() {
         val url = currentUrl.trim()
         if (url.isBlank() || syncing) return
+        webView?.settings?.userAgentString?.let(HostPluginHttpTransport::updateBrowserUserAgent)
+        runCatching { CookieManager.getInstance().flush() }
         syncing = true
         scope.launch {
             val plugin = PluginPackageRuntime.registry.forUrl(url)
@@ -125,11 +128,14 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         settings.mediaPlaybackRequiresUserGesture = false
+                        HostPluginHttpTransport.updateBrowserUserAgent(settings.userAgentString)
                         CookieManager.getInstance().setAcceptCookie(true)
                         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
                             override fun onPageFinished(view: WebView?, url: String?) {
+                                view?.settings?.userAgentString?.let(HostPluginHttpTransport::updateBrowserUserAgent)
+                                runCatching { CookieManager.getInstance().flush() }
                                 val loaded = url.orEmpty()
                                 if (loaded.isNotBlank()) {
                                     currentUrl = loaded

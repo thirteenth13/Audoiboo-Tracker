@@ -1,0 +1,28 @@
+{
+  "media": {
+    "pagePathRegex": "^/audio-",
+    "mediaExtensions": ["mp3"],
+    "mediaHosts": ["baza-knig.info", "baza-knig.top", "redirectto.cc"],
+    "maxResults": 350,
+    "timeoutMs": 35000,
+    "finishDelayMs": 33000,
+    "scanIntervalsMs": [700, 2500, 5000, 8000, 12000, 17000, 22000, 27000, 31000],
+    "scanDomMedia": true,
+    "scanLinks": true,
+    "scanScripts": true,
+    "scanDataAttributes": true,
+    "scanPerformance": true,
+    "scanHtml": true,
+    "scanPlayerGlobals": true,
+    "hookFetch": true,
+    "hookXhr": true,
+    "hookMediaSrc": true,
+    "hookAudioConstructor": true,
+    "activateSelector": "button,a,div,span,li",
+    "activateLabelRegex": "^(?:\\s*\\d{1,3}(?:[\\s._:)-]+.*)?|.*(?:трек|глава|часть)\\s*\\d+|.*(?:play|слушать|воспроизвести).*)$",
+    "activateIntervalMs": 450,
+    "activateMax": 220,
+    "sortTrackNumber": true,
+    "downloadType": "DIRECT_FILE"
+  }
+}

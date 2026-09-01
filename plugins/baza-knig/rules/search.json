@@ -3,7 +3,7 @@
   "searchUrl": "https://baza-knig.info/index.php?do=search&subaction=search&story={query}",
   "maxResults": 12,
   "items": {
-    "item": "a[href*='/audio-']",
+    "item": "article.abook-item h2.abook-title a",
     "title": "@text",
     "link": "@href"
   }

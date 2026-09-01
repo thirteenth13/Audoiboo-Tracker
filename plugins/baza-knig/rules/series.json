@@ -1,8 +1,8 @@
 {
   "operation": "seriesLookup",
   "series": {
-    "title": "a[href*='/series-'] || h1",
-    "titleRegex": "(?i)^\\s*(?:аудиокниги\\s+серии\\s*[«\"“]?|серия\\s*:?)?\\s*[«\"“]?(.+?)[»\"”]?\\s*(?:\\([0-9]+\\))?\\s*(?:слушать\\s+онлайн)?\\s*$",
+    "title": "meta[property='og:title']@content || title || h1 || a[href*='/series-']",
+    "titleRegex": "(?i)^\\s*(?:аудиокниги\\s+серии\\s*[«\"“]?|серия\\s*:?)?\\s*[«\"“]?(.+?)[»\"”]?\\s*(?:\\([0-9]+\\))?\\s*(?:слушать\\s+онлайн)?(?:\\s*[-|]\\s*Baza-Knig.*)?\\s*$",
     "followLink": "a[href*='/series-']@href || a[href*='/xfsearch/cikl/']@href",
     "description": "meta[name='description']@content",
     "books": {

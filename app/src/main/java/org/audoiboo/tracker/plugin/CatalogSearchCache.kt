@@ -9,8 +9,7 @@ class CatalogSearchCache<T>(
     private data class Entry<T>(val createdAt: Long, val value: T)
 
     private val entries = object : LinkedHashMap<String, Entry<T>>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry<T>>?): Boolean =
-            size > maxEntries
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry<T>>?): Boolean = size > maxEntries
     }
 
     @Synchronized
@@ -24,23 +23,14 @@ class CatalogSearchCache<T>(
         return entry.value
     }
 
-    @Synchronized
-    fun put(query: String, value: T) {
-        entries[normalize(query)] = Entry(clock(), value)
-    }
+    @Synchronized fun put(query: String, value: T) { entries[normalize(query)] = Entry(clock(), value) }
+    @Synchronized fun invalidate(query: String) { entries.remove(normalize(query)) }
+    @Synchronized fun clear() = entries.clear()
 
-    @Synchronized
-    fun invalidate(query: String) {
-        entries.remove(normalize(query))
-    }
-
-    @Synchronized
-    fun clear() = entries.clear()
-
-    private fun normalize(query: String): String =
-        query.trim().lowercase().replace(Regex("\\s+"), " ")
+    private fun normalize(query: String): String = query.trim().lowercase().replace(Regex("\\s+"), " ")
 }
 
 object CatalogSearchCaches {
     val authorDiscovery = CatalogSearchCache<List<CatalogSourceMatch>>()
+    val bookSearch = CatalogSearchCache<List<CatalogBookSearchHit>>()
 }

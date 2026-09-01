@@ -15,17 +15,11 @@ data class CatalogSeriesEntry(
     val series: CatalogSeries
 )
 
-/**
- * Collapses the same author/series reported by multiple bibliographic providers before doing
- * expensive audio-source discovery. The strongest provider remains the canonical anchor, while
- * complementary books and author aliases from matching providers are federated into one series.
- */
 object CatalogSeriesDeduplicationPolicy {
     fun select(catalogs: List<CatalogDiscoveryResult>): List<CatalogSeriesEntry> {
         val entries = catalogs.flatMap { catalog ->
             catalog.series.map { series -> CatalogSeriesEntry(catalog.providerId, catalog.author, series) }
         }
-
         return entries
             .groupBy { SourceIdentityMatcher.normalizeTitle(it.series.title) }
             .values
@@ -61,18 +55,14 @@ object CatalogSeriesDeduplicationPolicy {
     private fun mergeCluster(candidates: List<CatalogSeriesEntry>): CatalogSeriesEntry? {
         val anchor = candidates.maxWithOrNull(entryComparator) ?: return null
         if (candidates.size == 1) return anchor
-
         val books = linkedMapOf<String, CatalogBook>()
-        candidates
-            .sortedWith(entryComparator.reversed())
-            .forEach { candidate ->
-                candidate.series.books.forEach { book ->
-                    val key = bookIdentity(book)
-                    val current = books[key]
-                    books[key] = if (current == null) book else preferBook(current, book)
-                }
+        candidates.sortedWith(entryComparator.reversed()).forEach { candidate ->
+            candidate.series.books.forEach { book ->
+                val key = bookIdentity(book)
+                val current = books[key]
+                books[key] = if (current == null) book else preferBook(current, book)
             }
-
+        }
         val mergedBooks = books.values.sortedWith(
             compareBy<CatalogBook> { it.seriesNumber ?: Double.MAX_VALUE }
                 .thenBy { it.firstPublishYear ?: Int.MAX_VALUE }
@@ -82,13 +72,7 @@ object CatalogSeriesDeduplicationPolicy {
             .flatMap { it.series.authors + it.author.name + it.author.alternativeNames }
             .filter(String::isNotBlank)
             .distinctBy(SourceIdentityMatcher::normalizeAuthor)
-
-        return anchor.copy(
-            series = anchor.series.copy(
-                authors = mergedAuthors,
-                books = mergedBooks
-            )
-        )
+        return anchor.copy(series = anchor.series.copy(authors = mergedAuthors, books = mergedBooks))
     }
 
     private fun bookIdentity(book: CatalogBook): String {
@@ -112,11 +96,9 @@ object CatalogSeriesDeduplicationPolicy {
             .thenBy { it.series.books.count { book -> book.coverUrl != null } }
 }
 
-/** Stable canonical projection used by the existing explainable source matcher. */
 object CatalogCanonicalMapper {
     fun seriesId(providerId: String, authorRemoteId: String, seriesTitle: String): String =
-        listOf(providerId, authorRemoteId, SourceIdentityMatcher.normalizeTitle(seriesTitle))
-            .joinToString(":")
+        listOf(providerId, authorRemoteId, SourceIdentityMatcher.normalizeTitle(seriesTitle)).joinToString(":")
 
     fun toCanonical(providerId: String, author: CatalogAuthor, series: CatalogSeries): CanonicalSeriesMatchInput =
         CanonicalSeriesMatchInput(
@@ -127,18 +109,13 @@ object CatalogCanonicalMapper {
                 CanonicalBookMatchInput(
                     id = "${book.providerId}:${book.remoteId}",
                     title = book.title,
-                    authors = if (book.authors.isNotEmpty()) book.authors else listOf(author.name),
+                    authors = if (book.authors.isNotEmpty()) book.authors else listOf(author.name).filter(String::isNotBlank),
                     number = book.seriesNumber
                 )
             }
         )
 }
 
-/**
- * Orchestrates bibliographic discovery first, then reuses SourceDiscoveryEngine to locate
- * matching audiobook series on enabled source plugins. Catalog providers themselves are excluded
- * from source matching because they describe identity, not playable/downloadable media.
- */
 class CatalogSourceBridge(
     private val registry: SourcePluginRegistry,
     private val catalogDiscovery: CatalogDiscoveryEngine = CatalogDiscoveryEngine(registry),
@@ -146,19 +123,50 @@ class CatalogSourceBridge(
 ) {
     suspend fun discoverByAuthor(authorQuery: String): List<CatalogSourceMatch> {
         val catalogs = catalogDiscovery.discoverByAuthor(authorQuery)
-        return CatalogSeriesDeduplicationPolicy.select(catalogs).map { entry ->
-            val canonical = CatalogCanonicalMapper.toCanonical(entry.providerId, entry.author, entry.series)
-            val findings = sourceDiscovery.discoverSeries(
-                canonical = canonical,
-                excludeSourceId = entry.providerId
-            )
-            CatalogSourceMatch(
-                catalogProviderId = entry.providerId,
-                author = entry.author,
-                series = entry.series,
-                canonical = canonical,
-                sources = findings
-            )
+        return CatalogSeriesDeduplicationPolicy.select(catalogs).map { entry -> resolveEntry(entry) }
+    }
+
+    suspend fun discoverByBook(hit: CatalogBookSearchHit): List<CatalogSourceMatch> {
+        val book = hit.book
+        val normalizedBook = SourceIdentityMatcher.normalizeTitle(book.title)
+        val authorName = book.authors.firstOrNull().orEmpty()
+        if (authorName.isNotBlank()) {
+            val authorMatches = discoverByAuthor(authorName)
+            val containingSeries = authorMatches.filter { match ->
+                match.series.books.any { candidate ->
+                    (candidate.providerId == book.providerId && candidate.remoteId == book.remoteId) ||
+                        SourceIdentityMatcher.normalizeTitle(candidate.title) == normalizedBook
+                }
+            }
+            if (containingSeries.isNotEmpty()) return containingSeries
         }
+
+        val inferred = CatalogSeriesHeuristics.infer(book.title)
+        val seriesTitle = book.seriesTitles.firstOrNull { it.isNotBlank() } ?: inferred?.title ?: book.title
+        val normalizedBookRecord = if (book.seriesNumber == null && inferred?.number != null) book.copy(seriesNumber = inferred.number) else book
+        val author = CatalogAuthor(
+            providerId = book.providerId,
+            remoteId = "book-search:${book.remoteId}",
+            name = authorName,
+            confidence = hit.confidence
+        )
+        val series = CatalogSeries(
+            title = seriesTitle,
+            authors = book.authors,
+            books = listOf(normalizedBookRecord)
+        )
+        return listOf(resolveEntry(CatalogSeriesEntry(book.providerId, author, series)))
+    }
+
+    private suspend fun resolveEntry(entry: CatalogSeriesEntry): CatalogSourceMatch {
+        val canonical = CatalogCanonicalMapper.toCanonical(entry.providerId, entry.author, entry.series)
+        val findings = sourceDiscovery.discoverSeries(canonical = canonical, excludeSourceId = entry.providerId)
+        return CatalogSourceMatch(
+            catalogProviderId = entry.providerId,
+            author = entry.author,
+            series = entry.series,
+            canonical = canonical,
+            sources = findings
+        )
     }
 }

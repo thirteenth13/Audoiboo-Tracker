@@ -5,19 +5,61 @@ import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
-/** Low-volume metadata and author-catalog discovery backed by Open Library. */
-object OpenLibraryMetadataPlugin : SourcePlugin, MetadataProvider, AuthorCatalogProvider {
+/** Low-volume metadata and catalog discovery backed by Open Library. */
+object OpenLibraryMetadataPlugin : SourcePlugin, MetadataProvider, AuthorCatalogProvider, CatalogBookSearchProvider {
     override val descriptor = SourceDescriptor(
         id = "open-library",
         name = "Open Library Metadata",
-        version = 2,
+        version = 3,
         hosts = setOf("openlibrary.org", "covers.openlibrary.org"),
-        capabilities = setOf(SourceCapability.METADATA_ENRICHMENT, SourceCapability.AUTHOR_CATALOG)
+        capabilities = setOf(
+            SourceCapability.METADATA_ENRICHMENT,
+            SourceCapability.AUTHOR_CATALOG,
+            SourceCapability.BOOK_SEARCH
+        )
     )
 
     override fun supports(url: String): Boolean = runCatching {
         URI(url).host?.lowercase()?.trimEnd('.') in descriptor.hosts
     }.getOrDefault(false)
+
+    override suspend fun searchBooks(query: String, limit: Int): List<CatalogBookSearchHit> {
+        val clean = query.trim()
+        if (clean.isBlank()) return emptyList()
+        val safeLimit = limit.coerceIn(1, 50)
+        val json = getJson(
+            "https://openlibrary.org/search.json?title=${encode(clean)}&limit=$safeLimit&fields=key,title,author_name,cover_i,first_publish_year,series",
+            4L * 1024 * 1024
+        ) ?: return emptyList()
+        val docs = json.optJSONArray("docs") ?: return emptyList()
+        return buildList {
+            for (i in 0 until docs.length()) {
+                val item = docs.optJSONObject(i) ?: continue
+                val id = item.optString("key").trim().substringAfterLast('/')
+                val title = item.optString("title").trim()
+                val confidence = catalogTitleConfidence(clean, title)
+                if (id.isBlank() || title.isBlank() || confidence < 0.60f) continue
+                val inferred = CatalogSeriesHeuristics.infer(title)
+                val explicitSeries = strings(item, "series")
+                val coverId = item.optLong("cover_i", -1L).takeIf { it > 0 }
+                add(
+                    CatalogBookSearchHit(
+                        CatalogBook(
+                            providerId = descriptor.id,
+                            remoteId = id,
+                            title = title,
+                            authors = strings(item, "author_name"),
+                            seriesTitles = explicitSeries.ifEmpty { inferred?.let { listOf(it.title) }.orEmpty() },
+                            seriesNumber = inferred?.number,
+                            firstPublishYear = item.optInt("first_publish_year", 0).takeIf { it > 0 },
+                            coverUrl = coverId?.let(::coverUrl)
+                        ),
+                        confidence
+                    )
+                )
+            }
+        }.sortedByDescending { it.confidence }.take(safeLimit)
+    }
 
     override suspend fun enrichBook(book: SourceBook): BookMetadata? {
         val title = book.title.trim()
@@ -33,7 +75,6 @@ object OpenLibraryMetadataPlugin : SourcePlugin, MetadataProvider, AuthorCatalog
         val expectedTitle = SourceIdentityMatcher.normalizeTitle(title)
         val expectedAuthor = normalize(author)
         var best: BookMetadata? = null
-
         for (i in 0 until docs.length()) {
             val item = docs.optJSONObject(i) ?: continue
             val remoteTitle = item.optString("title").trim()
@@ -45,7 +86,6 @@ object OpenLibraryMetadataPlugin : SourcePlugin, MetadataProvider, AuthorCatalog
                 else -> 0f
             }
             if (titleScore == 0f) continue
-
             val authors = strings(item, "author_name")
             val authorScore = when {
                 expectedAuthor.isBlank() -> 0.7f
@@ -55,7 +95,6 @@ object OpenLibraryMetadataPlugin : SourcePlugin, MetadataProvider, AuthorCatalog
             }
             val confidence = titleScore * 0.72f + authorScore * 0.28f
             if (confidence < 0.88f) continue
-
             val key = item.optString("key").trim().substringAfterLast('/')
             if (key.isBlank()) continue
             val coverId = item.optLong("cover_i", -1L).takeIf { it > 0 }
@@ -65,7 +104,7 @@ object OpenLibraryMetadataPlugin : SourcePlugin, MetadataProvider, AuthorCatalog
                 remoteId = key,
                 title = remoteTitle,
                 authors = authors,
-                coverUrl = coverId?.let { coverUrl(it) },
+                coverUrl = coverId?.let(::coverUrl),
                 firstPublishYear = item.optInt("first_publish_year", 0).takeIf { it > 0 },
                 isbn = isbn,
                 confidence = confidence
@@ -79,10 +118,8 @@ object OpenLibraryMetadataPlugin : SourcePlugin, MetadataProvider, AuthorCatalog
         val expected = normalize(query)
         if (expected.isBlank()) return emptyList()
         val safeLimit = limit.coerceIn(1, 20)
-        val json = getJson(
-            "https://openlibrary.org/search/authors.json?q=${encode(query.trim())}&limit=$safeLimit",
-            1024L * 1024L
-        ) ?: return emptyList()
+        val json = getJson("https://openlibrary.org/search/authors.json?q=${encode(query.trim())}&limit=$safeLimit", 1024L * 1024L)
+            ?: return emptyList()
         val docs = json.optJSONArray("docs") ?: return emptyList()
         return buildList {
             for (i in 0 until docs.length()) {
@@ -94,16 +131,7 @@ object OpenLibraryMetadataPlugin : SourcePlugin, MetadataProvider, AuthorCatalog
                 val candidates = listOf(name) + alternatives
                 val confidence = candidates.maxOfOrNull { authorConfidence(expected, normalize(it)) } ?: 0f
                 if (confidence < 0.55f) continue
-                add(
-                    CatalogAuthor(
-                        providerId = descriptor.id,
-                        remoteId = key,
-                        name = name,
-                        alternativeNames = alternatives,
-                        workCount = item.optInt("work_count", -1).takeIf { it >= 0 },
-                        confidence = confidence
-                    )
-                )
+                add(CatalogAuthor(descriptor.id, key, name, alternatives, item.optInt("work_count", -1).takeIf { it >= 0 }, confidence))
             }
         }.sortedByDescending { it.confidence }
     }
@@ -112,11 +140,7 @@ object OpenLibraryMetadataPlugin : SourcePlugin, MetadataProvider, AuthorCatalog
         require(author.providerId == descriptor.id) { "Author belongs to another catalog provider" }
         val safeLimit = limit.coerceIn(1, 500)
         val authorKey = author.remoteId.substringAfterLast('/')
-        val url = buildString {
-            append("https://openlibrary.org/search.json?q=author_key:").append(encode(authorKey))
-            append("&fields=key,title,author_name,cover_i,first_publish_year,series")
-            append("&limit=").append(safeLimit)
-        }
+        val url = "https://openlibrary.org/search.json?q=author_key:${encode(authorKey)}&fields=key,title,author_name,cover_i,first_publish_year,series&limit=$safeLimit"
         val json = getJson(url, 8L * 1024 * 1024) ?: return AuthorCatalog(author, emptyList())
         val docs = json.optJSONArray("docs") ?: return AuthorCatalog(author, emptyList())
         val books = buildList {
@@ -128,43 +152,34 @@ object OpenLibraryMetadataPlugin : SourcePlugin, MetadataProvider, AuthorCatalog
                 val coverId = item.optLong("cover_i", -1L).takeIf { it > 0 }
                 val explicitSeries = strings(item, "series")
                 val inferred = CatalogSeriesHeuristics.infer(title)
-                add(
-                    CatalogBook(
-                        providerId = descriptor.id,
-                        remoteId = key,
-                        title = title,
-                        authors = strings(item, "author_name").ifEmpty { listOf(author.name) },
-                        seriesTitles = explicitSeries.ifEmpty { inferred?.let { listOf(it.title) }.orEmpty() },
-                        seriesNumber = inferred?.number,
-                        firstPublishYear = item.optInt("first_publish_year", 0).takeIf { it > 0 },
-                        coverUrl = coverId?.let { coverUrl(it) }
-                    )
-                )
+                add(CatalogBook(
+                    descriptor.id,
+                    key,
+                    title,
+                    strings(item, "author_name").ifEmpty { listOf(author.name) },
+                    explicitSeries.ifEmpty { inferred?.let { listOf(it.title) }.orEmpty() },
+                    inferred?.number,
+                    item.optInt("first_publish_year", 0).takeIf { it > 0 },
+                    coverId?.let(::coverUrl)
+                ))
             }
         }.distinctBy { it.remoteId }
         return AuthorCatalog(author, books)
     }
 
     private suspend fun getJson(url: String, maxBytes: Long): JSONObject? {
-        val response = HostPluginHttpTransport.get(
-            PluginHttpRequest(url, mapOf("Accept" to "application/json")),
-            maxBytes
-        )
+        val response = HostPluginHttpTransport.get(PluginHttpRequest(url, mapOf("Accept" to "application/json")), maxBytes)
         if (response.statusCode !in 200..299) return null
         return runCatching { JSONObject(response.body) }.getOrNull()
     }
 
     private fun strings(json: JSONObject, name: String): List<String> =
-        json.optJSONArray(name)?.let { arr ->
-            (0 until arr.length()).mapNotNull { arr.optString(it).trim().takeIf(String::isNotBlank) }
-        }.orEmpty()
+        json.optJSONArray(name)?.let { arr -> (0 until arr.length()).mapNotNull { arr.optString(it).trim().takeIf(String::isNotBlank) } }.orEmpty()
 
     private fun authorConfidence(expected: String, candidate: String): Float = when {
         candidate == expected -> 1f
         candidate.contains(expected) || expected.contains(candidate) -> 0.86f
-        expected.split(' ').filter(String::isNotBlank).toSet().let { tokens ->
-            tokens.isNotEmpty() && tokens.all { it in candidate }
-        } -> 0.76f
+        expected.split(' ').filter(String::isNotBlank).toSet().let { tokens -> tokens.isNotEmpty() && tokens.all { it in candidate } } -> 0.76f
         else -> 0f
     }
 

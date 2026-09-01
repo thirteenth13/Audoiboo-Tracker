@@ -4,11 +4,11 @@
     {
       "id": "baza-knig",
       "name": "Baza-Knig",
-      "version": 5,
+      "version": 6,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/baza-knig-5.abplugin",
-      "sha256": "831559ad0bd25b13990e95c53458750ef200e430887a8816a23618d3f7932c5c",
-      "description": "Серії, пошук серій та книги Baza-Knig; пряме визначення аудіотреків через device-side Android WebView, включно з redirectto.cc."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/baza-knig-6.abplugin",
+      "sha256": "959510682266b28b1707486511d8094c9b8da4c6e0993567a35b39ae808edb6a",
+      "description": "Серії, пошук серій та книги Baza-Knig; v6 використовує стабільні /series- та /audio- посилання замість крихких контейнерів старої верстки, плюс пряме визначення аудіотреків через device-side Android WebView."
     },
     {
       "id": "knigavuhe",

@@ -1,26 +1,24 @@
 {
   "operation": "seriesLookup",
   "series": {
-    "title": "h1",
-    "titleRegex": "(?i)(?:серии|цикл)\\s*[«\"“]?(.+?)(?:[»\"”]?\\s*(?:—\\s*все\\s+книги\\s+)?слушать)",
-    "followLink": "a[href*='/series-'], a[href*='/xfsearch/cikl/']@href",
+    "title": "a[href*='/series-'] || h1",
+    "titleRegex": "(?i)^\\s*(?:аудиокниги\\s+серии\\s*[«\"“]?|серия\\s*:?)?\\s*[«\"“]?(.+?)[»\"”]?\\s*(?:\\([0-9]+\\))?\\s*(?:слушать\\s+онлайн)?\\s*$",
+    "followLink": "a[href*='/series-']@href || a[href*='/xfsearch/cikl/']@href",
     "description": "meta[name='description']@content",
     "books": {
-      "item": "article, .short, .item",
-      "title": "h2 a, h3 a, .title a",
-      "link": "h2 a, h3 a, .title a@href",
-      "author": "a[href*='/avtor-'], a[href*='/xfsearch/autor/']"
+      "item": "a[href*='/audio-']",
+      "title": "@text",
+      "link": "@href"
     },
     "supplement": {
-      "startLink": "a[href*='/avtor-'], a[href*='/xfsearch/autor/']@href",
+      "startLink": "a[href*='/avtor-']@href || a[href*='/xfsearch/autor/']@href",
       "maxPages": 5,
-      "nextPage": "a[rel='next'], .navigation a.next@href",
-      "seriesTitle": "a[href*='/series-'], a[href*='/xfsearch/cikl/']",
+      "nextPage": "a[rel='next']@href || .navigation a.next@href",
+      "seriesTitle": "a[href*='/series-'] || a[href*='/xfsearch/cikl/']",
       "items": {
-        "item": "article, .short, .item",
-        "title": "h2 a, h3 a, .title a",
-        "link": "h2 a, h3 a, .title a@href",
-        "author": "a[href*='/avtor-'], a[href*='/xfsearch/autor/']"
+        "item": "a[href*='/audio-']",
+        "title": "@text",
+        "link": "@href"
       }
     }
   }

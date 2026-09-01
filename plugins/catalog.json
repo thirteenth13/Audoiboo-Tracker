@@ -13,38 +13,38 @@
     {
       "id": "knigavuhe",
       "name": "Knigavuhe",
-      "version": 5,
+      "version": 6,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-5.abplugin",
-      "sha256": "a6e6277fd8e493bb87a350e78950b515075927bb766fe2405444c158cfc99d56",
-      "description": "Цикли, пошук серій та книги Knigavuhe; SERIES_SEARCH використовує публічний пошук /search/, підтримує актуальні /series/ URL і декларативний href/src fallback для аудіо."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-6.abplugin",
+      "sha256": "f32046d033b8da2630fc75ab23b8f1b07a03a5f3e280eb50940c45c821d5af2b",
+      "description": "Цикли, пошук серій, книги та декларативний WebView mediaCapture Knigavuhe; v6 переносить логіку активації плеєра, режим великих відрізків і збір аудіотреків у плагін."
     },
     {
       "id": "poleknig",
       "name": "Poleknig",
-      "version": 3,
+      "version": 4,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/poleknig-3.abplugin",
-      "sha256": "ad7a0c68176c1e369c22f341373d40020d335ad2fad8fcae8cad97d8b7fd4543",
-      "description": "Книги й цикли Poleknig; SERIES_SEARCH через публічний пошук сайту, стабілізований WebView resolver та href/src fallback."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/poleknig-4.abplugin",
+      "sha256": "d6a08c3bfafc43bc94099a0020ce6e366ce615b6951f58205604315d428c7b60",
+      "description": "Книги, цикли, пошук серій та декларативний WebView mediaCapture Poleknig; v4 переносить resolver /files та збір прямих аудіопосилань у плагін."
     },
     {
       "id": "lis10book",
       "name": "Lis10book",
-      "version": 3,
+      "version": 4,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/lis10book-3.abplugin",
-      "sha256": "7801c1d187eecf8b732526aa1ee2e628c5adb86286529d5dab9cbab3fe8d97ee",
-      "description": "Книги й цикли Lis10book; SERIES_SEARCH через пошукову сторінку сайту та стабілізований WebView-збір аудіотреків."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/lis10book-4.abplugin",
+      "sha256": "4b5dd88992bbe26b474729fae8605076f81e1a7afb9613140d8a43cacc4bdf23",
+      "description": "Книги, цикли, пошук серій та декларативний WebView mediaCapture Lis10book; v4 переносить DOM/network/performance збір аудіотреків у плагін."
     },
     {
       "id": "izib",
       "name": "Izib",
-      "version": 3,
+      "version": 4,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/izib-3.abplugin",
-      "sha256": "b90fd53744c46dc1e78c7a79ceb5d4d637eec28974efd60d31598e483b5801d1",
-      "description": "Книги й серії Izib/PDA; SERIES_DISCOVERY через обмежений пошук автора в каталозі /authors і його /serie посилання, плюс стабілізований WebView-збір та декларативний href/src fallback для аудіо."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/izib-4.abplugin",
+      "sha256": "c95f480ebb310372f810b2284b201bdc6026f2727123485bb0e5ad535c06bb1c",
+      "description": "Книги, серії, SERIES_DISCOVERY та декларативний WebView mediaCapture Izib/PDA; v4 переносить збір аудіотреків зі сторінок /art у плагін."
     }
   ]
 }

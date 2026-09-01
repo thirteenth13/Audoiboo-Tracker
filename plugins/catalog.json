@@ -7,7 +7,7 @@
       "version": 5,
       "apiVersion": 1,
       "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/baza-knig-5.abplugin",
-      "sha256": "78a6b4ce1edc46233a6623feda1a0f0edb1b08c83209bbe8603fbd1af3eec858",
+      "sha256": "18eeadc4fb44ca513aee753ed47f6e40620917c40c20023898a450140a7d61e7",
       "description": "Серії, пошук серій та книги Baza-Knig; пряме визначення аудіотреків через device-side Android WebView, включно з redirectto.cc."
     },
     {

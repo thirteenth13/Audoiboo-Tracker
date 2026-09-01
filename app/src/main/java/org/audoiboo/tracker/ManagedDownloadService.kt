@@ -292,12 +292,14 @@ class ManagedDownloadService : Service() {
             StorageAccess.clearDirectory(this, "${record.relativeDir}/${record.bookDir}")
             return
         }
-        val target = "Download/${record.relativeDir}/${record.bookDir}/"
+        val relative = "${record.relativeDir}/${record.bookDir}"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            runCatching { contentResolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, "${MediaStore.Downloads.RELATIVE_PATH} LIKE ?", arrayOf("$target%")) }
-            runCatching { contentResolver.delete(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ?", arrayOf("$target%")) }
+            val downloadTarget = "${MediaStoreDestinationPolicy.relativePath(relative, false)}/"
+            val audioTarget = "${MediaStoreDestinationPolicy.relativePath(relative, true)}/"
+            runCatching { contentResolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, "${MediaStore.Downloads.RELATIVE_PATH} LIKE ?", arrayOf("$downloadTarget%")) }
+            runCatching { contentResolver.delete(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ?", arrayOf("$audioTarget%")) }
         } else {
-            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "${record.relativeDir}/${record.bookDir}").deleteRecursively()
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), relative).deleteRecursively()
         }
     }
 
@@ -325,22 +327,25 @@ class ManagedDownloadService : Service() {
             return
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val audio = isAudio(fileName)
+            val collection = if (audio) MediaStore.Audio.Media.EXTERNAL_CONTENT_URI else MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val relativePath = MediaStoreDestinationPolicy.relativePath(relativeDir, audio)
             val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                put(MediaStore.Downloads.MIME_TYPE, mimeFor(fileName))
-                put(MediaStore.Downloads.RELATIVE_PATH, "Download/$relativeDir")
-                put(MediaStore.Downloads.IS_PENDING, 1)
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeFor(fileName))
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
-            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            val uri = contentResolver.insert(collection, values)
                 ?: error("Не вдалося створити файл")
             try {
                 contentResolver.openOutputStream(uri)?.use { out ->
                     FileInputStream(source).use { input -> copyInterruptibly(input, out, record.id) }
                 } ?: error("Не вдалося відкрити файл")
                 values.clear()
-                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
                 contentResolver.update(uri, values, null, null)
-                if (isAudio(fileName)) PlayerLibrary.register(this, uri, fileName, "Download/$relativeDir", record.title, record.series, record.author)
+                if (audio) PlayerLibrary.register(this, uri, fileName, relativePath, record.title, record.series, record.author)
             } catch (e: Exception) {
                 runCatching { contentResolver.delete(uri, null, null) }
                 throw e
@@ -398,11 +403,13 @@ class ManagedDownloadService : Service() {
             return
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val collection = if (isAudio(file)) MediaStore.Audio.Media.EXTERNAL_CONTENT_URI else MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val audio = isAudio(file)
+            val collection = if (audio) MediaStore.Audio.Media.EXTERNAL_CONTENT_URI else MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val relativePath = MediaStoreDestinationPolicy.relativePath(dir, audio)
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, file)
                 put(MediaStore.MediaColumns.MIME_TYPE, mimeFor(file))
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/$dir")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
             val uri = contentResolver.insert(collection, values) ?: error("Не вдалося створити $file")
@@ -410,7 +417,7 @@ class ManagedDownloadService : Service() {
                 contentResolver.openOutputStream(uri)?.use { out -> copyWithBudget(input, out, budget, record.id) }
                     ?: error("Не вдалося записати $file")
                 values.clear(); values.put(MediaStore.MediaColumns.IS_PENDING, 0); contentResolver.update(uri, values, null, null)
-                if (isAudio(file)) PlayerLibrary.register(this, uri, file, "Download/$dir", record.title, record.series, record.author)
+                if (audio) PlayerLibrary.register(this, uri, file, relativePath, record.title, record.series, record.author)
             } catch (e: Exception) {
                 runCatching { contentResolver.delete(uri, null, null) }
                 throw e

@@ -11,7 +11,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
     override val descriptor = SourceDescriptor(
         id = "fantlab",
         name = "FantLab Catalog",
-        version = 3,
+        version = 4,
         hosts = setOf("api.fantlab.ru", "fantlab.ru", "www.fantlab.ru"),
         capabilities = setOf(SourceCapability.AUTHOR_CATALOG, SourceCapability.BOOK_SEARCH)
     )
@@ -25,7 +25,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
         if (clean.isBlank()) return emptyList()
         val response = get("https://api.fantlab.ru/search-works?q=${encode(clean)}&page=1&onlymatches=1", 4L * 1024 * 1024)
             ?: return emptyList()
-        val array = runCatching { JSONArray(response) }.getOrNull() ?: return emptyList()
+        val array = parseSearchArray(response) ?: return emptyList()
         val safeLimit = limit.coerceIn(1, 25)
         return buildList {
             for (i in 0 until array.length()) {
@@ -67,17 +67,28 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
         if (expected.isBlank()) return emptyList()
         val response = get("https://api.fantlab.ru/search-autors?q=${encode(query.trim())}&page=1&onlymatches=1", 2L * 1024 * 1024)
             ?: return emptyList()
-        val array = runCatching { JSONArray(response) }.getOrNull() ?: return emptyList()
+        val array = parseSearchArray(response) ?: return emptyList()
         return parseAuthorSearch(expected, array).take(limit.coerceIn(1, 10))
     }
 
     override suspend fun loadAuthorCatalog(author: CatalogAuthor, limit: Int): AuthorCatalog {
         require(author.providerId == descriptor.id) { "Author belongs to another catalog provider" }
         val authorId = author.remoteId.toIntOrNull() ?: return AuthorCatalog(author, emptyList())
-        val response = get("https://api.fantlab.ru/autor/$authorId?biblio_blocks=1&sort=year", 10L * 1024 * 1024)
-            ?: return AuthorCatalog(author, emptyList())
-        val json = runCatching { JSONObject(response) }.getOrNull() ?: return AuthorCatalog(author, emptyList())
-        return AuthorCatalog(author, parseCatalog(author, json).take(limit.coerceIn(1, 500)))
+        val safeLimit = limit.coerceIn(1, 500)
+
+        val primary = loadAuthorJson("https://api.fantlab.ru/autor/$authorId?biblio_blocks=1&sort=year")
+        val primaryBooks = primary?.let { parseCatalog(author, it) }.orEmpty()
+        if (primaryBooks.isNotEmpty()) return AuthorCatalog(author, primaryBooks.take(safeLimit))
+
+        // FantLab's API is still pre-1.0 and has changed response shapes before. The documented
+        // /extended endpoint exposes the same biblio_blocks, so use it as a compatibility fallback.
+        val extended = loadAuthorJson("https://api.fantlab.ru/autor/$authorId/extended?biblio_blocks=1&sort=year")
+        return AuthorCatalog(author, extended?.let { parseCatalog(author, it) }.orEmpty().take(safeLimit))
+    }
+
+    internal fun parseSearchArray(response: String): JSONArray? {
+        runCatching { JSONArray(response) }.getOrNull()?.let { return it }
+        return runCatching { JSONObject(response) }.getOrNull()?.optJSONArray("matches")
     }
 
     internal fun parseAuthorSearch(expected: String, array: JSONArray): List<CatalogAuthor> = buildList {
@@ -168,6 +179,9 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
         .map(String::trim)
         .filter(String::isNotBlank)
         .distinct()
+
+    private suspend fun loadAuthorJson(url: String): JSONObject? =
+        get(url, 10L * 1024 * 1024)?.let { runCatching { JSONObject(it) }.getOrNull() }
 
     private suspend fun get(url: String, maxBytes: Long): String? {
         val response = HostPluginHttpTransport.get(PluginHttpRequest(url, mapOf("Accept" to "application/json")), maxBytes)

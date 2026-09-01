@@ -2,66 +2,51 @@ package org.audoiboo.tracker.plugin
 
 import android.content.Context
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.io.File
 import kotlin.coroutines.resume
 
-/** Host-owned device browser fallback for sources that intentionally vary content by client/network. */
+/** Host-owned device browser runtime. Site-specific behavior comes from installed plugin mediaCapture rules. */
 object DeviceWebViewResolutionRuntime {
     @Volatile private var appContext: Context? = null
 
-    fun initialize(context: Context) {
-        appContext = context.applicationContext
-    }
+    fun initialize(context: Context) { appContext = context.applicationContext }
 
-    fun supports(url: String): Boolean =
-        KnigavuheWebViewMediaCapture.isAllowedPage(url) ||
-            BazaKnigWebViewMediaCapture.isAllowedPage(url) ||
-            PoleknigWebViewMediaCapture.isAllowedPage(url) ||
-            Lis10BookWebViewMediaCapture.isAllowedPage(url) ||
-            IzibWebViewMediaCapture.isAllowedPage(url)
+    fun supports(url: String): Boolean = captureRegistration(url) != null
 
     suspend fun resolve(book: SourceBook): List<DownloadCandidate> {
         val context = appContext ?: return emptyList()
-        if (!supports(book.url)) return emptyList()
+        val registration = captureRegistration(book.url) ?: return emptyList()
+        val manifest = registration.manifest ?: return emptyList()
+        val packageDir = PluginPackageRuntime.packageDirectory(registration.packageId) ?: return emptyList()
+        val relative = manifest.entrypoints["mediaCapture"] ?: return emptyList()
+        val rule = runCatching { PluginMediaCaptureRule.load(File(packageDir, relative)) }.getOrNull() ?: return emptyList()
+        if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, book.url)) return emptyList()
+
         return suspendCancellableCoroutine { continuation ->
-            fun complete(urls: List<String>, quality: String, type: DownloadType = DownloadType.STREAM) {
-                if (!continuation.isActive) return
-                val candidates = urls.distinct().mapIndexed { index, url ->
+            PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, book.url) { result ->
+                if (!continuation.isActive) return@capture
+                continuation.resume(result.mediaUrls.distinct().mapIndexed { index, url ->
                     DownloadCandidate(
-                        type = type,
+                        type = rule.downloadType,
                         url = url,
                         fileName = fileName(url),
-                        quality = quality,
-                        priority = 200 - index
+                        quality = "plugin-webview-${manifest.id}",
+                        priority = 500 - index
                     )
-                }
-                continuation.resume(candidates)
-            }
-
-            when {
-                KnigavuheWebViewMediaCapture.isAllowedPage(book.url) ->
-                    KnigavuheWebViewMediaCapture(context).capture(book.url) { result ->
-                        complete(result.mediaUrls, "device-webview-knigavuhe")
-                    }
-                BazaKnigWebViewMediaCapture.isAllowedPage(book.url) ->
-                    BazaKnigWebViewMediaCapture(context).capture(book.url) { result ->
-                        complete(result.mediaUrls, "device-webview-baza-knig")
-                    }
-                PoleknigWebViewMediaCapture.isAllowedPage(book.url) ->
-                    PoleknigWebViewMediaCapture(context).capture(book.url) { result ->
-                        complete(result.mediaUrls, "device-webview-poleknig", DownloadType.DIRECT_FILE)
-                    }
-                Lis10BookWebViewMediaCapture.isAllowedPage(book.url) ->
-                    Lis10BookWebViewMediaCapture(context).capture(book.url) { result ->
-                        complete(result.mediaUrls, "device-webview-lis10book")
-                    }
-                IzibWebViewMediaCapture.isAllowedPage(book.url) ->
-                    IzibWebViewMediaCapture(context).capture(book.url) { result ->
-                        complete(result.mediaUrls, "device-webview-izib")
-                    }
-                else -> continuation.resume(emptyList())
+                })
             }
         }
     }
+
+    private fun captureRegistration(url: String): SourcePluginRegistration? =
+        PluginPackageRuntime.registrations.firstOrNull { registration ->
+            if (registration.origin != PluginOrigin.PACKAGE || registration.state != PluginState.ENABLED) return@firstOrNull false
+            val manifest = registration.manifest ?: return@firstOrNull false
+            val relative = manifest.entrypoints["mediaCapture"] ?: return@firstOrNull false
+            val packageDir = PluginPackageRuntime.packageDirectory(registration.packageId) ?: return@firstOrNull false
+            val rule = runCatching { PluginMediaCaptureRule.load(File(packageDir, relative)) }.getOrNull() ?: return@firstOrNull false
+            PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url)
+        }
 
     private fun fileName(url: String): String? = runCatching {
         java.net.URI(url).path.substringAfterLast('/').takeIf { it.isNotBlank() }

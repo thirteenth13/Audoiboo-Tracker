@@ -9,9 +9,7 @@ import kotlin.coroutines.resume
 object DeviceWebViewResolutionRuntime {
     @Volatile private var appContext: Context? = null
 
-    fun initialize(context: Context) {
-        appContext = context.applicationContext
-    }
+    fun initialize(context: Context) { appContext = context.applicationContext }
 
     fun supports(url: String): Boolean = captureRegistration(url) != null
 
@@ -19,10 +17,9 @@ object DeviceWebViewResolutionRuntime {
         val context = appContext ?: return emptyList()
         val registration = captureRegistration(book.url) ?: return emptyList()
         val manifest = registration.manifest ?: return emptyList()
-        val packageDir = registration.packagePath?.let(::File) ?: return emptyList()
+        val packageDir = PluginPackageRuntime.packageDirectory(registration.packageId) ?: return emptyList()
         val relative = manifest.entrypoints["mediaCapture"] ?: return emptyList()
-        val ruleFile = File(packageDir, relative)
-        val rule = runCatching { PluginMediaCaptureRule.load(ruleFile) }.getOrNull() ?: return emptyList()
+        val rule = runCatching { PluginMediaCaptureRule.load(File(packageDir, relative)) }.getOrNull() ?: return emptyList()
         if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, book.url)) return emptyList()
 
         return suspendCancellableCoroutine { continuation ->
@@ -45,10 +42,9 @@ object DeviceWebViewResolutionRuntime {
         PluginPackageRuntime.registrations.firstOrNull { registration ->
             if (registration.origin != PluginOrigin.PACKAGE || registration.state != PluginState.ENABLED) return@firstOrNull false
             val manifest = registration.manifest ?: return@firstOrNull false
-            if ("mediaCapture" !in manifest.entrypoints) return@firstOrNull false
-            val packageDir = registration.packagePath?.let(::File) ?: return@firstOrNull false
-            val rule = runCatching { PluginMediaCaptureRule.load(File(packageDir, manifest.entrypoints.getValue("mediaCapture"))) }.getOrNull()
-                ?: return@firstOrNull false
+            val relative = manifest.entrypoints["mediaCapture"] ?: return@firstOrNull false
+            val packageDir = PluginPackageRuntime.packageDirectory(registration.packageId) ?: return@firstOrNull false
+            val rule = runCatching { PluginMediaCaptureRule.load(File(packageDir, relative)) }.getOrNull() ?: return@firstOrNull false
             PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url)
         }
 

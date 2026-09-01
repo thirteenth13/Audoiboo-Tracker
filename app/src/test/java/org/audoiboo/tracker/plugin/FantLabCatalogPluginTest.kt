@@ -3,6 +3,7 @@ package org.audoiboo.tracker.plugin
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -24,6 +25,17 @@ class FantLabCatalogPluginTest {
         assertEquals("Роман Прокофьев", results.single().name)
         assertEquals(42, results.single().workCount)
         assertTrue(results.single().alternativeNames.contains("Roman Prokofiev"))
+    }
+
+    @Test
+    fun acceptsBareAndWrappedSearchResponseShapes() {
+        val bare = FantLabCatalogPlugin.parseSearchArray("""[{"autor_id":82803}]""")
+        val wrapped = FantLabCatalogPlugin.parseSearchArray("""{"matches":[{"autor_id":82803}],"total":1}""")
+
+        assertNotNull(bare)
+        assertNotNull(wrapped)
+        assertEquals(82803, bare!!.getJSONObject(0).getInt("autor_id"))
+        assertEquals(82803, wrapped!!.getJSONObject(0).getInt("autor_id"))
     }
 
     @Test

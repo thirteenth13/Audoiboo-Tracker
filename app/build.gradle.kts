@@ -4,6 +4,9 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val buildCommit = providers.environmentVariable("AUDOIBOO_BUILD_COMMIT").orElse("local")
+val buildRun = providers.environmentVariable("AUDOIBOO_BUILD_RUN").orElse("local")
+
 android {
     namespace = "org.audoiboo.tracker"
     compileSdk = 37
@@ -14,6 +17,8 @@ android {
         targetSdk = 37
         versionCode = 116
         versionName = "1.1.6-dev"
+        buildConfigField("String", "BUILD_COMMIT", "\"${buildCommit.get()}\"")
+        buildConfigField("String", "BUILD_RUN", "\"${buildRun.get()}\"")
     }
 
     val releaseStoreFile = providers.gradleProperty("AUDOIBOO_STORE_FILE").orNull
@@ -48,7 +53,7 @@ android {
         }
     }
 
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

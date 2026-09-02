@@ -183,6 +183,7 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
                 "Зовнішні джерела встановлюються як .abplugin. Плагін не отримує прямого доступу до Android, файлів або мережі — HTTP виконується через sandbox застосунку.",
                 style = MaterialTheme.typography.bodyMedium
             )
+            Text("Збірка: ${BuildProvenance.label}", style = MaterialTheme.typography.bodySmall)
             Button(onClick = { checkCatalog() }, modifier = Modifier.fillMaxWidth(), enabled = !busy) {
                 if (busy) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)) }
                 Text(if (busy) "Обробка…" else "Каталог плагінів")

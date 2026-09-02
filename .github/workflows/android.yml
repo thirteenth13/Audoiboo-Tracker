@@ -10,45 +10,46 @@ on:
 permissions:
   contents: write
 
+env:
+  AUDOIBOO_BUILD_COMMIT: ${{ github.sha }}
+  AUDOIBOO_BUILD_RUN: ${{ github.run_number }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-
       - name: Set up Gradle 9.5
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.5.0"
-
       - name: Unit tests
         run: gradle :app:testDebugUnitTest --stacktrace
-
       - name: Android lint (report legacy debt)
         continue-on-error: true
         run: gradle :app:lintDebug --stacktrace
-
       - name: Build PR debug APK
         if: github.event_name == 'pull_request'
         run: gradle :app:assembleDebug --stacktrace
-
+      - name: Verify PR APK provenance
+        if: github.event_name == 'pull_request'
+        run: |
+          unzip -p app/build/outputs/apk/debug/app-debug.apk 'classes*.dex' | strings | grep -F "$GITHUB_SHA"
+          unzip -p app/build/outputs/apk/debug/app-debug.apk 'classes*.dex' | strings | grep -F "$GITHUB_RUN_NUMBER"
       - name: Upload PR test APK
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: Audoiboo-Tracker-PR-${{ github.event.pull_request.number }}-${{ github.sha }}
           path: app/build/outputs/apk/debug/app-debug.apk
-
       - name: Decode release signing key
         if: github.event_name != 'pull_request'
         env:
@@ -64,7 +65,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/audoiboo-signing"
           printf '%s' "$AUDOIBOO_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/audoiboo-signing/release.jks"
           keytool -list -keystore "$RUNNER_TEMP/audoiboo-signing/release.jks" -storepass "$AUDOIBOO_STORE_PASSWORD" -alias "$AUDOIBOO_KEY_ALIAS" >/dev/null
-
       - name: Build release APK
         if: github.event_name != 'pull_request'
         env:
@@ -73,33 +73,35 @@ jobs:
           ORG_GRADLE_PROJECT_AUDOIBOO_KEY_ALIAS: ${{ secrets.AUDOIBOO_KEY_ALIAS }}
           ORG_GRADLE_PROJECT_AUDOIBOO_KEY_PASSWORD: ${{ secrets.AUDOIBOO_KEY_PASSWORD }}
         run: gradle :app:assembleRelease --stacktrace
-
+      - name: Verify release APK provenance
+        if: github.event_name != 'pull_request'
+        run: |
+          unzip -p app/build/outputs/apk/release/app-release.apk 'classes*.dex' | strings | grep -F "$GITHUB_SHA"
+          unzip -p app/build/outputs/apk/release/app-release.apk 'classes*.dex' | strings | grep -F "$GITHUB_RUN_NUMBER"
       - name: Rename APK
         if: github.event_name != 'pull_request'
-        run: cp app/build/outputs/apk/release/app-release.apk Audoiboo-Tracker-1.1.6-dev.apk
-
+        run: cp app/build/outputs/apk/release/app-release.apk "Audoiboo-Tracker-1.1.6-dev-${GITHUB_SHA::12}.apk"
       - name: Upload workflow artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: Audoiboo-Tracker-1.1.6-dev
-          path: Audoiboo-Tracker-1.1.6-dev.apk
-
+          name: Audoiboo-Tracker-1.1.6-dev-${{ github.sha }}
+          path: Audoiboo-Tracker-1.1.6-dev-*.apk
       - name: Publish dev prerelease
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RELEASE_NOTES="Source repair batch: Audioboo go.php archives are recognized as ZIPs and unpacked into the book folder; Knigavuhe metadata/folder names and large-segment capture are corrected; Baza-Knig series pagination and dynamic playlist capture are expanded; Izib retries PDA/desktop mirrors with repaired direct-series rules."
+          APK="Audoiboo-Tracker-1.1.6-dev-${GITHUB_SHA::12}.apk"
+          RELEASE_NOTES="Build ${GITHUB_SHA} (CI #${GITHUB_RUN_NUMBER}). APK provenance is embedded and verified by CI."
           if gh release view dev-player >/dev/null 2>&1; then
             git tag -f dev-player "$GITHUB_SHA"
             git push origin refs/tags/dev-player --force
-            gh release upload dev-player Audoiboo-Tracker-1.1.6-dev.apk --clobber
+            gh release upload dev-player "$APK" --clobber
             gh release edit dev-player --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.6-dev" --prerelease --notes "$RELEASE_NOTES"
           else
-            gh release create dev-player Audoiboo-Tracker-1.1.6-dev.apk --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.6-dev" --prerelease --notes "$RELEASE_NOTES"
+            gh release create dev-player "$APK" --target "$GITHUB_SHA" --title "Audoiboo Tracker 1.1.6-dev" --prerelease --notes "$RELEASE_NOTES"
           fi
-
       - name: Remove signing key
         if: always() && github.event_name != 'pull_request'
         run: rm -rf "$RUNNER_TEMP/audoiboo-signing"

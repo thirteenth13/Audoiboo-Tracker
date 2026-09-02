@@ -84,7 +84,7 @@ class BazaSequentialMediaCapture(private val context: Context) {
                     maybeFinish()
                 }
                 @JavascriptInterface fun event(message: String?) = handler.post {
-                    if (!message.isNullOrBlank() && diagnostics.size < 240) diagnostics += "js:$message"
+                    if (!message.isNullOrBlank() && diagnostics.size < 260) diagnostics += "js:$message"
                 }
             }, BRIDGE)
 
@@ -126,14 +126,36 @@ class BazaSequentialMediaCapture(private val context: Context) {
               if (window.__audoibooBazaPlaylist) return 'already';
               window.__audoibooBazaPlaylist = true;
 
-              document.addEventListener('click', e => {
+              const documents = () => {
+                const out = [];
+                const seen = new Set();
+                const add = d => {
+                  if (!d || seen.has(d)) return;
+                  seen.add(d); out.push(d);
+                  try {
+                    [...d.querySelectorAll('iframe,frame')].forEach(f => {
+                      try { if (f.contentDocument) add(f.contentDocument); } catch (_) {}
+                    });
+                  } catch (_) {}
+                };
+                add(document);
+                return out;
+              };
+
+              const installNavigationGuard = d => {
                 try {
-                  const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
-                  if (!a) return;
-                  const href = String(a.getAttribute('href') || '').trim();
-                  if (href && href !== '#' && !href.toLowerCase().startsWith('javascript:')) e.preventDefault();
+                  if (d.__audoibooNavGuard) return;
+                  d.__audoibooNavGuard = true;
+                  d.addEventListener('click', e => {
+                    try {
+                      const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+                      if (!a) return;
+                      const href = String(a.getAttribute('href') || '').trim();
+                      if (href && href !== '#' && !href.toLowerCase().startsWith('javascript:')) e.preventDefault();
+                    } catch (_) {}
+                  }, true);
                 } catch (_) {}
-              }, true);
+              };
 
               const emit = raw => {
                 try {
@@ -151,15 +173,18 @@ class BazaSequentialMediaCapture(private val context: Context) {
               };
               const scanMedia = () => {
                 try {
-                  document.querySelectorAll('audio,source').forEach(e => {
-                    emit(e.currentSrc); emit(e.src); emit(e.getAttribute('src'));
+                  documents().forEach(d => {
+                    installNavigationGuard(d);
+                    d.querySelectorAll('audio,source').forEach(e => {
+                      emit(e.currentSrc); emit(e.src); emit(e.getAttribute('src'));
+                    });
+                    d.querySelectorAll('*').forEach(e => {
+                      for (const a of Array.from(e.attributes || [])) {
+                        if (/^(src|href|data-|onclick|onplay)/i.test(a.name)) scanText(a.value);
+                      }
+                    });
+                    d.querySelectorAll('script').forEach(s => scanText(s.textContent || s.innerHTML));
                   });
-                  document.querySelectorAll('*').forEach(e => {
-                    for (const a of Array.from(e.attributes || [])) {
-                      if (/^(src|href|data-|onclick|onplay)/i.test(a.name)) scanText(a.value);
-                    }
-                  });
-                  document.querySelectorAll('script').forEach(s => scanText(s.textContent || s.innerHTML));
                   try { performance.getEntriesByType('resource').forEach(e => emit(e.name)); } catch (_) {}
                 } catch (_) {}
               };
@@ -187,14 +212,14 @@ class BazaSequentialMediaCapture(private val context: Context) {
               const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
               const exactNumber = e => {
                 const t = norm(e.innerText || e.textContent);
-                if (!/^\d{1,3}$/.test(t)) return 0;
+                if (!/^0*\d{1,3}$/.test(t)) return 0;
                 const n = Number(t);
                 return n >= 1 && n <= 350 ? n : 0;
               };
 
               const smallestNumberNode = (root, n) => {
-                const matches = [...root.querySelectorAll('li,div,span,a,button,p')]
-                  .filter(e => exactNumber(e) === n);
+                const matches = [...root.querySelectorAll('*')].filter(e => exactNumber(e) === n);
+                if (exactNumber(root) === n) matches.unshift(root);
                 if (!matches.length) return null;
                 matches.sort((a,b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
                 return matches[0];
@@ -202,7 +227,8 @@ class BazaSequentialMediaCapture(private val context: Context) {
 
               const sequenceFor = root => {
                 const nums = new Set();
-                root.querySelectorAll('li,div,span,a,button,p').forEach(e => {
+                if (exactNumber(root)) nums.add(exactNumber(root));
+                root.querySelectorAll('*').forEach(e => {
                   const n = exactNumber(e); if (n) nums.add(n);
                 });
                 let count = 0;
@@ -211,49 +237,61 @@ class BazaSequentialMediaCapture(private val context: Context) {
               };
 
               const findPlaylist = () => {
-                const ones = [...document.querySelectorAll('li,div,span,a,button,p')]
-                  .filter(e => exactNumber(e) === 1);
-                let bestRoot = null, bestCount = 0;
-                for (const one of ones.slice(0, 80)) {
-                  let root = one;
-                  for (let depth = 0; depth < 9 && root; depth++, root = root.parentElement) {
-                    const count = sequenceFor(root);
-                    if (count > bestCount) {
-                      bestCount = count;
-                      bestRoot = root;
+                let best = null;
+                for (const d of documents()) {
+                  const ones = [...d.querySelectorAll('*')].filter(e => exactNumber(e) === 1);
+                  for (const one of ones.slice(0, 120)) {
+                    let root = one;
+                    for (let depth = 0; depth < 12 && root; depth++, root = root.parentElement) {
+                      const count = sequenceFor(root);
+                      if (!best || count > best.count) best = {doc:d, root, count};
                     }
                   }
                 }
-                if (!bestRoot || bestCount < 2) return null;
+                if (!best || best.count < 2) return null;
                 const nodes = [];
-                for (let n = 1; n <= bestCount; n++) {
-                  const node = smallestNumberNode(bestRoot, n);
+                for (let n = 1; n <= best.count; n++) {
+                  const node = smallestNumberNode(best.root, n);
                   if (!node) break;
                   nodes.push(node);
                 }
-                return nodes.length >= 2 ? {root: bestRoot, nodes} : null;
+                return nodes.length >= 2 ? {doc:best.doc, root:best.root, nodes} : null;
               };
 
               const tryExpand = () => {
+                let clicked = 0;
                 try {
-                  const audio = document.querySelector('audio');
-                  let root = audio;
-                  for (let i=0; i<6 && root?.parentElement; i++) root = root.parentElement;
-                  if (!root) root = document.body;
-                  const controls = [...root.querySelectorAll('[aria-expanded],button,[role=button],a,div,span')];
-                  const scored = controls.filter(e => {
-                    const attrs = [e.id,e.className,e.getAttribute('title'),e.getAttribute('aria-label'),e.getAttribute('data-action')]
-                      .filter(Boolean).join(' ');
-                    return /playlist|tracklist|track-list|audio-list|player-list|expand|collapse|toggle/i.test(attrs) || e.getAttribute('aria-expanded') === 'false';
-                  }).slice(0,8);
-                  scored.forEach(e => { try { e.click(); } catch (_) {} });
-                  if (scored.length) AudoibooBazaSequential.event('expand=' + scored.length);
+                  documents().forEach(d => {
+                    installNavigationGuard(d);
+                    const roots = [];
+                    d.querySelectorAll('audio').forEach(audio => {
+                      let r = audio;
+                      for (let i=0; i<8 && r?.parentElement; i++, r=r.parentElement) roots.push(r);
+                    });
+                    d.querySelectorAll('[class*=player],[id*=player],[class*=audio],[id*=audio],[class*=playlist],[id*=playlist]').forEach(e => roots.push(e));
+                    if (!roots.length && d.body) roots.push(d.body);
+                    const candidates = [];
+                    roots.slice(0,40).forEach(root => {
+                      try { root.querySelectorAll('button,[role=button],[aria-expanded],[onclick],a,span,div').forEach(e => candidates.push(e)); } catch (_) {}
+                    });
+                    const unique = [...new Set(candidates)].filter(e => {
+                      const t = norm(e.innerText || e.textContent);
+                      if (t.length > 30) return false;
+                      const attrs = [e.id,e.className,e.getAttribute?.('title'),e.getAttribute?.('aria-label'),e.getAttribute?.('data-action')]
+                        .filter(Boolean).join(' ');
+                      return /playlist|tracklist|track-list|audio-list|player-list|expand|collapse|toggle|list|menu|more|next/i.test(attrs) ||
+                        e.getAttribute?.('aria-expanded') === 'false' ||
+                        (!!e.querySelector?.('svg,i') && t.length <= 3);
+                    }).slice(0,30);
+                    unique.forEach(e => { try { e.click(); clicked++; } catch (_) {} });
+                  });
                 } catch (_) {}
+                AudoibooBazaSequential.event('expand=' + clicked + ' docs=' + documents().length);
               };
 
               const clickable = (node, root) => {
                 let e = node;
-                for (let i=0; i<4 && e && e !== root; i++, e=e.parentElement) {
+                for (let i=0; i<5 && e && e !== root; i++, e=e.parentElement) {
                   const attrs = [e.getAttribute?.('onclick'),e.getAttribute?.('role'),e.className,e.getAttribute?.('data-src'),e.getAttribute?.('data-url')]
                     .filter(Boolean).join(' ');
                   if (e.tagName === 'BUTTON' || e.tagName === 'A' || /button|track|item|play|audio|click/i.test(attrs)) return e;
@@ -287,8 +325,8 @@ class BazaSequentialMediaCapture(private val context: Context) {
                   const target = clickable(node, playlist.root);
                   AudoibooBazaSequential.event('activate=' + n + '/' + tracks.length + ':' + String(target.tagName) + '.' + String(target.className || '').slice(0,50));
                   activate(target);
-                  setTimeout(scanMedia, 180);
-                  setTimeout(next, 520);
+                  setTimeout(scanMedia, 220);
+                  setTimeout(next, 650);
                 };
                 setTimeout(next, 300);
               };
@@ -297,19 +335,31 @@ class BazaSequentialMediaCapture(private val context: Context) {
               window.__audoibooBazaRescan = () => {
                 scanMedia();
                 if (window.__audoibooBazaTraversalStarted) return true;
+                const docs = documents();
                 const playlist = findPlaylist();
                 if (playlist) {
-                  AudoibooBazaSequential.event('playlist-found=' + playlist.nodes.length);
+                  AudoibooBazaSequential.event('playlist-found=' + playlist.nodes.length + ' docs=' + docs.length);
                   startTraversal(playlist);
                   return true;
                 }
                 attempts++;
-                if (attempts === 2 || attempts === 5) tryExpand();
-                AudoibooBazaSequential.event('playlist-wait=' + attempts);
+                if (attempts === 2 || attempts === 4 || attempts === 7) tryExpand();
+                AudoibooBazaSequential.event('playlist-wait=' + attempts + ' docs=' + docs.length + ' iframes=' + document.querySelectorAll('iframe,frame').length);
                 return false;
               };
 
-              try { new MutationObserver(() => { if (!window.__audoibooBazaTraversalStarted) window.__audoibooBazaRescan(); }).observe(document.documentElement,{childList:true,subtree:true}); } catch (_) {}
+              try {
+                const observeAll = () => documents().forEach(d => {
+                  try {
+                    if (d.__audoibooObserved) return;
+                    d.__audoibooObserved = true;
+                    new MutationObserver(() => { if (!window.__audoibooBazaTraversalStarted) window.__audoibooBazaRescan(); })
+                      .observe(d.documentElement,{childList:true,subtree:true});
+                  } catch (_) {}
+                });
+                observeAll();
+                setInterval(observeAll, 1500);
+              } catch (_) {}
               return window.__audoibooBazaRescan();
             })();
         """.trimIndent()

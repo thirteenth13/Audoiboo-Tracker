@@ -2,7 +2,7 @@
   "operation": "bookLookup",
   "book": {
     "title": "meta[property='og:title']@content",
-    "titleRegex": "(?i)^(.+?)(?=\\s*\\(|\\s+-\\s+автор\\b|$)",
+    "titleRegex": "(?i)^(?:.+?\\s+-\\s+)?(.+?)(?=\\s*\\(|\\s+-\\s+автор\\b|$)",
     "author": "a[href*='/author/'], a[href*='/reader/']",
     "seriesTitle": "a[href*='/series/'], a[href*='/serie/']",
     "coverUrl": "meta[property='og:image']@content",

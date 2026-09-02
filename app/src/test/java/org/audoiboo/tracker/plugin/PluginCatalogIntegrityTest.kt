@@ -1,5 +1,6 @@
 package org.audoiboo.tracker.plugin
 
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -29,16 +30,33 @@ class PluginCatalogIntegrityTest {
             assertEquals("Checksum mismatch for $id v$version", expected, sha256(packageFile))
 
             ZipFile(packageFile).use { zip ->
-                assertNotNull("plugin.json missing from $id v$version", zip.getEntry("plugin.json"))
+                val manifestEntry = zip.getEntry("plugin.json")
+                assertNotNull("plugin.json missing from $id v$version", manifestEntry)
+                val manifest = JSONObject(zip.getInputStream(manifestEntry).bufferedReader().use { it.readText() })
+                assertEquals("Manifest id mismatch", id, manifest.getString("id"))
+                assertEquals("Manifest version mismatch", version, manifest.getInt("version"))
+
                 val entriesInZip = zip.entries().asSequence().filterNot { it.isDirectory }.toList()
                 assertTrue("Empty plugin archive for $id v$version", entriesInZip.isNotEmpty())
                 entriesInZip.forEach { zipEntry ->
-                    zip.getInputStream(zipEntry).use { input ->
-                        val buffer = ByteArray(16 * 1024)
-                        while (input.read(buffer) >= 0) Unit
+                    val bytes = zip.getInputStream(zipEntry).use { it.readBytes() }
+                    if (zipEntry.name.endsWith(".json")) {
+                        val json = JSONObject(bytes.toString(Charsets.UTF_8))
+                        assertNoAttributeBeforeCssComma(id, zipEntry.name, json)
                     }
                 }
             }
+        }
+    }
+
+    private fun assertNoAttributeBeforeCssComma(pluginId: String, path: String, value: Any?) {
+        when (value) {
+            is JSONObject -> value.keys().forEach { key -> assertNoAttributeBeforeCssComma(pluginId, "$path.$key", value.get(key)) }
+            is JSONArray -> for (i in 0 until value.length()) assertNoAttributeBeforeCssComma(pluginId, "$path[$i]", value.get(i))
+            is String -> assertTrue(
+                "Invalid selector expression in $pluginId at $path: attribute extraction must be after a complete CSS selector or separated with ||",
+                !Regex("@[A-Za-z][A-Za-z0-9_-]*\\s*,").containsMatchIn(value)
+            )
         }
     }
 

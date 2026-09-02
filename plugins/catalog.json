@@ -13,11 +13,11 @@
     {
       "id": "knigavuhe",
       "name": "Knigavuhe",
-      "version": 6,
+      "version": 7,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-6.abplugin",
-      "sha256": "f32046d033b8da2630fc75ab23b8f1b07a03a5f3e280eb50940c45c821d5af2b",
-      "description": "Цикли, пошук серій, книги та декларативний WebView mediaCapture Knigavuhe; v6 переносить логіку активації плеєра, режим великих відрізків і збір аудіотреків у плагін."
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-7.abplugin",
+      "sha256": "d1488fbe99d60bde661a308a74e65800ce485df00b1ca76c530ac08778dfb5c2",
+      "description": "Цикли, пошук серій, книги та декларативний WebView mediaCapture Knigavuhe; v7 виправляє followLink для /series/ і /serie/ та нормалізує назву книги без префікса автора."
     },
     {
       "id": "poleknig",

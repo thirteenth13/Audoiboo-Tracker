@@ -1,5 +1,9 @@
 {
-  "id": "knigavuhe", "name": "Knigavuhe", "version": 6, "apiVersion": 1, "runtime": "DECLARATIVE",
+  "id": "knigavuhe",
+  "name": "Knigavuhe",
+  "version": 7,
+  "apiVersion": 1,
+  "runtime": "DECLARATIVE",
   "hosts": ["knigavuhe.org", "m.knigavuhe.org"],
   "capabilities": ["SERIES_LOOKUP", "SERIES_SEARCH", "BOOK_LOOKUP", "DOWNLOAD_RESOLUTION"],
   "permissions": {"networkHosts": ["knigavuhe.org", "m.knigavuhe.org"], "downloadHosts": ["knigavuhe.org"], "cookies": false, "javascript": false},

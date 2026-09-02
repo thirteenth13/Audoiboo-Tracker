@@ -189,7 +189,7 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
             lines += "books-detail: total=${refs.size}"
             val samples = mutableListOf<SourceBook>()
             refs.forEachIndexed { index, ref ->
-                lines += "  ${index + 1}. ${ref.title.take(100)}"
+                lines += "  ${index + 1}. ${ref.title?.take(100) ?: "?"}"
                 lines += "     url=${ref.url}"
                 if (index < 2 && plugin is BookProvider) {
                     val book = runCatching { plugin.loadBook(ref.url) }.getOrNull()

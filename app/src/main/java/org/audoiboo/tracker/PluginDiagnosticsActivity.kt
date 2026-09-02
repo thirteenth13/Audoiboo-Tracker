@@ -25,6 +25,7 @@ class PluginDiagnosticsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         PluginPackageRuntime.initialize(filesDir)
         DeviceWebViewResolutionRuntime.initialize(this)
+        RawMediaProbeRuntime.initialize(this)
         setContent { AudoibooTheme(this) { PluginDiagnosticsScreen(this) } }
     }
 }
@@ -74,7 +75,7 @@ private fun PluginDiagnosticsScreen(activity: ComponentActivity) {
                 OutlinedButton(onClick = ::copy, modifier = Modifier.fillMaxWidth()) { Text("Скопіювати звіт") }
                 Text(report, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
             } else {
-                Text("Для кожної книги звіт окремо показує staticMedia з HTML resolver та capturedMedia з того самого WebView mediaCapture, який застосунок використовує для завантаження.", style = MaterialTheme.typography.bodySmall)
+                Text("Для кожної книги звіт окремо показує staticMedia з HTML resolver та capturedMedia з того самого WebView mediaCapture, який застосунок використовує для завантаження. Якщо capture не знаходить медіа, перша книга серії додатково показує сирі audio-кандидати до фільтрації плагіном.", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -106,6 +107,13 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
         val static = if (plugin is DownloadResolver) runCatching { plugin.resolveDownloads(book) }.getOrElse { emptyList() } else emptyList()
         val captured = runCatching { DeviceWebViewResolutionRuntime.captureDiagnostics(book.url) }.getOrNull()
         return static to captured
+    }
+
+    suspend fun appendRawProbe(bookUrl: String, indent: String) {
+        val probe = runCatching { RawMediaProbeRuntime.probe(bookUrl) }.getOrNull() ?: return
+        lines += "${indent}rawProbe=${probe.candidates.size}"
+        probe.candidates.take(8).forEach { lines += "${indent}rawCandidate: ${it.take(220)}" }
+        probe.diagnostics.takeLast(6).forEach { lines += "${indent}raw-event: ${it.take(160)}" }
     }
 
     var rootBook: SourceBook? = null
@@ -140,6 +148,7 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
                     static.take(3).forEach { lines += "       static ${it.type}: ${it.url.take(150)}" }
                     captured?.mediaUrls?.take(3)?.forEach { lines += "       captured: ${it.take(150)}" }
                     captured?.diagnostics?.takeLast(8)?.forEach { lines += "       capture-event: ${it.take(150)}" }
+                    if (index == 0 && captured != null && captured.mediaUrls.isEmpty()) appendRawProbe(bookUrl, "       ")
                 }
             }
             "checked=${refs.size}"
@@ -151,6 +160,7 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
             static.take(5).forEach { lines += "  static ${it.type}: ${it.url.take(150)}" }
             captured?.mediaUrls?.take(5)?.forEach { lines += "  captured: ${it.take(150)}" }
             captured?.diagnostics?.takeLast(12)?.forEach { lines += "  capture-event: ${it.take(150)}" }
+            if (captured != null && captured.mediaUrls.isEmpty()) appendRawProbe(rootBook!!.url, "  ")
             "checked=1"
         }
     } else {

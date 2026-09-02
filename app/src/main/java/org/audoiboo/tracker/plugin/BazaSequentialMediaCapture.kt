@@ -13,7 +13,7 @@ import java.net.URI
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Detects the rendered Baza player playlist and activates every track dynamically. */
+/** Detects the rendered Baza player playlist, including open shadow DOM, and activates every track. */
 class BazaSequentialMediaCapture(private val context: Context) {
     data class Result(val pageUrl: String, val mediaUrls: List<String>, val diagnostics: List<String>)
 
@@ -46,8 +46,9 @@ class BazaSequentialMediaCapture(private val context: Context) {
             }
 
             fun maybeFinish() {
-                if (!traversalDone || expectedTracks <= 0) return
-                if (snapshot().size >= expectedTracks) finish("playlist-complete")
+                if (traversalDone && expectedTracks > 0 && snapshot().size >= expectedTracks) {
+                    finish("playlist-complete")
+                }
             }
 
             fun remember(raw: String?) {
@@ -55,9 +56,7 @@ class BazaSequentialMediaCapture(private val context: Context) {
                 if (value.isBlank()) return
                 val url = runCatching { URI(pageUrl).resolve(value).toString() }.getOrNull() ?: return
                 if (!BazaKnigWebViewMediaCapture.isBookAudio(url)) return
-                synchronized(found) {
-                    if (found.size < 350) found += url
-                }
+                synchronized(found) { if (found.size < 350) found += url }
                 maybeFinish()
             }
 
@@ -84,7 +83,7 @@ class BazaSequentialMediaCapture(private val context: Context) {
                     maybeFinish()
                 }
                 @JavascriptInterface fun event(message: String?) = handler.post {
-                    if (!message.isNullOrBlank() && diagnostics.size < 260) diagnostics += "js:$message"
+                    if (!message.isNullOrBlank() && diagnostics.size < 300) diagnostics += "js:$message"
                 }
             }, BRIDGE)
 
@@ -107,7 +106,7 @@ class BazaSequentialMediaCapture(private val context: Context) {
                     if (!BazaKnigWebViewMediaCapture.isAllowedPage(url) || finished.get()) return
                     diagnostics += "loaded"
                     view.evaluateJavascript(SCRIPT, null)
-                    listOf(1_500L, 3_000L, 5_000L, 8_000L, 12_000L, 18_000L, 26_000L, 34_000L).forEach { delay ->
+                    listOf(1_500L, 3_000L, 5_000L, 8_000L, 12_000L, 18_000L, 26_000L, 34_000L, 40_000L).forEach { delay ->
                         handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(RESCAN, null) }, delay)
                     }
                 }
@@ -123,38 +122,34 @@ class BazaSequentialMediaCapture(private val context: Context) {
 
         private val SCRIPT = """
             (() => {
-              if (window.__audoibooBazaPlaylist) return 'already';
-              window.__audoibooBazaPlaylist = true;
+              if (window.__audoibooBazaShadowPlaylist) return 'already';
+              window.__audoibooBazaShadowPlaylist = true;
 
-              const documents = () => {
+              const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+
+              const roots = () => {
                 const out = [];
                 const seen = new Set();
-                const add = d => {
-                  if (!d || seen.has(d)) return;
-                  seen.add(d); out.push(d);
+                const addRoot = root => {
+                  if (!root || seen.has(root)) return;
+                  seen.add(root); out.push(root);
                   try {
-                    [...d.querySelectorAll('iframe,frame')].forEach(f => {
-                      try { if (f.contentDocument) add(f.contentDocument); } catch (_) {}
+                    root.querySelectorAll('*').forEach(e => {
+                      try { if (e.shadowRoot) addRoot(e.shadowRoot); } catch (_) {}
+                    });
+                    root.querySelectorAll('iframe,frame').forEach(f => {
+                      try { if (f.contentDocument) addRoot(f.contentDocument); } catch (_) {}
                     });
                   } catch (_) {}
                 };
-                add(document);
+                addRoot(document);
                 return out;
               };
 
-              const installNavigationGuard = d => {
-                try {
-                  if (d.__audoibooNavGuard) return;
-                  d.__audoibooNavGuard = true;
-                  d.addEventListener('click', e => {
-                    try {
-                      const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
-                      if (!a) return;
-                      const href = String(a.getAttribute('href') || '').trim();
-                      if (href && href !== '#' && !href.toLowerCase().startsWith('javascript:')) e.preventDefault();
-                    } catch (_) {}
-                  }, true);
-                } catch (_) {}
+              const all = selector => {
+                const out = [];
+                roots().forEach(r => { try { r.querySelectorAll(selector).forEach(e => out.push(e)); } catch (_) {} });
+                return out;
               };
 
               const emit = raw => {
@@ -164,30 +159,40 @@ class BazaSequentialMediaCapture(private val context: Context) {
                   if (clean) AudoibooBazaSequential.media(new URL(clean, location.href).href);
                 } catch (_) {}
               };
+
               const scanText = text => {
                 try {
                   const value = String(text || '').replaceAll('\\/','/');
                   (value.match(/(?:https?:\/\/|\/\/|\/)[^\"'<>\s]+\.mp3(?:\?[^\"'<>\s]*)?/gi) || [])
-                    .slice(0, 1500).forEach(emit);
+                    .slice(0, 2000).forEach(emit);
                 } catch (_) {}
               };
+
               const scanMedia = () => {
                 try {
-                  documents().forEach(d => {
-                    installNavigationGuard(d);
-                    d.querySelectorAll('audio,source').forEach(e => {
+                  roots().forEach(r => {
+                    r.querySelectorAll('audio,source').forEach(e => {
                       emit(e.currentSrc); emit(e.src); emit(e.getAttribute('src'));
                     });
-                    d.querySelectorAll('*').forEach(e => {
+                    r.querySelectorAll('*').forEach(e => {
                       for (const a of Array.from(e.attributes || [])) {
                         if (/^(src|href|data-|onclick|onplay)/i.test(a.name)) scanText(a.value);
                       }
                     });
-                    d.querySelectorAll('script').forEach(s => scanText(s.textContent || s.innerHTML));
+                    r.querySelectorAll('script').forEach(s => scanText(s.textContent || s.innerHTML));
                   });
-                  try { performance.getEntriesByType('resource').forEach(e => emit(e.name)); } catch (_) {}
+                  performance.getEntriesByType('resource').forEach(e => emit(e.name));
                 } catch (_) {}
               };
+
+              document.addEventListener('click', e => {
+                try {
+                  const a = e.target?.closest?.('a[href]');
+                  if (!a) return;
+                  const href = String(a.getAttribute('href') || '').trim();
+                  if (href && href !== '#' && !href.toLowerCase().startsWith('javascript:')) e.preventDefault();
+                } catch (_) {}
+              }, true);
 
               const nativeFetch = window.fetch;
               if (nativeFetch) window.fetch = function(...args) {
@@ -209,7 +214,6 @@ class BazaSequentialMediaCapture(private val context: Context) {
                 set(v) { emit(v); return src.set.call(this, v); }
               });
 
-              const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
               const exactNumber = e => {
                 const t = norm(e.innerText || e.textContent);
                 if (!/^0*\d{1,3}$/.test(t)) return 0;
@@ -217,86 +221,60 @@ class BazaSequentialMediaCapture(private val context: Context) {
                 return n >= 1 && n <= 350 ? n : 0;
               };
 
-              const smallestNumberNode = (root, n) => {
-                const matches = [...root.querySelectorAll('*')].filter(e => exactNumber(e) === n);
-                if (exactNumber(root) === n) matches.unshift(root);
-                if (!matches.length) return null;
-                matches.sort((a,b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
-                return matches[0];
+              const descendants = root => {
+                const out = [];
+                try { root.querySelectorAll('*').forEach(e => out.push(e)); } catch (_) {}
+                return out;
               };
 
               const sequenceFor = root => {
                 const nums = new Set();
                 if (exactNumber(root)) nums.add(exactNumber(root));
-                root.querySelectorAll('*').forEach(e => {
-                  const n = exactNumber(e); if (n) nums.add(n);
-                });
+                descendants(root).forEach(e => { const n = exactNumber(e); if (n) nums.add(n); });
                 let count = 0;
                 while (nums.has(count + 1) && count < 350) count++;
                 return count;
               };
 
+              const smallestNumberNode = (root, n) => {
+                const matches = descendants(root).filter(e => exactNumber(e) === n);
+                if (exactNumber(root) === n) matches.unshift(root);
+                if (!matches.length) return null;
+                matches.sort((a,b) => descendants(a).length - descendants(b).length);
+                return matches[0];
+              };
+
               const findPlaylist = () => {
                 let best = null;
-                for (const d of documents()) {
-                  const ones = [...d.querySelectorAll('*')].filter(e => exactNumber(e) === 1);
-                  for (const one of ones.slice(0, 120)) {
-                    let root = one;
-                    for (let depth = 0; depth < 12 && root; depth++, root = root.parentElement) {
-                      const count = sequenceFor(root);
-                      if (!best || count > best.count) best = {doc:d, root, count};
+                for (const r of roots()) {
+                  const ones = [];
+                  try { r.querySelectorAll('*').forEach(e => { if (exactNumber(e) === 1) ones.push(e); }); } catch (_) {}
+                  for (const one of ones.slice(0,160)) {
+                    let node = one;
+                    for (let depth=0; depth<14 && node; depth++, node=node.parentElement) {
+                      const count = sequenceFor(node);
+                      if (!best || count > best.count) best = {root:node, count};
                     }
+                    try {
+                      const host = one.getRootNode()?.host;
+                      if (host) {
+                        let h = host;
+                        for (let depth=0; depth<8 && h; depth++, h=h.parentElement) {
+                          const count = sequenceFor(h.shadowRoot || h);
+                          if (!best || count > best.count) best = {root:h.shadowRoot || h, count};
+                        }
+                      }
+                    } catch (_) {}
                   }
                 }
                 if (!best || best.count < 2) return null;
                 const nodes = [];
-                for (let n = 1; n <= best.count; n++) {
+                for (let n=1; n<=best.count; n++) {
                   const node = smallestNumberNode(best.root, n);
                   if (!node) break;
                   nodes.push(node);
                 }
-                return nodes.length >= 2 ? {doc:best.doc, root:best.root, nodes} : null;
-              };
-
-              const tryExpand = () => {
-                let clicked = 0;
-                try {
-                  documents().forEach(d => {
-                    installNavigationGuard(d);
-                    const roots = [];
-                    d.querySelectorAll('audio').forEach(audio => {
-                      let r = audio;
-                      for (let i=0; i<8 && r?.parentElement; i++, r=r.parentElement) roots.push(r);
-                    });
-                    d.querySelectorAll('[class*=player],[id*=player],[class*=audio],[id*=audio],[class*=playlist],[id*=playlist]').forEach(e => roots.push(e));
-                    if (!roots.length && d.body) roots.push(d.body);
-                    const candidates = [];
-                    roots.slice(0,40).forEach(root => {
-                      try { root.querySelectorAll('button,[role=button],[aria-expanded],[onclick],a,span,div').forEach(e => candidates.push(e)); } catch (_) {}
-                    });
-                    const unique = [...new Set(candidates)].filter(e => {
-                      const t = norm(e.innerText || e.textContent);
-                      if (t.length > 30) return false;
-                      const attrs = [e.id,e.className,e.getAttribute?.('title'),e.getAttribute?.('aria-label'),e.getAttribute?.('data-action')]
-                        .filter(Boolean).join(' ');
-                      return /playlist|tracklist|track-list|audio-list|player-list|expand|collapse|toggle|list|menu|more|next/i.test(attrs) ||
-                        e.getAttribute?.('aria-expanded') === 'false' ||
-                        (!!e.querySelector?.('svg,i') && t.length <= 3);
-                    }).slice(0,30);
-                    unique.forEach(e => { try { e.click(); clicked++; } catch (_) {} });
-                  });
-                } catch (_) {}
-                AudoibooBazaSequential.event('expand=' + clicked + ' docs=' + documents().length);
-              };
-
-              const clickable = (node, root) => {
-                let e = node;
-                for (let i=0; i<5 && e && e !== root; i++, e=e.parentElement) {
-                  const attrs = [e.getAttribute?.('onclick'),e.getAttribute?.('role'),e.className,e.getAttribute?.('data-src'),e.getAttribute?.('data-url')]
-                    .filter(Boolean).join(' ');
-                  if (e.tagName === 'BUTTON' || e.tagName === 'A' || /button|track|item|play|audio|click/i.test(attrs)) return e;
-                }
-                return node.parentElement || node;
+                return nodes.length >= 2 ? {root:best.root, nodes} : null;
               };
 
               const activate = target => {
@@ -307,12 +285,37 @@ class BazaSequentialMediaCapture(private val context: Context) {
                 try { target.click(); } catch (_) {}
               };
 
+              const clickable = (node, root) => {
+                let e = node;
+                for (let i=0; i<6 && e && e !== root; i++, e=e.parentElement) {
+                  const attrs = [e.getAttribute?.('onclick'),e.getAttribute?.('role'),e.className,e.getAttribute?.('data-src'),e.getAttribute?.('data-url')]
+                    .filter(Boolean).join(' ');
+                  if (e.tagName === 'BUTTON' || e.tagName === 'A' || /button|track|item|play|audio|click/i.test(attrs)) return e;
+                }
+                return node.parentElement || node;
+              };
+
+              const tryExpand = () => {
+                let clicked = 0;
+                const candidates = all('button,[role=button],[aria-expanded],[onclick],a,span,div').filter(e => {
+                  const t = norm(e.innerText || e.textContent);
+                  if (t.length > 20) return false;
+                  const attrs = [e.id,e.className,e.getAttribute?.('title'),e.getAttribute?.('aria-label'),e.getAttribute?.('data-action')]
+                    .filter(Boolean).join(' ');
+                  return /playlist|tracklist|track-list|audio-list|player-list|expand|collapse|toggle|list|menu|more/i.test(attrs) ||
+                    e.getAttribute?.('aria-expanded') === 'false' ||
+                    (!!e.querySelector?.('svg,i') && t.length <= 3);
+                }).slice(0,50);
+                [...new Set(candidates)].forEach(e => { try { e.click(); clicked++; } catch (_) {} });
+                AudoibooBazaSequential.event('expand=' + clicked + ' roots=' + roots().length + ' shadow=' + all('*').filter(e => !!e.shadowRoot).length);
+              };
+
               const startTraversal = playlist => {
                 if (window.__audoibooBazaTraversalStarted) return;
                 window.__audoibooBazaTraversalStarted = true;
                 const tracks = playlist.nodes;
                 AudoibooBazaSequential.playlist(tracks.length);
-                AudoibooBazaSequential.event('playlist-root=' + String(playlist.root.tagName) + '.' + String(playlist.root.className || '').slice(0,80));
+                AudoibooBazaSequential.event('playlist-found=' + tracks.length + ' roots=' + roots().length);
                 let index = 0;
                 const next = () => {
                   if (index >= tracks.length) {
@@ -323,10 +326,10 @@ class BazaSequentialMediaCapture(private val context: Context) {
                   const n = index + 1;
                   const node = tracks[index++];
                   const target = clickable(node, playlist.root);
-                  AudoibooBazaSequential.event('activate=' + n + '/' + tracks.length + ':' + String(target.tagName) + '.' + String(target.className || '').slice(0,50));
+                  AudoibooBazaSequential.event('activate=' + n + '/' + tracks.length + ':' + String(target.tagName) + '.' + String(target.className || '').slice(0,45));
                   activate(target);
-                  setTimeout(scanMedia, 220);
-                  setTimeout(next, 650);
+                  setTimeout(scanMedia, 260);
+                  setTimeout(next, 800);
                 };
                 setTimeout(next, 300);
               };
@@ -335,31 +338,31 @@ class BazaSequentialMediaCapture(private val context: Context) {
               window.__audoibooBazaRescan = () => {
                 scanMedia();
                 if (window.__audoibooBazaTraversalStarted) return true;
-                const docs = documents();
                 const playlist = findPlaylist();
                 if (playlist) {
-                  AudoibooBazaSequential.event('playlist-found=' + playlist.nodes.length + ' docs=' + docs.length);
                   startTraversal(playlist);
                   return true;
                 }
                 attempts++;
-                if (attempts === 2 || attempts === 4 || attempts === 7) tryExpand();
-                AudoibooBazaSequential.event('playlist-wait=' + attempts + ' docs=' + docs.length + ' iframes=' + document.querySelectorAll('iframe,frame').length);
+                if (attempts === 2 || attempts === 4 || attempts === 6 || attempts === 8) tryExpand();
+                AudoibooBazaSequential.event('playlist-wait=' + attempts + ' roots=' + roots().length + ' shadow=' + all('*').filter(e => !!e.shadowRoot).length + ' nums=' + all('*').filter(e => exactNumber(e) > 0).length);
                 return false;
               };
 
               try {
-                const observeAll = () => documents().forEach(d => {
+                const observe = () => roots().forEach(r => {
                   try {
-                    if (d.__audoibooObserved) return;
-                    d.__audoibooObserved = true;
-                    new MutationObserver(() => { if (!window.__audoibooBazaTraversalStarted) window.__audoibooBazaRescan(); })
-                      .observe(d.documentElement,{childList:true,subtree:true});
+                    if (r.__audoibooObserved) return;
+                    r.__audoibooObserved = true;
+                    new MutationObserver(() => {
+                      if (!window.__audoibooBazaTraversalStarted) window.__audoibooBazaRescan();
+                    }).observe(r instanceof Document ? r.documentElement : r,{childList:true,subtree:true});
                   } catch (_) {}
                 });
-                observeAll();
-                setInterval(observeAll, 1500);
+                observe();
+                setInterval(observe, 1200);
               } catch (_) {}
+
               return window.__audoibooBazaRescan();
             })();
         """.trimIndent()

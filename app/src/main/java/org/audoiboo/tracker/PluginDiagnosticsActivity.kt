@@ -67,13 +67,13 @@ private fun PluginDiagnosticsScreen(activity: ComponentActivity) {
             OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("URL книги або серії") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
             Button(onClick = ::runDiagnostics, enabled = !busy && selectedId.isNotBlank() && url.startsWith("http"), modifier = Modifier.fillMaxWidth()) {
                 if (busy) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)) }
-                Text(if (busy) "Перевірка…" else "Запустити діагностику")
+                Text(if (busy) "Глибока перевірка…" else "Запустити діагностику")
             }
             if (report.isNotBlank()) {
                 OutlinedButton(onClick = ::copy, modifier = Modifier.fillMaxWidth()) { Text("Скопіювати звіт") }
                 Text(report, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
             } else {
-                Text("Перевірка покаже підтримку URL, стан плагіна, bookLookup, seriesLookup, кількість книг, downloadResolution та останні runtime-події. Вміст сторінок і cookies у звіт не записуються.", style = MaterialTheme.typography.bodySmall)
+                Text("Для серії перевірка автоматично пройде кожну знайдену книгу й покаже bookLookup та кількість media-кандидатів. Runtime-події допомагають відрізнити HTML resolution від WebView media capture.", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -100,25 +100,49 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
         lines += if (result.isSuccess) "$name: ${result.getOrThrow()}" else "$name: ERROR ${result.exceptionOrNull()?.message ?: result.exceptionOrNull()?.javaClass?.simpleName}"
     }
 
+    var rootBook: SourceBook? = null
     if (plugin is BookProvider) stage("bookLookup") {
         val book = plugin.loadBook(url)
+        rootBook = book
         if (book == null) "null" else "title=${book.title.take(120)} | author=${book.authors.joinToString { it.name }.take(120)} | series=${book.seriesTitle ?: "-"}"
     }
+
+    var series: SourceSeries? = null
     if (plugin is SeriesProvider) stage("seriesLookup") {
-        val series = plugin.resolveSeries(url)
-        if (series == null) "null" else "title=${series.title.take(120)} | seriesUrl=${series.url} | books=${series.books.size}"
+        val resolved = plugin.resolveSeries(url)
+        series = resolved
+        if (resolved == null) "null" else "title=${resolved.title.take(120)} | seriesUrl=${resolved.url} | books=${resolved.books.size}"
     }
-    if (plugin is DownloadResolver) stage("downloadResolution") {
-        val seed = if (plugin is BookProvider) plugin.loadBook(url) else null
-        if (seed == null) "skipped: bookLookup=null" else {
-            val downloads = plugin.resolveDownloads(seed)
-            "media=${downloads.size}" + downloads.take(5).joinToString(prefix = " | ") { it.url.take(100) }
+
+    if (series != null && plugin is SeriesProvider) {
+        stage("seriesBooks") {
+            val loaded = plugin.loadSeriesBooks(series!!)
+            val refs = if (loaded.isNotEmpty()) loaded.map { it.url to it } else series!!.books.map { it.url to null }
+            lines += "books-detail: total=${refs.size}"
+            refs.forEachIndexed { index, (bookUrl, prefetched) ->
+                val book = prefetched ?: if (plugin is BookProvider) runCatching { plugin.loadBook(bookUrl) }.getOrNull() else null
+                val downloads = if (book != null && plugin is DownloadResolver) runCatching { plugin.resolveDownloads(book) }.getOrElse { emptyList() } else emptyList()
+                val title = book?.title?.take(90) ?: series!!.books.getOrNull(index)?.title?.take(90) ?: "?"
+                lines += "  ${index + 1}. $title"
+                lines += "     url=$bookUrl"
+                lines += "     bookLookup=${if (book == null) "null" else "ok"} media=${downloads.size}"
+                downloads.take(3).forEach { lines += "       ${it.type}: ${it.url.take(120)}" }
+            }
+            "checked=${refs.size}"
         }
+    } else if (plugin is DownloadResolver && rootBook != null) {
+        stage("downloadResolution") {
+            val downloads = plugin.resolveDownloads(rootBook!!)
+            "media=${downloads.size}" + downloads.take(5).joinToString(prefix = if (downloads.isEmpty()) "" else " | ") { it.url.take(100) }
+        }
+    } else if (plugin is DownloadResolver) {
+        lines += "downloadResolution: skipped: no book resolved"
     }
+
     val snapshot = PluginDiagnostics.snapshot(pluginId)
     if (snapshot.entries.isNotEmpty()) {
         lines += "runtime-events:"
-        snapshot.entries.takeLast(20).forEach { lines += "  $it" }
+        snapshot.entries.takeLast(40).forEach { lines += "  $it" }
     }
     return lines.joinToString("\n")
 }

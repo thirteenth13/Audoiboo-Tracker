@@ -49,8 +49,13 @@ object DeviceWebViewResolutionRuntime {
         val context = appContext ?: return null
         if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url)) return null
         return suspendCancellableCoroutine { continuation ->
-            PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url) { result ->
+            val complete: (PluginMediaCaptureResult) -> Unit = { result ->
                 if (continuation.isActive) continuation.resume(result)
+            }
+            if (PortedExperimentalMediaRuntime.supports(manifest.id)) {
+                PortedExperimentalMediaRuntime.capture(context, manifest, rule, url, complete)
+            } else {
+                PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url, complete)
             }
         }
     }

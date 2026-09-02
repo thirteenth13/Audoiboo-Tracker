@@ -52,9 +52,23 @@ object DeviceWebViewResolutionRuntime {
             val complete: (PluginMediaCaptureResult) -> Unit = { result ->
                 if (continuation.isActive) continuation.resume(result)
             }
-            when {
-                manifest.id == "baza-knig" -> BazaExperimentalMediaRuntime.capture(context, manifest, rule, url, complete)
-                PortedExperimentalMediaRuntime.supports(manifest.id) -> PortedExperimentalMediaRuntime.capture(context, manifest, rule, url, complete)
+
+            when (manifest.id) {
+                "baza-knig" -> BazaKnigWebViewMediaCapture(context).capture(url, rule.timeoutMs) { result ->
+                    complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
+                }
+                "izib" -> IzibWebViewMediaCapture(context).capture(url, rule.timeoutMs) { result ->
+                    complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
+                }
+                "knigavuhe" -> KnigavuheWebViewMediaCapture(context).capture(url, rule.timeoutMs) { result ->
+                    complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
+                }
+                "lis10book" -> Lis10BookWebViewMediaCapture(context).capture(url, rule.timeoutMs) { result ->
+                    complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
+                }
+                "poleknig" -> PoleknigWebViewMediaCapture(context).capture(url, rule.timeoutMs) { result ->
+                    complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
+                }
                 else -> PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url, complete)
             }
         }

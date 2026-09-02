@@ -42,8 +42,8 @@ jobs:
       - name: Verify PR APK provenance
         if: github.event_name == 'pull_request'
         run: |
-          unzip -p app/build/outputs/apk/debug/app-debug.apk classes.dex | strings | grep -F "$GITHUB_SHA"
-          unzip -p app/build/outputs/apk/debug/app-debug.apk classes.dex | strings | grep -F "$GITHUB_RUN_NUMBER"
+          unzip -p app/build/outputs/apk/debug/app-debug.apk 'classes*.dex' | strings | grep -F "$GITHUB_SHA"
+          unzip -p app/build/outputs/apk/debug/app-debug.apk 'classes*.dex' | strings | grep -F "$GITHUB_RUN_NUMBER"
       - name: Upload PR test APK
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
@@ -76,8 +76,8 @@ jobs:
       - name: Verify release APK provenance
         if: github.event_name != 'pull_request'
         run: |
-          unzip -p app/build/outputs/apk/release/app-release.apk classes.dex | strings | grep -F "$GITHUB_SHA"
-          unzip -p app/build/outputs/apk/release/app-release.apk classes.dex | strings | grep -F "$GITHUB_RUN_NUMBER"
+          unzip -p app/build/outputs/apk/release/app-release.apk 'classes*.dex' | strings | grep -F "$GITHUB_SHA"
+          unzip -p app/build/outputs/apk/release/app-release.apk 'classes*.dex' | strings | grep -F "$GITHUB_RUN_NUMBER"
       - name: Rename APK
         if: github.event_name != 'pull_request'
         run: cp app/build/outputs/apk/release/app-release.apk "Audoiboo-Tracker-1.1.6-dev-${GITHUB_SHA::12}.apk"

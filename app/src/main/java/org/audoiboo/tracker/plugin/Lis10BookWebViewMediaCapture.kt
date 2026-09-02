@@ -17,181 +17,24 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Device-side media discovery for Lis10book's dynamically loaded player. */
 class Lis10BookWebViewMediaCapture(private val context: Context) {
-    data class Result(val pageUrl: String, val mediaUrls: List<String>, val diagnostics: List<String>)
-
-    fun capture(pageUrl: String, timeoutMs: Long = 24_000L, onComplete: (Result) -> Unit) {
-        require(isAllowedPage(pageUrl)) { "Unsupported Lis10book URL" }
-        Handler(Looper.getMainLooper()).post {
-            val found = Collections.synchronizedSet(LinkedHashSet<String>())
-            val foundKeys = Collections.synchronizedSet(LinkedHashSet<String>())
-            val diagnostics = mutableListOf<String>()
-            val finished = AtomicBoolean(false)
-            val armed = AtomicBoolean(false)
-            val handler = Handler(Looper.getMainLooper())
-            val webView = WebView(context)
-
-            fun remember(raw: String?) {
-                if (!armed.get()) return
-                val url = raw?.trim().orEmpty()
-                if (!isAudioUrl(url)) return
-                val key = mediaKey(url) ?: return
-                synchronized(found) {
-                    if (found.size >= MAX_MEDIA_URLS || !foundKeys.add(key)) return
-                    found += url
-                }
-            }
-            fun snapshot(): List<String> = synchronized(found) {
-                found.toList().sortedWith(compareBy({ trackNumber(it) ?: Int.MAX_VALUE }, { it }))
-            }
-            fun finish(reason: String) {
-                if (!finished.compareAndSet(false, true)) return
-                val media = snapshot()
-                diagnostics += reason
-                diagnostics += "media=${media.size}"
-                handler.removeCallbacksAndMessages(null)
-                runCatching {
-                    webView.stopLoading()
-                    webView.loadUrl("about:blank")
-                    webView.removeJavascriptInterface(BRIDGE)
-                    (webView.parent as? ViewGroup)?.removeView(webView)
-                    webView.destroy()
-                }
-                onComplete(Result(pageUrl, media, diagnostics.toList()))
-            }
-
-            @SuppressLint("SetJavaScriptEnabled")
-            webView.settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                mediaPlaybackRequiresUserGesture = false
-                userAgentString = userAgentString.replace("; wv", "")
-            }
-
-            webView.addJavascriptInterface(object {
-                @JavascriptInterface fun media(url: String?) = handler.post { remember(url) }
-                @JavascriptInterface fun event(message: String?) = handler.post {
-                    if (!message.isNullOrBlank() && diagnostics.size < 50) diagnostics += "js:$message"
-                }
-            }, BRIDGE)
-
-            webView.webViewClient = object : WebViewClient() {
-                override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                    remember(request?.url?.toString())
-                    return super.shouldInterceptRequest(view, request)
-                }
-
-                override fun onPageFinished(view: WebView, url: String) {
-                    if (!isAllowedPage(url)) return
-                    diagnostics += "loaded"
-                    view.evaluateJavascript(INSTALL_HOOKS, null)
-
-                    // Ignore media requests made while the page (ads/recommendations included) is
-                    // still bootstrapping. Once our hooks are installed, arm capture and actively
-                    // scan the actual audiobook player so late CDN requests are still observed.
-                    handler.postDelayed({
-                        if (!finished.get()) {
-                            synchronized(found) {
-                                found.clear()
-                                foundKeys.clear()
-                            }
-                            armed.set(true)
-                            diagnostics += "capture-armed"
-                            view.evaluateJavascript(ACTIVATE_AND_SCAN, null)
-                        }
-                    }, 900L)
-                    listOf(3_500L, 6_500L, 10_000L, 14_000L).forEach { delay ->
-                        handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(ACTIVATE_AND_SCAN, null) }, delay)
-                    }
-                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("captured") }, 18_000L)
-                }
-            }
-
-            handler.postDelayed({ finish("timeout") }, timeoutMs)
-            webView.loadUrl(pageUrl)
-        }
-    }
-
-    companion object {
-        private const val BRIDGE = "AudoibooLis10Capture"
-        private const val MAX_MEDIA_URLS = 250
-        private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac", "m3u8")
-
-        fun isAllowedPage(url: String): Boolean = runCatching {
-            val uri = URI(url.trim())
-            val host = uri.host?.lowercase().orEmpty()
-            uri.scheme?.lowercase() in setOf("http", "https") &&
-                (host == "lis10book.com" || host.endsWith(".lis10book.com")) &&
-                uri.path.orEmpty().startsWith("/audio/")
-        }.getOrDefault(false)
-
-        fun isAudioUrl(url: String): Boolean = runCatching {
-            val uri = URI(url.trim())
-            val scheme = uri.scheme?.lowercase().orEmpty()
-            val path = uri.path.orEmpty().lowercase()
-            scheme in setOf("http", "https") && path.substringAfterLast('.', "") in AUDIO_EXTENSIONS
-        }.getOrDefault(false)
-
-        fun mediaKey(url: String): String? = runCatching {
-            val uri = URI(url.trim())
-            val scheme = uri.scheme?.lowercase() ?: return@runCatching null
-            val host = uri.host?.lowercase() ?: return@runCatching null
-            "$scheme://$host${uri.path}"
-        }.getOrNull()
-
-        fun trackNumber(url: String): Int? = runCatching {
-            val name = URI(url).path.substringAfterLast('/').substringBeforeLast('.')
-            Regex("(?<!\\d)(\\d{1,4})(?!\\d)")
-                .findAll(name)
-                .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
-                .lastOrNull()
-        }.getOrNull()
-
-        private val INSTALL_HOOKS = """
-            (() => {
-              if (window.__audoibooLis10Hooks) return 'already';
-              window.__audoibooLis10Hooks = true;
-              const emit = u => { try { if (u) AudoibooLis10Capture.media(String(u)); } catch (_) {} };
-              const oldFetch = window.fetch;
-              if (oldFetch) window.fetch = function(input) {
-                try { emit(typeof input === 'string' ? input : input.url); } catch (_) {}
-                return oldFetch.apply(this, arguments);
-              };
-              const oldOpen = XMLHttpRequest.prototype.open;
-              XMLHttpRequest.prototype.open = function(method, url) {
-                emit(url); return oldOpen.apply(this, arguments);
-              };
-              const src = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
-              if (src && src.set) Object.defineProperty(HTMLMediaElement.prototype, 'src', {
-                configurable: src.configurable, enumerable: src.enumerable, get: src.get,
-                set(v) { emit(v); return src.set.call(this, v); }
-              });
-              const NativeAudio = window.Audio;
-              window.Audio = function(src) { const a = new NativeAudio(src); emit(src); return a; };
-              window.Audio.prototype = NativeAudio.prototype;
-              return 'installed';
-            })();
-        """.trimIndent()
-
-        private val ACTIVATE_AND_SCAN = """
-            (() => {
-              const emit = u => { try { if (u) AudoibooLis10Capture.media(String(u)); } catch (_) {} };
-              const norm = s => (s || '').replace(/\s+/g, ' ').trim();
-              document.querySelectorAll('audio[src],source[src],a[href]').forEach(e => emit(e.src || e.href));
-              try { performance.getEntriesByType('resource').forEach(e => emit(e.name)); } catch (_) {}
-              const html = document.documentElement.innerHTML.replaceAll('\\/','/');
-              (html.match(/https?:[^\"'<>\\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)(?:\?[^\"'<>\\s]*)?/gi) || []).forEach(emit);
-              document.querySelectorAll('audio').forEach(a => { try { a.play(); } catch (_) {} });
-              const nodes = [...document.querySelectorAll('button,a,div,span,li')];
-              const likely = nodes.filter(e => {
-                const t = norm(e.innerText || e.textContent);
-                if (!t || t.length > 180) return false;
-                return /(?:слушать|воспроизвести|play|▶)/i.test(t) ||
-                       /^\d{1,3}(?:[\s._:)-]+.*)?$/.test(t);
-              }).slice(0, 100);
-              likely.forEach((e, i) => setTimeout(() => { try { e.click(); } catch (_) {} }, i * 160));
-              AudoibooLis10Capture.event('clicks='+likely.length);
-              return likely.length;
-            })();
-        """.trimIndent()
-    }
+ data class Result(val pageUrl:String,val mediaUrls:List<String>,val diagnostics:List<String>)
+ fun capture(pageUrl:String,timeoutMs:Long=24_000L,onComplete:(Result)->Unit){require(isAllowedPage(pageUrl));Handler(Looper.getMainLooper()).post{
+  val found=Collections.synchronizedSet(LinkedHashSet<String>());val keys=Collections.synchronizedSet(LinkedHashSet<String>());val diagnostics=mutableListOf<String>();val finished=AtomicBoolean(false);val armed=AtomicBoolean(false);val h=Handler(Looper.getMainLooper());val w=WebView(context)
+  fun remember(raw:String?){if(!armed.get())return;val u=raw?.trim()?.replace("&amp;","&").orEmpty();if(!isAudioUrl(u))return;val k=mediaKey(u)?:return;synchronized(found){if(found.size<MAX_MEDIA_URLS&&keys.add(k))found+=u}}
+  fun snap()=synchronized(found){found.toList().sortedWith(compareBy({trackNumber(it)?:Int.MAX_VALUE},{it}))}
+  fun finish(r:String){if(!finished.compareAndSet(false,true))return;val m=snap();diagnostics+=r;diagnostics+="media=${m.size}";h.removeCallbacksAndMessages(null);runCatching{w.stopLoading();w.loadUrl("about:blank");w.removeJavascriptInterface(BRIDGE);(w.parent as? ViewGroup)?.removeView(w);w.destroy()};onComplete(Result(pageUrl,m,diagnostics.toList()))}
+  @SuppressLint("SetJavaScriptEnabled") w.settings.apply{javaScriptEnabled=true;domStorageEnabled=true;mediaPlaybackRequiresUserGesture=false;userAgentString=userAgentString.replace("; wv","")}
+  w.addJavascriptInterface(object{@JavascriptInterface fun media(u:String?)=h.post{remember(u)};@JavascriptInterface fun event(s:String?)=h.post{if(!s.isNullOrBlank()&&diagnostics.size<100)diagnostics+="js:$s"}},BRIDGE)
+  w.webViewClient=object:WebViewClient(){override fun shouldInterceptRequest(v:WebView?,r:WebResourceRequest?):WebResourceResponse?{remember(r?.url?.toString());return super.shouldInterceptRequest(v,r)};override fun onPageFinished(v:WebView,u:String){if(!isAllowedPage(u))return;diagnostics+="loaded";v.evaluateJavascript(INSTALL_HOOKS,null);h.postDelayed({if(!finished.get()){synchronized(found){found.clear();keys.clear()};armed.set(true);diagnostics+="capture-armed";v.evaluateJavascript(ACTIVATE_AND_SCAN,null)}},700L);listOf(2500L,5000L,8000L,11000L,14000L,17000L,20000L).forEach{d->h.postDelayed({if(!finished.get())v.evaluateJavascript(ACTIVATE_AND_SCAN,null)},d)};h.postDelayed({if(!finished.get()&&snap().isNotEmpty())finish("playlist-scan-complete")},22000L)}}
+  h.postDelayed({finish("timeout")},timeoutMs.coerceAtLeast(24_000L));w.loadUrl(pageUrl)
+ }}
+ companion object{
+  private const val BRIDGE="AudoibooLis10Capture";private const val MAX_MEDIA_URLS=300;private val AUDIO_EXTENSIONS=setOf("mp3","m4a","m4b","aac","ogg","opus","flac","m3u8")
+  fun isAllowedPage(url:String)=runCatching{val u=URI(url.trim());val h=u.host?.lowercase().orEmpty();u.scheme?.lowercase() in setOf("http","https")&&(h=="lis10book.com"||h.endsWith(".lis10book.com"))&&u.path.orEmpty().startsWith("/audio/")}.getOrDefault(false)
+  fun isAudioUrl(url:String)=runCatching{val u=URI(url.trim());u.scheme?.lowercase() in setOf("http","https")&&u.path.orEmpty().lowercase().substringAfterLast('.',"") in AUDIO_EXTENSIONS}.getOrDefault(false)
+  fun mediaKey(url:String):String?=runCatching{val u=URI(url.trim());"${u.scheme?.lowercase()}://${u.host?.lowercase()}${u.path}"}.getOrNull()
+  fun trackNumber(url:String):Int?=runCatching{Regex("(?<!\\d)(\\d{1,4})(?!\\d)").findAll(URI(url).path.substringAfterLast('/').substringBeforeLast('.')).mapNotNull{it.groupValues[1].toIntOrNull()}.lastOrNull()}.getOrNull()
+  private val INSTALL_HOOKS="""(()=>{if(window.__audoibooLis10Hooks)return'already';window.__audoibooLis10Hooks=true;const emit=u=>{try{if(u)AudoibooLis10Capture.media(String(u))}catch(_){}};const f=window.fetch;if(f)window.fetch=function(...a){a.forEach(x=>emit(typeof x==='string'?x:x?.url));return f.apply(this,a)};const o=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){emit(u);return o.apply(this,arguments)};const s=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src');if(s?.set)Object.defineProperty(HTMLMediaElement.prototype,'src',{configurable:s.configurable,enumerable:s.enumerable,get:s.get,set(v){emit(v);return s.set.call(this,v)}});const A=window.Audio;window.Audio=function(src){const a=new A(src);emit(src);return a};window.Audio.prototype=A.prototype;return'installed'})();"""
+  private val ACTIVATE_AND_SCAN="""(()=>{const emit=u=>{try{if(u)AudoibooLis10Capture.media(String(u))}catch(_){}};const n=s=>String(s||'').replace(/\s+/g,' ').trim();const roots=()=>{const a=[],seen=new Set();const add=r=>{if(!r||seen.has(r))return;seen.add(r);a.push(r);try{r.querySelectorAll('*').forEach(e=>{if(e.shadowRoot)add(e.shadowRoot)});r.querySelectorAll('iframe,frame').forEach(f=>{try{if(f.contentDocument)add(f.contentDocument)}catch(_){}})}catch(_){}};add(document);return a};const tracks=[];roots().forEach(r=>{try{r.querySelectorAll('audio[src],source[src]').forEach(e=>emit(e.currentSrc||e.src));r.querySelectorAll('script').forEach(s=>{const t=String(s.textContent||s.innerHTML||'').replaceAll('\\/','/');(t.match(/https?:[^\"'<>\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)(?:\?[^\"'<>\s]*)?/gi)||[]).forEach(emit)});r.querySelectorAll('button,a,div,span,li').forEach(e=>{const t=n(e.innerText||e.textContent);if(t.length<=160&&(/^0?\d{1,3}$/.test(t)||/слушать|воспроизвести|play|▶/i.test(t)))tracks.push(e)})}catch(_){}});const u=[...new Set(tracks)].slice(0,160);u.forEach((e,i)=>setTimeout(()=>{try{e.scrollIntoView({block:'center'});e.click()}catch(_){}},i*150));try{performance.getEntriesByType('resource').forEach(e=>emit(e.name))}catch(_){};AudoibooLis10Capture.event('player-candidates='+u.length);return u.length})();"""
+ }
 }

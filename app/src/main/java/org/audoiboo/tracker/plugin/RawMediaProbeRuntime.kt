@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -13,13 +14,27 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
 import java.io.File
 import java.net.URI
+import java.util.LinkedHashMap
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
+data class RawMediaCandidate(
+    val url: String,
+    val sources: List<String>,
+    val host: String,
+    val extension: String?,
+    val accepted: Boolean,
+    val filter: String
+)
+
 data class RawMediaProbeResult(
-    val candidates: List<String>,
-    val diagnostics: List<String>
+    val candidates: List<RawMediaCandidate>,
+    val diagnostics: List<String>,
+    val elapsedMs: Long,
+    val loadedMs: Long?,
+    val firstCandidateMs: Long?,
+    val activateCount: Int?
 )
 
 /** Diagnostic-only WebView probe that records audio-looking URLs before plugin media filtering. */
@@ -45,22 +60,30 @@ object RawMediaProbeRuntime {
 
         return suspendCancellableCoroutine { continuation ->
             Handler(Looper.getMainLooper()).post {
-                val found = LinkedHashSet<String>()
+                val started = SystemClock.elapsedRealtime()
+                val found = LinkedHashMap<String, LinkedHashSet<String>>()
                 val events = mutableListOf<String>()
                 val finished = AtomicBoolean(false)
                 val handler = Handler(Looper.getMainLooper())
                 val webView = WebView(context)
+                var loadedMs: Long? = null
+                var firstCandidateMs: Long? = null
+                var activateCount: Int? = null
 
-                fun remember(raw: String?) {
+                fun remember(raw: String?, source: String) {
                     val normalized = normalize(raw, url) ?: return
                     if (!looksMediaLike(normalized)) return
-                    if (found.size < 40) found += normalized
+                    if (firstCandidateMs == null) firstCandidateMs = SystemClock.elapsedRealtime() - started
+                    if (found.size < 80 || found.containsKey(normalized)) found.getOrPut(normalized) { LinkedHashSet() } += source
                 }
 
                 fun finish(reason: String) {
                     if (!finished.compareAndSet(false, true)) return
+                    val elapsed = SystemClock.elapsedRealtime() - started
+                    val candidates = found.map { (candidateUrl, sources) -> classify(manifest, rule, candidateUrl, sources.toList()) }
                     events += reason
-                    events += "rawCandidates=${found.size}"
+                    events += "raw=${candidates.size} accepted=${candidates.count { it.accepted }} filtered=${candidates.count { !it.accepted }}"
+                    events += "timing:loaded=${loadedMs ?: -1}ms firstCandidate=${firstCandidateMs ?: -1}ms total=${elapsed}ms"
                     handler.removeCallbacksAndMessages(null)
                     runCatching {
                         webView.stopLoading()
@@ -68,7 +91,9 @@ object RawMediaProbeRuntime {
                         webView.removeJavascriptInterface(BRIDGE)
                         webView.destroy()
                     }
-                    if (continuation.isActive) continuation.resume(RawMediaProbeResult(found.toList(), events.toList()))
+                    if (continuation.isActive) continuation.resume(
+                        RawMediaProbeResult(candidates, events.toList(), elapsed, loadedMs, firstCandidateMs, activateCount)
+                    )
                 }
 
                 @SuppressLint("SetJavaScriptEnabled")
@@ -79,29 +104,54 @@ object RawMediaProbeRuntime {
                     userAgentString = userAgentString.replace("; wv", "")
                 }
                 webView.addJavascriptInterface(object {
-                    @JavascriptInterface fun candidate(value: String?) = handler.post { remember(value) }
+                    @JavascriptInterface fun candidate(value: String?, source: String?) = handler.post { remember(value, source ?: "js") }
                     @JavascriptInterface fun event(value: String?) = handler.post {
-                        if (!value.isNullOrBlank() && events.size < 30) events += "js:$value"
+                        if (value.isNullOrBlank()) return@post
+                        if (events.size < 50) events += "js:$value"
+                        Regex("^activate=(\\d+)$").find(value)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { activateCount = it }
                     }
                 }, BRIDGE)
                 webView.webViewClient = object : WebViewClient() {
                     override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                        remember(request?.url?.toString())
+                        remember(request?.url?.toString(), "network")
                         return super.shouldInterceptRequest(view, request)
                     }
 
                     override fun onPageFinished(view: WebView, pageUrl: String) {
                         if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, pageUrl)) return
-                        events += "loaded"
-                        view.evaluateJavascript(script(rule), null)
-                        handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(scanScript(rule), null) }, 1200L)
-                        handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(scanScript(rule), null) }, 3200L)
+                        if (loadedMs == null) loadedMs = SystemClock.elapsedRealtime() - started
+                        events += "loaded:${runCatching { URI(pageUrl).host }.getOrNull() ?: "?"}"
+                        view.evaluateJavascript(script(), null)
+                        handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(scanScript(rule), null) }, 700L)
+                        handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(scanScript(rule), null) }, 2200L)
+                        handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(scanScript(rule), null) }, 4200L)
                     }
                 }
-                handler.postDelayed({ finish("probe-timeout") }, 6500L)
+                handler.postDelayed({ finish("probe-timeout") }, 7000L)
                 webView.loadUrl(url)
             }
         }
+    }
+
+    private fun classify(manifest: PluginPackageManifest, rule: PluginMediaCaptureRule, url: String, sources: List<String>): RawMediaCandidate {
+        val uri = runCatching { URI(url) }.getOrNull()
+        val host = uri?.host?.lowercase().orEmpty()
+        val path = uri?.path.orEmpty().lowercase()
+        val ext = path.substringAfterLast('.', "").takeIf { it.isNotBlank() }
+        val resolver = rule.resolverPathRegex?.matches(uri?.path.orEmpty()) == true && manifest.hosts.any { host == it || host.endsWith(".$it") }
+        if (resolver) return RawMediaCandidate(url, sources, host, ext, true, "resolver")
+        val allowedHosts = if (rule.mediaHosts.isEmpty()) manifest.permissions.effectiveDownloadHosts else rule.mediaHosts
+        val hostOk = allowedHosts.any { host == it || host.endsWith(".$it") }
+        val extOk = rule.mediaExtensions.isEmpty() || ext in rule.mediaExtensions
+        val filter = when {
+            uri?.scheme?.lowercase() !in setOf("http", "https") -> "rejected:scheme"
+            !hostOk -> "rejected:host"
+            !extOk -> "rejected:extension"
+            rule.mediaPathContains?.let(path::contains) == false -> "rejected:pathContains"
+            rule.mediaPathRegex?.containsMatchIn(path) == false -> "rejected:pathRegex"
+            else -> "accepted:media"
+        }
+        return RawMediaCandidate(url, sources, host, ext, filter.startsWith("accepted"), filter)
     }
 
     private fun looksMediaLike(url: String): Boolean = runCatching {
@@ -118,16 +168,16 @@ object RawMediaProbeRuntime {
 
     private fun js(value: String?): String = JSONObject.quote(value.orEmpty())
 
-    private fun script(rule: PluginMediaCaptureRule): String = """
+    private fun script(): String = """
         (() => {
           if(window.__audoibooRawProbe) return;
           window.__audoibooRawProbe=true;
-          const emit=u=>{try{if(u)AudoibooRawProbe.candidate(new URL(String(u),location.href).href)}catch(_){}};
-          const scanText=t=>{try{const v=String(t||'').replaceAll('\\/','/');const a=v.match(/(?:https?:\\/\\/|\\/\\/|\\/)[^\"'<>\\s]+(?:\\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)|\\/files\\/\\d+)(?:\\?[^\"'<>\\s]*)?/gi)||[];a.slice(0,500).forEach(emit);return a.length}catch(_){return 0}};
+          const emit=(u,s)=>{try{if(u)AudoibooRawProbe.candidate(new URL(String(u),location.href).href,s||'js')}catch(_){}};
+          const scanText=(t,s)=>{try{const v=String(t||'').replaceAll('\\/','/');const a=v.match(/(?:https?:\\/\\/|\\/\\/|\\/)[^\"'<>\\s]+(?:\\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)|\\/files\\/\\d+)(?:\\?[^\"'<>\\s]*)?/gi)||[];a.slice(0,700).forEach(x=>emit(x,s));return a.length}catch(_){return 0}};
           window.__audoibooRawEmit=emit;window.__audoibooRawScan=scanText;
-          try{const s=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src');if(s&&s.set)Object.defineProperty(HTMLMediaElement.prototype,'src',{configurable:s.configurable,enumerable:s.enumerable,get:s.get,set(v){emit(v);return s.set.call(this,v)}})}catch(_){}
-          try{const f=window.fetch;if(f)window.fetch=function(...a){try{a.forEach(scanText)}catch(_){};return f.apply(this,a).then(r=>{try{r.clone().text().then(scanText).catch(()=>{})}catch(_){};return r;})}}catch(_){}
-          try{const o=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(...a){try{a.forEach(scanText)}catch(_){};this.addEventListener('load',()=>{try{scanText(this.responseText)}catch(_){}});return o.apply(this,a)}}catch(_){}
+          try{const s=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src');if(s&&s.set)Object.defineProperty(HTMLMediaElement.prototype,'src',{configurable:s.configurable,enumerable:s.enumerable,get:s.get,set(v){emit(v,'media-src');return s.set.call(this,v)}})}catch(_){}
+          try{const f=window.fetch;if(f)window.fetch=function(...a){try{a.forEach(x=>scanText(x,'fetch-request'))}catch(_){};return f.apply(this,a).then(r=>{try{r.clone().text().then(x=>scanText(x,'fetch-response')).catch(()=>{})}catch(_){};return r;})}}catch(_){}
+          try{const o=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(...a){try{a.forEach(x=>scanText(x,'xhr-request'))}catch(_){};this.addEventListener('load',()=>{try{scanText(this.responseText,'xhr-response')}catch(_){}});return o.apply(this,a)}}catch(_){}
           return true;
         })();
     """.trimIndent()
@@ -135,12 +185,13 @@ object RawMediaProbeRuntime {
     private fun scanScript(rule: PluginMediaCaptureRule): String = """
         (() => {
           const emit=window.__audoibooRawEmit||(()=>{}),scanText=window.__audoibooRawScan||(()=>0),norm=s=>String(s||'').replace(/\\s+/g,' ').trim();
-          document.querySelectorAll('audio[src],audio source[src],source[src],a[href]').forEach(e=>emit(e.src||e.href));
-          try{performance.getEntriesByType('resource').forEach(e=>emit(e.name))}catch(_){}
-          scanText(document.documentElement.innerHTML);
+          document.querySelectorAll('audio[src],audio source[src],source[src]').forEach(e=>emit(e.src,'dom-media'));
+          document.querySelectorAll('a[href]').forEach(e=>emit(e.href,'link'));
+          try{performance.getEntriesByType('resource').forEach(e=>emit(e.name,'performance'))}catch(_){}
+          scanText(document.documentElement.innerHTML,'html');
           const sel=${js(rule.activateSelector ?: "button,a,div,span,li,label")};
           const pat=${js(rule.activateLabelRegex?.pattern ?: "(?:слушать|воспроизвести|play|▶)|^\\d{1,3}(?:[\\s._:)-]+.*)?$")};
-          try{const re=new RegExp(pat,'i');const c=[...document.querySelectorAll(sel)].filter(e=>{const t=norm(e.innerText||e.textContent);return t&&t.length<=180&&re.test(t)}).slice(0,40);AudoibooRawProbe.event('activate='+c.length);c.forEach((e,i)=>setTimeout(()=>{try{e.click()}catch(_){}},i*120))}catch(_){}
+          try{const re=new RegExp(pat,'i');const c=[...document.querySelectorAll(sel)].filter(e=>{const t=norm(e.innerText||e.textContent);return t&&t.length<=180&&re.test(t)}).slice(0,40);AudoibooRawProbe.event('activate='+c.length);c.slice(0,6).forEach(e=>AudoibooRawProbe.event('activate-label:'+norm(e.innerText||e.textContent).slice(0,80)));c.forEach((e,i)=>setTimeout(()=>{try{e.click()}catch(_){}},i*120))}catch(_){}
           return true;
         })();
     """.trimIndent()

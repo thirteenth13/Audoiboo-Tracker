@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -75,10 +76,32 @@ private fun PluginDiagnosticsScreen(activity: ComponentActivity) {
                 OutlinedButton(onClick = ::copy, modifier = Modifier.fillMaxWidth()) { Text("Скопіювати звіт") }
                 Text(report, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
             } else {
-                Text("Для кожної книги звіт окремо показує staticMedia з HTML resolver та capturedMedia з того самого WebView mediaCapture, який застосунок використовує для завантаження. Якщо capture не знаходить медіа, перша книга серії додатково показує сирі audio-кандидати до фільтрації плагіном.", style = MaterialTheme.typography.bodySmall)
+                Text("Серія перевіряється швидко: повний список книг, bookLookup для перших двох позицій і лише один реальний WebView mediaCapture. Якщо він порожній, raw-probe показує URL до фільтрації, джерело, host/extension, причину відхилення, activation і timings.", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
+}
+
+private data class DiagnosticMediaDetail(
+    val static: List<DownloadCandidate>,
+    val captured: PluginMediaCaptureResult?,
+    val elapsedMs: Long
+)
+
+internal fun diagnosticMediaVerdict(
+    capturedCount: Int,
+    activatedTracks: Int?,
+    rawTotal: Int?,
+    rawAccepted: Int?,
+    activateCount: Int?
+): String = when {
+    capturedCount > 0 && activatedTracks != null && activatedTracks > capturedCount -> "FOUND_TRACK_MISMATCH"
+    capturedCount > 0 -> "FOUND"
+    rawTotal == null -> "NO_RAW_PROBE"
+    rawTotal > 0 && (rawAccepted ?: 0) > 0 -> "RAW_ACCEPTED_BUT_CAPTURE_MISSED"
+    rawTotal > 0 -> "RAW_FOUND_BUT_FILTERED"
+    activateCount == 0 || activatedTracks == 0 -> "PLAYER_NOT_ACTIVATED_OR_NO_TRACKS"
+    else -> "NO_RAW_MEDIA"
 }
 
 private suspend fun diagnosePlugin(pluginId: String, url: String): String {
@@ -86,6 +109,7 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
         ?: return "plugin=$pluginId\nERROR: плагін не встановлено"
     val plugin = PluginPackageRuntime.registry.byId(pluginId)
     val lines = mutableListOf<String>()
+    val reportStarted = SystemClock.elapsedRealtime()
     lines += "app=${BuildProvenance.label}"
     lines += "plugin=$pluginId"
     lines += "version=${registration.descriptor?.version ?: "?"} api=${registration.descriptor?.apiVersion ?: "?"} state=${registration.state}"
@@ -99,21 +123,50 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
     lines += "supports=${runCatching { plugin.supports(url) }.getOrDefault(false)}"
 
     suspend fun stage(name: String, block: suspend () -> String) {
+        val started = SystemClock.elapsedRealtime()
         val result = runCatching { block() }
-        lines += if (result.isSuccess) "$name: ${result.getOrThrow()}" else "$name: ERROR ${result.exceptionOrNull()?.message ?: result.exceptionOrNull()?.javaClass?.simpleName}"
+        val elapsed = SystemClock.elapsedRealtime() - started
+        lines += if (result.isSuccess) "$name: ${result.getOrThrow()} | ${elapsed}ms" else "$name: ERROR ${result.exceptionOrNull()?.message ?: result.exceptionOrNull()?.javaClass?.simpleName} | ${elapsed}ms"
     }
 
-    suspend fun mediaDetail(book: SourceBook): Pair<List<DownloadCandidate>, PluginMediaCaptureResult?> {
+    suspend fun mediaDetail(book: SourceBook): DiagnosticMediaDetail {
+        val started = SystemClock.elapsedRealtime()
         val static = if (plugin is DownloadResolver) runCatching { plugin.resolveDownloads(book) }.getOrElse { emptyList() } else emptyList()
         val captured = runCatching { DeviceWebViewResolutionRuntime.captureDiagnostics(book.url) }.getOrNull()
-        return static to captured
+        return DiagnosticMediaDetail(static, captured, SystemClock.elapsedRealtime() - started)
     }
 
-    suspend fun appendRawProbe(bookUrl: String, indent: String) {
-        val probe = runCatching { RawMediaProbeRuntime.probe(bookUrl) }.getOrNull() ?: return
-        lines += "${indent}rawProbe=${probe.candidates.size}"
-        probe.candidates.take(8).forEach { lines += "${indent}rawCandidate: ${it.take(220)}" }
-        probe.diagnostics.takeLast(6).forEach { lines += "${indent}raw-event: ${it.take(160)}" }
+    fun activatedTracks(captured: PluginMediaCaptureResult?): Int? = captured?.diagnostics
+        ?.mapNotNull { Regex("(?:js:)?tracks=(\\d+)").find(it)?.groupValues?.getOrNull(1)?.toIntOrNull() }
+        ?.maxOrNull()
+
+    fun appendRawProbe(probe: RawMediaProbeResult, indent: String) {
+        val accepted = probe.candidates.count { it.accepted }
+        lines += "${indent}rawProbe=${probe.candidates.size} accepted=$accepted filtered=${probe.candidates.size - accepted}"
+        lines += "${indent}rawTiming: loaded=${probe.loadedMs ?: -1}ms firstCandidate=${probe.firstCandidateMs ?: -1}ms total=${probe.elapsedMs}ms activate=${probe.activateCount ?: -1}"
+        probe.candidates.take(10).forEach {
+            lines += "${indent}rawCandidate [${it.filter}] source=${it.sources.joinToString("+")} host=${it.host} ext=${it.extension ?: "-"}: ${it.url.take(240)}"
+        }
+        probe.diagnostics.takeLast(10).forEach { lines += "${indent}raw-event: ${it.take(180)}" }
+    }
+
+    suspend fun appendMediaCheck(book: SourceBook, indent: String) {
+        val detail = mediaDetail(book)
+        val tracks = activatedTracks(detail.captured)
+        val probe = if (detail.captured != null && detail.captured.mediaUrls.isEmpty()) runCatching { RawMediaProbeRuntime.probe(book.url) }.getOrNull() else null
+        val capturedCount = detail.captured?.mediaUrls?.size ?: 0
+        val verdict = diagnosticMediaVerdict(
+            capturedCount = capturedCount,
+            activatedTracks = tracks,
+            rawTotal = probe?.candidates?.size,
+            rawAccepted = probe?.candidates?.count { it.accepted },
+            activateCount = probe?.activateCount
+        )
+        lines += "${indent}media-check: staticMedia=${detail.static.size} capturedMedia=$capturedCount tracks=${tracks ?: -1} elapsed=${detail.elapsedMs}ms verdict=$verdict${if (detail.captured == null) " capture=unsupported" else ""}"
+        detail.static.take(5).forEach { lines += "${indent}  static ${it.type}: ${it.url.take(180)}" }
+        detail.captured?.mediaUrls?.take(8)?.forEach { lines += "${indent}  captured: ${it.take(220)}" }
+        detail.captured?.diagnostics?.takeLast(12)?.forEach { lines += "${indent}  capture-event: ${it.take(180)}" }
+        if (probe != null) appendRawProbe(probe, "$indent  ")
     }
 
     var rootBook: SourceBook? = null
@@ -132,35 +185,34 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
 
     if (series != null && plugin is SeriesProvider) {
         stage("seriesBooks") {
-            val loaded = plugin.loadSeriesBooks(series!!)
-            val refs = if (loaded.isNotEmpty()) loaded.map { it.url to it } else series!!.books.map { it.url to null }
+            val refs = series!!.books
             lines += "books-detail: total=${refs.size}"
-            refs.forEachIndexed { index, (bookUrl, prefetched) ->
-                val book = prefetched ?: if (plugin is BookProvider) runCatching { plugin.loadBook(bookUrl) }.getOrNull() else null
-                val title = book?.title?.take(90) ?: series!!.books.getOrNull(index)?.title?.take(90) ?: "?"
-                lines += "  ${index + 1}. $title"
-                lines += "     url=$bookUrl"
-                if (book == null) {
-                    lines += "     bookLookup=null staticMedia=0 capturedMedia=0"
+            val samples = mutableListOf<SourceBook>()
+            refs.forEachIndexed { index, ref ->
+                lines += "  ${index + 1}. ${ref.title?.take(100) ?: "?"}"
+                lines += "     url=${ref.url}"
+                if (index < 2 && plugin is BookProvider) {
+                    val book = runCatching { plugin.loadBook(ref.url) }.getOrNull()
+                    lines += if (book == null) "     bookLookup=null" else "     bookLookup=ok title=${book.title.take(100)} author=${book.authors.joinToString { it.name }.take(100)}"
+                    if (book != null) samples += book
                 } else {
-                    val (static, captured) = mediaDetail(book)
-                    lines += "     bookLookup=ok staticMedia=${static.size} capturedMedia=${captured?.mediaUrls?.size ?: 0}${if (captured == null) " capture=unsupported" else ""}"
-                    static.take(3).forEach { lines += "       static ${it.type}: ${it.url.take(150)}" }
-                    captured?.mediaUrls?.take(3)?.forEach { lines += "       captured: ${it.take(150)}" }
-                    captured?.diagnostics?.takeLast(8)?.forEach { lines += "       capture-event: ${it.take(150)}" }
-                    if (index == 0 && captured != null && captured.mediaUrls.isEmpty()) appendRawProbe(bookUrl, "       ")
+                    lines += "     metadata-only"
                 }
             }
-            "checked=${refs.size}"
+            val mediaBook = samples.firstOrNull()
+            if (mediaBook != null) {
+                lines += "media-sample: first-valid-book"
+                lines += "  title=${mediaBook.title.take(120)}"
+                lines += "  url=${mediaBook.url}"
+                appendMediaCheck(mediaBook, "  ")
+            } else {
+                lines += "media-sample: skipped: no valid book among first 2 refs"
+            }
+            "listed=${refs.size} bookLookupChecked=${minOf(2, refs.size)} mediaChecked=${if (mediaBook != null) 1 else 0}"
         }
     } else if (rootBook != null) {
         stage("mediaResolution") {
-            val (static, captured) = mediaDetail(rootBook!!)
-            lines += "media-detail: staticMedia=${static.size} capturedMedia=${captured?.mediaUrls?.size ?: 0}${if (captured == null) " capture=unsupported" else ""}"
-            static.take(5).forEach { lines += "  static ${it.type}: ${it.url.take(150)}" }
-            captured?.mediaUrls?.take(5)?.forEach { lines += "  captured: ${it.take(150)}" }
-            captured?.diagnostics?.takeLast(12)?.forEach { lines += "  capture-event: ${it.take(150)}" }
-            if (captured != null && captured.mediaUrls.isEmpty()) appendRawProbe(rootBook!!.url, "  ")
+            appendMediaCheck(rootBook!!, "  ")
             "checked=1"
         }
     } else {
@@ -170,7 +222,8 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
     val snapshot = PluginDiagnostics.snapshot(pluginId)
     if (snapshot.entries.isNotEmpty()) {
         lines += "runtime-events:"
-        snapshot.entries.takeLast(40).forEach { lines += "  $it" }
+        snapshot.entries.takeLast(30).forEach { lines += "  $it" }
     }
+    lines += "report-total=${SystemClock.elapsedRealtime() - reportStarted}ms"
     return lines.joinToString("\n")
 }

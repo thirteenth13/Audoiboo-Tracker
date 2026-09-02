@@ -32,7 +32,7 @@ class DeclarativeSourcePlugin(
     override suspend fun resolveSeries(url: String): SourceSeries? {
         if (!supports(url)) return null
         return guarded {
-            if (manifest.id != "izib") {
+            val resolved = if (manifest.id != "izib") {
                 runtime.resolveSeries(manifest, packageDir, url)
             } else {
                 val primary = tryRuntime { runtime.resolveSeries(manifest, packageDir, url) }
@@ -44,6 +44,7 @@ class DeclarativeSourcePlugin(
                     alternate?.takeIf { it.books.isNotEmpty() } ?: alternate ?: primary
                 }
             }
+            resolved?.let(::sanitizeSeries)
         }
     }
 
@@ -52,6 +53,8 @@ class DeclarativeSourcePlugin(
         val canLookup = SourceCapability.BOOK_LOOKUP in manifest.capabilities && manifest.entrypoints.containsKey("bookLookup")
         return guarded {
             val direct = series.books
+                .mapNotNull { ref -> canonicalPluginBookUrl(manifest.id, ref.url)?.let { ref.copy(url = it) } }
+                .distinctBy { SourceKeys.normalizeUrl(it.url) }
                 .filterNot { isGenericCatalogLabel(it.title) }
                 .mapNotNull { ref ->
                     val fallback = ref.title?.trim()?.takeIf { it.isNotBlank() }?.let { title ->
@@ -89,9 +92,11 @@ class DeclarativeSourcePlugin(
                         runtime.searchSeries(manifest, packageDir, SeriesSearchQuery(query)).asSequence()
                     }
                     .mapNotNull { candidate ->
-                        tryRuntime {
-                            if (manifest.id == "izib") loadIzibBookWithFallback(candidate.series.url)
-                            else runtime.resolveBook(manifest, packageDir, candidate.series.url)
+                        canonicalPluginBookUrl(manifest.id, candidate.series.url)?.let { bookUrl ->
+                            tryRuntime {
+                                if (manifest.id == "izib") loadIzibBookWithFallback(bookUrl)
+                                else runtime.resolveBook(manifest, packageDir, bookUrl)
+                            }
                         }
                     }
                     .filter { book ->
@@ -108,34 +113,51 @@ class DeclarativeSourcePlugin(
 
     override suspend fun loadBook(url: String): SourceBook? {
         if (!supports(url)) return null
+        val bookUrl = canonicalPluginBookUrl(manifest.id, url) ?: return null
         return guarded {
-            if (manifest.id == "izib") loadIzibBookWithFallback(url)
-            else runtime.resolveBook(manifest, packageDir, url)
+            if (manifest.id == "izib") loadIzibBookWithFallback(bookUrl)
+            else runtime.resolveBook(manifest, packageDir, bookUrl)
         }
     }
 
     override suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate> {
         if (SourceCapability.SERIES_SEARCH !in manifest.capabilities) return emptyList()
-        return guarded { runtime.searchSeries(manifest, packageDir, query) }
+        return guarded {
+            runtime.searchSeries(manifest, packageDir, query).map { candidate ->
+                candidate.copy(series = sanitizeSeries(candidate.series))
+            }
+        }
     }
 
     override suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
         if (SourceCapability.SERIES_DISCOVERY !in manifest.capabilities) return emptyList()
-        // Izib exposes a stable authors directory and author pages, but no verified public generic
-        // search endpoint. The runtime therefore performs a bounded author-directory lookup and
-        // returns only series links whose visible title matches the canonical series.
         if (manifest.id != "izib") return emptyList()
-        return guarded { runtime.discoverIzibSeries(manifest, canonical) }
+        return guarded {
+            runtime.discoverIzibSeries(manifest, canonical).map { candidate ->
+                candidate.copy(series = sanitizeSeries(candidate.series))
+            }
+        }
     }
 
     override suspend fun resolveDownloads(book: SourceBook): List<DownloadCandidate> {
         if (book.sourceId != manifest.id || !supports(book.url)) return emptyList()
+        val bookUrl = canonicalPluginBookUrl(manifest.id, book.url) ?: return emptyList()
         return guarded {
             PluginDownloadPolicy.filter(
                 manifest,
-                runtime.resolveDownloads(manifest, packageDir, book.url)
+                runtime.resolveDownloads(manifest, packageDir, bookUrl)
             )
         }
+    }
+
+    private fun sanitizeSeries(series: SourceSeries): SourceSeries {
+        val books = series.books
+            .mapNotNull { ref -> canonicalPluginBookUrl(manifest.id, ref.url)?.let { ref.copy(url = it) } }
+            .distinctBy { SourceKeys.normalizeUrl(it.url) }
+        val title = if (isGenericCatalogLabel(series.title)) {
+            books.firstOrNull()?.title?.trim()?.takeIf { it.isNotBlank() } ?: series.title
+        } else series.title
+        return series.copy(title = title, books = books)
     }
 
     private fun loadIzibBookWithFallback(url: String): SourceBook? {
@@ -155,6 +177,7 @@ class DeclarativeSourcePlugin(
         val title = if (isGenericCatalogLabel(resolved.title)) fallback?.title ?: resolved.title else resolved.title
         return resolved.copy(
             remoteId = resolved.remoteId ?: ref.remoteId,
+            url = canonicalPluginBookUrl(manifest.id, resolved.url) ?: ref.url,
             title = title,
             authors = resolved.authors.ifEmpty { fallback?.authors ?: series.authors },
             seriesTitle = resolved.seriesTitle
@@ -195,6 +218,22 @@ class DeclarativeSourcePlugin(
         )
     }
 }
+
+/** Normalizes fragments and rejects non-book links accidentally captured by broad series selectors. */
+internal fun canonicalPluginBookUrl(pluginId: String, url: String): String? = runCatching {
+    val uri = URI(url.trim())
+    val path = uri.path.orEmpty()
+    val isBook = when (pluginId) {
+        "baza-knig" -> path.startsWith("/audio-")
+        "izib" -> Regex("^/art\\d+/?$").matches(path)
+        "knigavuhe" -> path.startsWith("/book/") && path.length > "/book/".length
+        "lis10book" -> path.startsWith("/audio/") && path.length > "/audio/".length
+        "poleknig" -> Regex("^/books/\\d+/?$").matches(path)
+        else -> true
+    }
+    if (!isBook) return@runCatching null
+    URI(uri.scheme, uri.authority, uri.path, uri.query, null).toString()
+}.getOrNull()
 
 internal fun alternateIzibUrl(url: String): String? = runCatching {
     val uri = URI(url)

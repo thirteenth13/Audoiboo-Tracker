@@ -24,6 +24,7 @@ class PluginDiagnosticsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         PluginPackageRuntime.initialize(filesDir)
+        DeviceWebViewResolutionRuntime.initialize(this)
         setContent { AudoibooTheme(this) { PluginDiagnosticsScreen(this) } }
     }
 }
@@ -67,13 +68,13 @@ private fun PluginDiagnosticsScreen(activity: ComponentActivity) {
             OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("URL книги або серії") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
             Button(onClick = ::runDiagnostics, enabled = !busy && selectedId.isNotBlank() && url.startsWith("http"), modifier = Modifier.fillMaxWidth()) {
                 if (busy) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)) }
-                Text(if (busy) "Глибока перевірка…" else "Запустити діагностику")
+                Text(if (busy) "WebView перевірка…" else "Запустити діагностику")
             }
             if (report.isNotBlank()) {
                 OutlinedButton(onClick = ::copy, modifier = Modifier.fillMaxWidth()) { Text("Скопіювати звіт") }
                 Text(report, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
             } else {
-                Text("Для серії перевірка автоматично пройде кожну знайдену книгу й покаже bookLookup та кількість media-кандидатів. Runtime-події допомагають відрізнити HTML resolution від WebView media capture.", style = MaterialTheme.typography.bodySmall)
+                Text("Для кожної книги звіт окремо показує staticMedia з HTML resolver та capturedMedia з того самого WebView mediaCapture, який застосунок використовує для завантаження.", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -84,6 +85,7 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
         ?: return "plugin=$pluginId\nERROR: плагін не встановлено"
     val plugin = PluginPackageRuntime.registry.byId(pluginId)
     val lines = mutableListOf<String>()
+    lines += "app=${BuildProvenance.label}"
     lines += "plugin=$pluginId"
     lines += "version=${registration.descriptor?.version ?: "?"} api=${registration.descriptor?.apiVersion ?: "?"} state=${registration.state}"
     lines += "url=$url"
@@ -98,6 +100,12 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
     suspend fun stage(name: String, block: suspend () -> String) {
         val result = runCatching { block() }
         lines += if (result.isSuccess) "$name: ${result.getOrThrow()}" else "$name: ERROR ${result.exceptionOrNull()?.message ?: result.exceptionOrNull()?.javaClass?.simpleName}"
+    }
+
+    suspend fun mediaDetail(book: SourceBook): Pair<List<DownloadCandidate>, PluginMediaCaptureResult?> {
+        val static = if (plugin is DownloadResolver) runCatching { plugin.resolveDownloads(book) }.getOrElse { emptyList() } else emptyList()
+        val captured = runCatching { DeviceWebViewResolutionRuntime.captureDiagnostics(book.url) }.getOrNull()
+        return static to captured
     }
 
     var rootBook: SourceBook? = null
@@ -121,22 +129,32 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
             lines += "books-detail: total=${refs.size}"
             refs.forEachIndexed { index, (bookUrl, prefetched) ->
                 val book = prefetched ?: if (plugin is BookProvider) runCatching { plugin.loadBook(bookUrl) }.getOrNull() else null
-                val downloads = if (book != null && plugin is DownloadResolver) runCatching { plugin.resolveDownloads(book) }.getOrElse { emptyList() } else emptyList()
                 val title = book?.title?.take(90) ?: series!!.books.getOrNull(index)?.title?.take(90) ?: "?"
                 lines += "  ${index + 1}. $title"
                 lines += "     url=$bookUrl"
-                lines += "     bookLookup=${if (book == null) "null" else "ok"} media=${downloads.size}"
-                downloads.take(3).forEach { lines += "       ${it.type}: ${it.url.take(120)}" }
+                if (book == null) {
+                    lines += "     bookLookup=null staticMedia=0 capturedMedia=0"
+                } else {
+                    val (static, captured) = mediaDetail(book)
+                    lines += "     bookLookup=ok staticMedia=${static.size} capturedMedia=${captured?.mediaUrls?.size ?: 0}${if (captured == null) " capture=unsupported" else ""}"
+                    static.take(3).forEach { lines += "       static ${it.type}: ${it.url.take(150)}" }
+                    captured?.mediaUrls?.take(3)?.forEach { lines += "       captured: ${it.take(150)}" }
+                    captured?.diagnostics?.takeLast(8)?.forEach { lines += "       capture-event: ${it.take(150)}" }
+                }
             }
             "checked=${refs.size}"
         }
-    } else if (plugin is DownloadResolver && rootBook != null) {
-        stage("downloadResolution") {
-            val downloads = plugin.resolveDownloads(rootBook!!)
-            "media=${downloads.size}" + downloads.take(5).joinToString(prefix = if (downloads.isEmpty()) "" else " | ") { it.url.take(100) }
+    } else if (rootBook != null) {
+        stage("mediaResolution") {
+            val (static, captured) = mediaDetail(rootBook!!)
+            lines += "media-detail: staticMedia=${static.size} capturedMedia=${captured?.mediaUrls?.size ?: 0}${if (captured == null) " capture=unsupported" else ""}"
+            static.take(5).forEach { lines += "  static ${it.type}: ${it.url.take(150)}" }
+            captured?.mediaUrls?.take(5)?.forEach { lines += "  captured: ${it.take(150)}" }
+            captured?.diagnostics?.takeLast(12)?.forEach { lines += "  capture-event: ${it.take(150)}" }
+            "checked=1"
         }
-    } else if (plugin is DownloadResolver) {
-        lines += "downloadResolution: skipped: no book resolved"
+    } else {
+        lines += "mediaResolution: skipped: no book resolved"
     }
 
     val snapshot = PluginDiagnostics.snapshot(pluginId)

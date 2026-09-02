@@ -14,26 +14,43 @@ object DeviceWebViewResolutionRuntime {
     fun supports(url: String): Boolean = captureRegistration(url) != null
 
     suspend fun resolve(book: SourceBook): List<DownloadCandidate> {
-        val context = appContext ?: return emptyList()
         val registration = captureRegistration(book.url) ?: return emptyList()
         val manifest = registration.manifest ?: return emptyList()
         val packageDir = PluginPackageRuntime.packageDirectory(registration.packageId) ?: return emptyList()
         val relative = manifest.entrypoints["mediaCapture"] ?: return emptyList()
         val rule = runCatching { PluginMediaCaptureRule.load(File(packageDir, relative)) }.getOrNull() ?: return emptyList()
-        if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, book.url)) return emptyList()
+        val result = capture(manifest, rule, book.url) ?: return emptyList()
+        return result.mediaUrls.distinct().mapIndexed { index, url ->
+            DownloadCandidate(
+                type = rule.downloadType,
+                url = url,
+                fileName = fileName(url),
+                quality = "plugin-webview-${manifest.id}",
+                priority = 500 - index
+            )
+        }
+    }
 
+    /** Runs the exact host-owned WebView capture used by downloads and preserves runtime diagnostics. */
+    suspend fun captureDiagnostics(url: String): PluginMediaCaptureResult? {
+        val registration = captureRegistration(url) ?: return null
+        val manifest = registration.manifest ?: return null
+        val packageDir = PluginPackageRuntime.packageDirectory(registration.packageId) ?: return null
+        val relative = manifest.entrypoints["mediaCapture"] ?: return null
+        val rule = runCatching { PluginMediaCaptureRule.load(File(packageDir, relative)) }.getOrNull() ?: return null
+        return capture(manifest, rule, url)
+    }
+
+    private suspend fun capture(
+        manifest: PluginPackageManifest,
+        rule: PluginMediaCaptureRule,
+        url: String
+    ): PluginMediaCaptureResult? {
+        val context = appContext ?: return null
+        if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url)) return null
         return suspendCancellableCoroutine { continuation ->
-            PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, book.url) { result ->
-                if (!continuation.isActive) return@capture
-                continuation.resume(result.mediaUrls.distinct().mapIndexed { index, url ->
-                    DownloadCandidate(
-                        type = rule.downloadType,
-                        url = url,
-                        fileName = fileName(url),
-                        quality = "plugin-webview-${manifest.id}",
-                        priority = 500 - index
-                    )
-                })
+            PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url) { result ->
+                if (continuation.isActive) continuation.resume(result)
             }
         }
     }

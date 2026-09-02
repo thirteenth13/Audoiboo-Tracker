@@ -29,10 +29,37 @@ class BazaSequentialMediaCapture(private val context: Context) {
 
             fun snapshot(): List<String> = synchronized(found) { found.toList() }
 
+            fun normalizedMedia(): List<String> {
+                val raw = snapshot().sortedWith(compareBy({ BazaKnigWebViewMediaCapture.trackNumber(it) ?: Int.MAX_VALUE }, { it }))
+                if (expectedTracks <= 0 || raw.size <= expectedTracks) return raw
+
+                // The rendered playlist length is authoritative. Baza can preload one adjacent MP3
+                // beyond the visible playlist, so prefer a complete contiguous 0..N-1 sequence
+                // from one media directory when it is available.
+                val byDirectory = raw.groupBy { url ->
+                    runCatching { URI(url).resolve(".").toString() }.getOrDefault("")
+                }
+                val expectedNumbers = (0 until expectedTracks).toSet()
+                val complete = byDirectory.values
+                    .map { group ->
+                        group.mapNotNull { url -> BazaKnigWebViewMediaCapture.trackNumber(url)?.let { it to url } }
+                            .toMap()
+                    }
+                    .firstOrNull { numbered -> expectedNumbers.all(numbered::containsKey) }
+
+                if (complete != null) {
+                    diagnostics += "normalized=${raw.size}->${expectedTracks}"
+                    return (0 until expectedTracks).mapNotNull(complete::get)
+                }
+
+                diagnostics += "normalization-skipped=${raw.size}/$expectedTracks"
+                return raw
+            }
+
             fun finish(reason: String) {
                 if (!finished.compareAndSet(false, true)) return
                 handler.removeCallbacksAndMessages(null)
-                val media = snapshot().sortedWith(compareBy({ BazaKnigWebViewMediaCapture.trackNumber(it) ?: Int.MAX_VALUE }, { it }))
+                val media = normalizedMedia()
                 diagnostics += reason
                 diagnostics += "expected=$expectedTracks"
                 diagnostics += "media=${media.size}"

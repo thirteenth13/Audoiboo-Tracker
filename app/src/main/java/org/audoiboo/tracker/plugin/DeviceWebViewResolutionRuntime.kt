@@ -54,7 +54,7 @@ object DeviceWebViewResolutionRuntime {
             }
 
             when (manifest.id) {
-                "baza-knig" -> BazaKnigWebViewMediaCapture(context).capture(url, rule.timeoutMs) { result ->
+                "baza-knig" -> BazaSequentialMediaCapture(context).capture(url, rule.timeoutMs) { result ->
                     complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
                 }
                 "izib" -> IzibWebViewMediaCapture(context).capture(url, rule.timeoutMs) { result ->

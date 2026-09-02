@@ -52,10 +52,10 @@ object DeviceWebViewResolutionRuntime {
             val complete: (PluginMediaCaptureResult) -> Unit = { result ->
                 if (continuation.isActive) continuation.resume(result)
             }
-            if (PortedExperimentalMediaRuntime.supports(manifest.id)) {
-                PortedExperimentalMediaRuntime.capture(context, manifest, rule, url, complete)
-            } else {
-                PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url, complete)
+            when {
+                manifest.id == "baza-knig" -> BazaExperimentalMediaRuntime.capture(context, manifest, rule, url, complete)
+                PortedExperimentalMediaRuntime.supports(manifest.id) -> PortedExperimentalMediaRuntime.capture(context, manifest, rule, url, complete)
+                else -> PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url, complete)
             }
         }
     }

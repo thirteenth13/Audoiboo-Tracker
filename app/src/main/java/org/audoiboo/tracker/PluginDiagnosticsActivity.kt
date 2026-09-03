@@ -199,9 +199,12 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
                     lines += "     metadata-only"
                 }
             }
-            val mediaBook = samples.firstOrNull()
+            // Lis10book's first item can remain metadata-valid after the audio was removed by
+            // the rights holder. Prefer the second resolved sample so diagnostics exercise an
+            // actually playable series item instead of repeatedly reporting a known false failure.
+            val mediaBook = if (pluginId == "lis10book" && samples.size > 1) samples[1] else samples.firstOrNull()
             if (mediaBook != null) {
-                lines += "media-sample: first-valid-book"
+                lines += if (pluginId == "lis10book" && samples.size > 1) "media-sample: second-valid-book (skip unavailable first item)" else "media-sample: first-valid-book"
                 lines += "  title=${mediaBook.title.take(120)}"
                 lines += "  url=${mediaBook.url}"
                 appendMediaCheck(mediaBook, "  ")

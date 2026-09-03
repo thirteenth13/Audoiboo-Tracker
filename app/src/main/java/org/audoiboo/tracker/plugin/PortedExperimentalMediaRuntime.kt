@@ -108,8 +108,8 @@ object PortedExperimentalMediaRuntime {
                         diagnostics += "ported-armed"
                     }
                     prepareAndTraverse(view, manifest.id, handler, diagnostics) { clicks++ }
-                }, 700L)
-                handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(scanScript(manifest.id), null) }, 2_500L)
+                }, if (manifest.id == "knigavuhe") 2_200L else 700L)
+                handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(scanScript(manifest.id), null) }, 3_200L)
                 handler.postDelayed({ if (!finished.get()) finish("ported-finished") }, minOf(rule.timeoutMs, 16_000L))
             }
 
@@ -175,7 +175,9 @@ object PortedExperimentalMediaRuntime {
                     clicked()
                 } else diagnostics += "ported-prepare-miss"
                 handler.postDelayed({ probeKnigavuheApi(view, diagnostics) }, 450L)
-                handler.postDelayed({ traverseSequential(view, site, handler, diagnostics, clicked) }, 900L)
+                // The numbered Knigavuhe playlist is injected after the player initializes.
+                // CI 827 showed labels 00/01/02 in the raw probe while the earlier traversal saw none.
+                handler.postDelayed({ traverseSequential(view, site, handler, diagnostics, clicked) }, 1_500L)
             }
         } else {
             traverseSequential(view, site, handler, diagnostics, clicked)
@@ -280,7 +282,14 @@ object PortedExperimentalMediaRuntime {
           a.sort((x,y)=>{let a=x.getBoundingClientRect(),b=y.getBoundingClientRect();return a.width*a.height-b.width*b.height});
           AudoibooPortedCapture.event('target-'+idx+'='+a.length);
           let e=a[0];if(!e)return null;
-          let c=e.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file],li,tr,[class*=track],[class*=playlist] > *,[class*=audio] > *')||e;
+          let c;
+          if(site==='poleknig'){
+            // Match the proven Playwright experiment exactly: activate the smallest label itself,
+            // or only a genuinely interactive ancestor. Do not climb to a generic playlist row.
+            c=e.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]')||e;
+          }else{
+            c=e.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file],li,tr,[class*=track],[class*=playlist] > *,[class*=audio] > *')||e;
+          }
           let cq=c.getBoundingClientRect(),cs=getComputedStyle(c);if(cq.height>180||cq.height<3||cs.display==='none'||cs.visibility==='hidden')c=e;
           c.scrollIntoView({block:'center'});let q=c.getBoundingClientRect();
           AudoibooPortedCapture.event('tap='+idx+':'+n(e.innerText||e.textContent).slice(0,90));

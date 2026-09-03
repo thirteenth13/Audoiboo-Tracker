@@ -96,7 +96,7 @@ object PortedExperimentalMediaRuntime {
             fun startCapture(view: WebView, source: String) {
                 if (finished.get() || !started.compareAndSet(false, true)) return
                 diagnostics += "ported-start:$source"
-                view.evaluateJavascript(installHooks(), null)
+                view.evaluateJavascript(installHooks(manifest.id), null)
                 handler.postDelayed({
                     if (finished.get()) return@postDelayed
                     if (manifest.id == "knigavuhe") {
@@ -109,7 +109,7 @@ object PortedExperimentalMediaRuntime {
                     }
                     prepareAndTraverse(view, manifest.id, handler, diagnostics) { clicks++ }
                 }, 700L)
-                handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(scanScript(), null) }, 2_500L)
+                handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(scanScript(manifest.id), null) }, 2_500L)
                 handler.postDelayed({ if (!finished.get()) finish("ported-finished") }, minOf(rule.timeoutMs, 16_000L))
             }
 
@@ -180,7 +180,7 @@ object PortedExperimentalMediaRuntime {
         } else {
             traverseSequential(view, site, handler, diagnostics, clicked)
         }
-        handler.postDelayed({ view.evaluateJavascript(scanScript(), null) }, 5_500L)
+        handler.postDelayed({ view.evaluateJavascript(scanScript(site), null) }, 5_500L)
     }
 
     private fun probeKnigavuheApi(view: WebView, diagnostics: MutableList<String>) {
@@ -208,7 +208,7 @@ object PortedExperimentalMediaRuntime {
         }
     }
 
-    /** Re-resolve and scroll each exact row immediately before its native tap. */
+    /** Re-resolve and scroll each exact row immediately before activation. */
     private fun traverseSequential(
         view: WebView,
         site: String,
@@ -227,12 +227,15 @@ object PortedExperimentalMediaRuntime {
             if (rect == null) {
                 handler.postDelayed({ traverseSequential(view, site, handler, diagnostics, clicked, index + 1, misses + 1) }, 150L)
             } else {
-                dispatchTap(view, rect.first, rect.second)
+                // Poleknig's proven experiment uses DOM mousedown/mouseup/click on the exact row.
+                // The JS target script performs that activation itself; native MotionEvent taps did
+                // not switch the player even though all 30 labels were found.
+                if (site != "poleknig") dispatchTap(view, rect.first, rect.second)
                 clicked()
                 handler.postDelayed({
-                    view.evaluateJavascript(scanScript(), null)
+                    view.evaluateJavascript(scanScript(site), null)
                     traverseSequential(view, site, handler, diagnostics, clicked, index + 1, 0)
-                }, if (site == "poleknig") 260L else 360L)
+                }, if (site == "poleknig") 320L else 360L)
             }
         }
     }
@@ -281,25 +284,38 @@ object PortedExperimentalMediaRuntime {
           let cq=c.getBoundingClientRect(),cs=getComputedStyle(c);if(cq.height>180||cq.height<3||cs.display==='none'||cs.visibility==='hidden')c=e;
           c.scrollIntoView({block:'center'});let q=c.getBoundingClientRect();
           AudoibooPortedCapture.event('tap='+idx+':'+n(e.innerText||e.textContent).slice(0,90));
+          if(site==='poleknig'){
+            try{c.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}))}catch(_){}
+            try{c.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}))}catch(_){}
+            try{c.click()}catch(_){}
+            AudoibooPortedCapture.event('dom-click='+one);
+          }
           return {x:q.left+Math.min(Math.max(14,q.width*.12),q.width/2),y:q.top+q.height/2};
         })()
     """.trimIndent()
 
-    private fun installHooks(): String = """
+    private fun installHooks(site: String): String = """
         (function(){if(window.__audoibooPorted)return;window.__audoibooPorted=true;
+          const site=${JSONObject.quote(site)},broad=site!=='knigavuhe';
           const emit=u=>{try{if(u)AudoibooPortedCapture.media(new URL(String(u),location.href).href)}catch(e){}};
           const scan=t=>{try{let v=String(t||'').replaceAll('\\/','/');let a=v.match(/(?:https?:\/\/|\/\/|\/)[^\"'<>\s]+(?:\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)|\/files\/\d+)(?:\?[^\"'<>\s]*)?/gi)||[];a.forEach(emit)}catch(e){}};
           window.__audoibooPortedEmit=emit;window.__audoibooPortedScan=scan;
-          try{let f=window.fetch;if(f)window.fetch=function(...a){a.forEach(scan);return f.apply(this,a).then(r=>{try{scan(r.url);r.clone().text().then(t=>{scan(t);AudoibooPortedCapture.body(t)}).catch(()=>{})}catch(e){}return r})}}catch(e){}
-          try{let o=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(...a){a.forEach(scan);this.addEventListener('load',()=>{try{scan(this.responseURL);scan(this.responseText);AudoibooPortedCapture.body(this.responseText)}catch(e){}});return o.apply(this,a)}}catch(e){}
+          if(broad){
+            try{let f=window.fetch;if(f)window.fetch=function(...a){a.forEach(scan);return f.apply(this,a).then(r=>{try{scan(r.url);r.clone().text().then(t=>{scan(t);AudoibooPortedCapture.body(t)}).catch(()=>{})}catch(e){}return r})}}catch(e){}
+            try{let o=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(...a){a.forEach(scan);this.addEventListener('load',()=>{try{scan(this.responseURL);scan(this.responseText);AudoibooPortedCapture.body(this.responseText)}catch(e){}});return o.apply(this,a)}}catch(e){}
+          }
           try{let s=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src');if(s&&s.set)Object.defineProperty(HTMLMediaElement.prototype,'src',{configurable:s.configurable,enumerable:s.enumerable,get:s.get,set(v){emit(v);return s.set.call(this,v)}})}catch(e){}
           return true;
         })()
     """.trimIndent()
 
-    private fun scanScript(): String = """
+    private fun scanScript(site: String): String = """
         (function(){
-          const e=window.__audoibooPortedEmit||(()=>{}),s=window.__audoibooPortedScan||(()=>{});
+          const site=${JSONObject.quote(site)},e=window.__audoibooPortedEmit||(()=>{}),s=window.__audoibooPortedScan||(()=>{});
+          if(site==='knigavuhe'){
+            document.querySelectorAll('audio,source').forEach(x=>{e(x.currentSrc);e(x.src);e(x.getAttribute&&x.getAttribute('src'))});
+            return true;
+          }
           document.querySelectorAll('audio[src],audio source[src],source[src],a[href],[data-src],[data-url],[data-file],[data-audio]').forEach(x=>['src','href','data-src','data-url','data-file','data-audio'].forEach(a=>e(x.getAttribute&&x.getAttribute(a))));
           try{performance.getEntriesByType('resource').forEach(x=>e(x.name))}catch(_){}
           s(document.documentElement.outerHTML);return true

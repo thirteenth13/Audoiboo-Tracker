@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class PoleknigWebViewMediaCapture(private val context: Context) {
     data class Result(val pageUrl: String, val mediaUrls: List<String>, val diagnostics: List<String>)
 
-    fun capture(pageUrl: String, timeoutMs: Long = 24_000L, onComplete: (Result) -> Unit) {
+    fun capture(pageUrl: String, timeoutMs: Long = 26_000L, onComplete: (Result) -> Unit) {
         require(isAllowedPage(pageUrl)) { "Unsupported Poleknig URL" }
         Handler(Looper.getMainLooper()).post {
             val found = Collections.synchronizedMap(LinkedHashMap<String, String>())
@@ -58,7 +58,7 @@ class PoleknigWebViewMediaCapture(private val context: Context) {
             webView.addJavascriptInterface(object {
                 @JavascriptInterface fun media(url: String?) = handler.post { remember(url) }
                 @JavascriptInterface fun event(message: String?) = handler.post {
-                    if (!message.isNullOrBlank() && diagnostics.size < 180) diagnostics += "js:$message"
+                    if (!message.isNullOrBlank() && diagnostics.size < 220) diagnostics += "js:$message"
                 }
             }, BRIDGE)
 
@@ -75,14 +75,14 @@ class PoleknigWebViewMediaCapture(private val context: Context) {
                     if (!isAllowedPage(url)) return
                     diagnostics += "loaded"
                     view.evaluateJavascript(INSTALL_HOOKS, null)
-                    handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(WALK_PLAYLIST, null) }, 800L)
-                    listOf(5_000L, 10_000L, 15_000L, 20_000L).forEach { delay ->
+                    handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(WALK_PLAYLIST, null) }, 900L)
+                    listOf(6_000L, 12_000L, 18_000L, 23_000L).forEach { delay ->
                         handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(SCAN_ONLY, null) }, delay)
                     }
-                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("playlist-walk-complete") }, 22_000L)
+                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("playlist-walk-complete") }, 24_500L)
                 }
             }
-            handler.postDelayed({ finish("timeout") }, timeoutMs.coerceAtLeast(24_000L))
+            handler.postDelayed({ finish("timeout") }, timeoutMs.coerceAtLeast(26_000L))
             webView.loadUrl(pageUrl)
         }
     }
@@ -101,19 +101,16 @@ class PoleknigWebViewMediaCapture(private val context: Context) {
         fun isAllowedPage(url: String): Boolean = runCatching {
             val uri = URI(url.trim()); val host = uri.host?.lowercase().orEmpty()
             uri.scheme?.lowercase() in setOf("http", "https") &&
-                (host == "poleknig.com" || host.endsWith(".poleknig.com")) &&
-                uri.path.orEmpty().startsWith("/books/")
+                (host == "poleknig.com" || host.endsWith(".poleknig.com")) && uri.path.orEmpty().startsWith("/books/")
         }.getOrDefault(false)
         fun isResolverUrl(url: String): Boolean = runCatching {
             val uri = URI(url.trim()); val host = uri.host?.lowercase().orEmpty(); val path = uri.path.orEmpty().lowercase()
             uri.scheme?.lowercase() in setOf("http", "https") &&
-                (host == "poleknig.com" || host.endsWith(".poleknig.com")) &&
-                Regex("""^/files/\d+/?$""").matches(path)
+                (host == "poleknig.com" || host.endsWith(".poleknig.com")) && Regex("""^/files/\d+/?$""").matches(path)
         }.getOrDefault(false)
         fun isDirectAudio(url: String): Boolean = runCatching {
             val uri = URI(url.trim())
-            uri.scheme?.lowercase() in setOf("http", "https") &&
-                uri.path.orEmpty().lowercase().substringAfterLast('.', "") in AUDIO_EXTENSIONS
+            uri.scheme?.lowercase() in setOf("http", "https") && uri.path.orEmpty().lowercase().substringAfterLast('.', "") in AUDIO_EXTENSIONS
         }.getOrDefault(false)
         fun isResolverOrAudio(url: String): Boolean = isResolverUrl(url) || isDirectAudio(url)
         fun selectResolvedMedia(urls: List<String>): List<String> {
@@ -139,8 +136,6 @@ class PoleknigWebViewMediaCapture(private val context: Context) {
               const emit=u=>{try{if(u)AudoibooPoleCapture.media(String(u).replaceAll('&amp;','&'));}catch(_){}};
               document.querySelectorAll('audio[src],source[src],a[href]').forEach(e=>emit(e.currentSrc||e.src||e.href));
               try{performance.getEntriesByType('resource').forEach(e=>emit(e.name))}catch(_){}
-              const html=document.documentElement.innerHTML.replaceAll('\\/','/');
-              (html.match(/(?:https?:\/\/[^\"'<>\s]+)?\/files\/\d+(?:\?[^\"'<>\s]*)?/gi)||[]).forEach(u=>emit(new URL(u,location.href).href));
               return true;
             })();
         """.trimIndent()
@@ -151,21 +146,17 @@ class PoleknigWebViewMediaCapture(private val context: Context) {
               const emit=u=>{try{if(u)AudoibooPoleCapture.media(String(u).replaceAll('&amp;','&'));}catch(_){}};
               const norm=s=>String(s||'').replace(/\s+/g,' ').trim();
               const scan=()=>{document.querySelectorAll('audio[src],source[src],a[href]').forEach(e=>emit(e.currentSrc||e.src||e.href));try{performance.getEntriesByType('resource').forEach(e=>emit(e.name))}catch(_){}};
-              const exact=label=>[...document.querySelectorAll('body *')].filter(e=>norm(e.innerText||e.textContent)===label&&!Array.from(e.children||[]).some(c=>norm(c.innerText||c.textContent)===label)).sort((a,b)=>{const ar=a.getBoundingClientRect(),br=b.getBoundingClientRect();return ar.width*ar.height-br.width*br.height})[0]||null;
-              const clickable=e=>e?.closest?.('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]')||e;
-              const scrollHost=e=>{let p=e;for(let i=0;i<12&&p;i++,p=p.parentElement){try{const s=getComputedStyle(p);if(p.scrollHeight>p.clientHeight+30&&/(auto|scroll)/.test(s.overflowY))return p}catch(_){}}return null};
-              let number=1,misses=0,host=null,clicks=0;
+              const leafFor=label=>[...document.querySelectorAll('body *')].filter(e=>norm(e.innerText||e.textContent)===label&&!Array.from(e.children||[]).some(c=>norm(c.innerText||c.textContent)===label)).sort((a,b)=>{const ar=a.getBoundingClientRect(),br=b.getBoundingClientRect();return ar.width*ar.height-br.width*br.height})[0]||null;
+              const rowFor=e=>e?.closest?.('li,[role=listitem],tr,.track,.item,[data-track],[data-file]')||e?.parentElement||e;
+              const targets=e=>{const row=rowFor(e);const list=[];if(row){list.push(...row.querySelectorAll('button,a,[role=button],[onclick],[data-track],[data-file],svg,path'));list.push(row)}if(e)list.push(e);return [...new Set(list)]};
+              const fire=t=>{try{t.scrollIntoView({block:'center'});['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'].forEach(type=>{try{const ev=type.startsWith('touch')?new Event(type,{bubbles:true,cancelable:true}):type.startsWith('pointer')?new PointerEvent(type,{bubbles:true,cancelable:true}):new MouseEvent(type,{bubbles:true,cancelable:true,view:window});t.dispatchEvent(ev)}catch(_){}});try{t.click()}catch(_){};return true}catch(_){return false}};
+              let n=1,clicks=0,misses=0;
               const step=()=>{
-                if(number>99||misses>=8){scan();AudoibooPoleCapture.event('walk-done clicks='+clicks+' last='+(number-1));window.__audoibooPoleWalkRunning=false;return;}
-                const label=String(number).padStart(2,'0');let el=exact(label);
-                if(!el){
-                  if(!host){const any=exact(String(Math.max(1,number-1)).padStart(2,'0'))||exact('01');host=scrollHost(any)}
-                  if(host){try{host.scrollTop=Math.min(host.scrollHeight,host.scrollTop+Math.max(80,host.clientHeight*.75));host.dispatchEvent(new Event('scroll',{bubbles:true}))}catch(_){}}
-                  misses++;setTimeout(step,180);return;
-                }
-                misses=0;host=host||scrollHost(el);const target=clickable(el);
-                try{target.scrollIntoView({block:'center'});target.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));target.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));target.click();clicks++;}catch(_){}
-                scan();number++;setTimeout(step,220);
+                if(n>60||misses>=5){scan();AudoibooPoleCapture.event('walk-done clicks='+clicks+' last='+(n-1));window.__audoibooPoleWalkRunning=false;return;}
+                const label=String(n).padStart(2,'0'),leaf=leafFor(label);
+                if(!leaf){misses++;n++;setTimeout(step,250);return;}
+                misses=0;const ts=targets(leaf);let fired=0;ts.slice(0,4).forEach((t,i)=>setTimeout(()=>{if(fire(t))fired++;scan()},i*90));
+                clicks++;AudoibooPoleCapture.event('track-'+label+' targets='+Math.min(ts.length,4));n++;setTimeout(step,520);
               };
               step();AudoibooPoleCapture.event('walk-start');return true;
             })();

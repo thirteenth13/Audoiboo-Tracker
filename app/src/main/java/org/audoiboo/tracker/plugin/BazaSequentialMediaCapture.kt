@@ -241,11 +241,13 @@ class BazaSequentialMediaCapture(private val context: Context) {
                 set(v) { emit(v); return src.set.call(this, v); }
               });
 
+              // Baza playlists are zero-based in the UI (00, 01, ...). Return -1 for
+              // non-track nodes so track 00 can be represented as the numeric value 0.
               const exactNumber = e => {
                 const t = norm(e.innerText || e.textContent);
-                if (!/^0*\d{1,3}$/.test(t)) return 0;
+                if (!/^0*\d{1,3}$/.test(t)) return -1;
                 const n = Number(t);
-                return n >= 1 && n <= 350 ? n : 0;
+                return n >= 0 && n < 350 ? n : -1;
               };
 
               const descendants = root => {
@@ -256,10 +258,11 @@ class BazaSequentialMediaCapture(private val context: Context) {
 
               const sequenceFor = root => {
                 const nums = new Set();
-                if (exactNumber(root)) nums.add(exactNumber(root));
-                descendants(root).forEach(e => { const n = exactNumber(e); if (n) nums.add(n); });
+                const own = exactNumber(root);
+                if (own >= 0) nums.add(own);
+                descendants(root).forEach(e => { const n = exactNumber(e); if (n >= 0) nums.add(n); });
                 let count = 0;
-                while (nums.has(count + 1) && count < 350) count++;
+                while (nums.has(count) && count < 350) count++;
                 return count;
               };
 
@@ -274,16 +277,16 @@ class BazaSequentialMediaCapture(private val context: Context) {
               const findPlaylist = () => {
                 let best = null;
                 for (const r of roots()) {
-                  const ones = [];
-                  try { r.querySelectorAll('*').forEach(e => { if (exactNumber(e) === 1) ones.push(e); }); } catch (_) {}
-                  for (const one of ones.slice(0,160)) {
-                    let node = one;
+                  const zeroes = [];
+                  try { r.querySelectorAll('*').forEach(e => { if (exactNumber(e) === 0) zeroes.push(e); }); } catch (_) {}
+                  for (const zero of zeroes.slice(0,160)) {
+                    let node = zero;
                     for (let depth=0; depth<14 && node; depth++, node=node.parentElement) {
                       const count = sequenceFor(node);
                       if (!best || count > best.count) best = {root:node, count};
                     }
                     try {
-                      const host = one.getRootNode()?.host;
+                      const host = zero.getRootNode()?.host;
                       if (host) {
                         let h = host;
                         for (let depth=0; depth<8 && h; depth++, h=h.parentElement) {
@@ -296,7 +299,7 @@ class BazaSequentialMediaCapture(private val context: Context) {
                 }
                 if (!best || best.count < 2) return null;
                 const nodes = [];
-                for (let n=1; n<=best.count; n++) {
+                for (let n=0; n<best.count; n++) {
                   const node = smallestNumberNode(best.root, n);
                   if (!node) break;
                   nodes.push(node);
@@ -372,7 +375,7 @@ class BazaSequentialMediaCapture(private val context: Context) {
                 }
                 attempts++;
                 if (attempts === 2 || attempts === 4 || attempts === 6 || attempts === 8) tryExpand();
-                AudoibooBazaSequential.event('playlist-wait=' + attempts + ' roots=' + roots().length + ' shadow=' + all('*').filter(e => !!e.shadowRoot).length + ' nums=' + all('*').filter(e => exactNumber(e) > 0).length);
+                AudoibooBazaSequential.event('playlist-wait=' + attempts + ' roots=' + roots().length + ' shadow=' + all('*').filter(e => !!e.shadowRoot).length + ' nums=' + all('*').filter(e => exactNumber(e) >= 0).length);
                 return false;
               };
 

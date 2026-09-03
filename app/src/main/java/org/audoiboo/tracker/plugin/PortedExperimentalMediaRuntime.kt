@@ -267,13 +267,25 @@ object PortedExperimentalMediaRuntime {
     private fun trackTargetScript(site: String, index: Int): String = """
         (function(){
           const site=${JSONObject.quote(site)},idx=$index,n=s=>String(s||'').replace(/\s+/g,' ').trim();
-          const one=String(idx+1).padStart(2,'0'),zero=String(idx).padStart(2,'0');
+          const oneNumber=idx+1,one=String(oneNumber),onePadded=one.padStart(2,'0'),zero=String(idx),zeroPadded=zero.padStart(2,'0');
+          const pureNumber=t=>/^\d{1,3}$/.test(t)?Number(t):null;
           const matches=t=>{
             t=n(t);if(!t)return false;
-            if(site==='poleknig')return t===one;
-            if(site==='izib')return new RegExp('(?:^|\\s)'+one+'(?:\\s+\\d{1,2}:\\d{2})?$').test(t);
-            if(site==='knigavuhe')return new RegExp('_'+idx+'(?:\\s+\\d{1,2}:\\d{2})?$').test(t)||t===zero||new RegExp('^'+zero+'\\s+\\d{1,2}:\\d{2}$').test(t);
-            if(site==='lis10book')return t===String(idx+1)||new RegExp('^(?:трек|глава|часть)\\s*0*'+(idx+1)+'(?:\\s|$)','i').test(t);
+            if(site==='poleknig')return pureNumber(t)===oneNumber;
+            if(site==='izib'){
+              const m=t.match(/(?:^|\s)(\d{1,3})(?:\s+\d{1,2}:\d{2})?$/);
+              return !!m&&Number(m[1])===oneNumber;
+            }
+            if(site==='knigavuhe'){
+              if(new RegExp('_0*'+idx+'(?:\\s+\\d{1,2}:\\d{2})?$').test(t))return true;
+              const m=t.match(/^(\d{1,3})(?:\s+\d{1,2}:\d{2})?$/);
+              return !!m&&Number(m[1])===idx;
+            }
+            if(site==='lis10book'){
+              if(pureNumber(t)===oneNumber)return true;
+              const m=t.match(/^(?:трек|глава|часть)\s*0*(\d{1,3})(?:\s|$)/i);
+              return !!m&&Number(m[1])===oneNumber;
+            }
             return false;
           };
           let a=[...document.querySelectorAll('body *')].filter(e=>matches(e.innerText||e.textContent));
@@ -284,8 +296,6 @@ object PortedExperimentalMediaRuntime {
           let e=a[0];if(!e)return null;
           let c;
           if(site==='poleknig'){
-            // Match the proven Playwright experiment exactly: activate the smallest label itself,
-            // or only a genuinely interactive ancestor. Do not climb to a generic playlist row.
             c=e.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]')||e;
           }else{
             c=e.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file],li,tr,[class*=track],[class*=playlist] > *,[class*=audio] > *')||e;
@@ -297,7 +307,7 @@ object PortedExperimentalMediaRuntime {
             try{c.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}))}catch(_){}
             try{c.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}))}catch(_){}
             try{c.click()}catch(_){}
-            AudoibooPortedCapture.event('dom-click='+one);
+            AudoibooPortedCapture.event('dom-click='+onePadded+'/'+one);
           }
           return {x:q.left+Math.min(Math.max(14,q.width*.12),q.width/2),y:q.top+q.height/2};
         })()

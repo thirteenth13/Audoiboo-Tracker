@@ -23,8 +23,6 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
     fun capture(pageUrl: String, timeoutMs: Long = 20_000L, onComplete: (Result) -> Unit) {
         require(isAllowedPage(pageUrl)) { "Unsupported Knigavuhe URL" }
         Handler(Looper.getMainLooper()).post {
-            // Knigavuhe can expose several signed URLs for the same logical track while the player
-            // switches fragment modes. Keep one URL per audiobook + trailing track filename.
             val found = Collections.synchronizedMap(LinkedHashMap<String, String>())
             val diagnostics = mutableListOf<String>()
             val finished = AtomicBoolean(false)
@@ -38,7 +36,7 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
                 if (!isBookAudio(url)) return
                 val key = logicalTrackKey(url) ?: return
                 synchronized(found) {
-                    if (found.size < MAX_MEDIA_URLS) found[key] = url
+                    if (found.size < MAX_MEDIA_URLS) found.putIfAbsent(key, url)
                 }
             }
             fun snapshot(): List<String> = synchronized(found) {
@@ -69,15 +67,19 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
             webView.addJavascriptInterface(object {
                 @JavascriptInterface fun media(url: String?) = handler.post { remember(url) }
                 @JavascriptInterface fun event(message: String?) = handler.post {
-                    if (!message.isNullOrBlank() && diagnostics.size < 120) diagnostics += "js:$message"
+                    if (!message.isNullOrBlank() && diagnostics.size < 160) diagnostics += "js:$message"
                 }
             }, BRIDGE)
+
             webView.webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                     remember(request?.url?.toString())
                     return super.shouldInterceptRequest(view, request)
                 }
-
+                override fun onLoadResource(view: WebView?, url: String?) {
+                    remember(url)
+                    super.onLoadResource(view, url)
+                }
                 override fun onPageFinished(view: WebView, url: String) {
                     if (!isAllowedPage(url)) return
                     diagnostics += "loaded:${Uri.parse(url).host}"
@@ -88,13 +90,10 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
                             synchronized(found) { found.clear() }
                             armed.set(true)
                             diagnostics += "capture-armed"
-                            view.evaluateJavascript(ACTIVATE_TRACKS, null)
+                            view.evaluateJavascript(WALK_VISIBLE_PLAYLIST, null)
                         }
-                    }, 1_800L)
-                    listOf(3_500L, 6_000L, 9_000L, 12_000L, 15_000L).forEach { delay ->
-                        handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(ACTIVATE_TRACKS, null) }, delay)
-                    }
-                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("captured-playlist") }, 17_500L)
+                    }, 1_700L)
+                    handler.postDelayed({ if (!finished.get() && snapshot().isNotEmpty()) finish("captured-visible-playlist") }, 18_500L)
                 }
             }
             handler.postDelayed({ finish("timeout") }, timeoutMs.coerceAtLeast(20_000L))
@@ -104,7 +103,7 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
 
     companion object {
         private const val BRIDGE = "AudoibooMediaCapture"
-        private const val MAX_MEDIA_URLS = 150
+        private const val MAX_MEDIA_URLS = 80
         private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac", "m3u8")
 
         fun isAllowedPage(url: String): Boolean = runCatching {
@@ -120,18 +119,14 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
         }.getOrDefault(false)
 
         fun logicalTrackKey(url: String): String? = runCatching {
-            val path = URI(url).path.orEmpty()
-            val parts = path.split('/').filter(String::isNotBlank)
-            val audioIndex = parts.indexOf("audio")
-            if (audioIndex < 0 || audioIndex + 1 >= parts.size) return@runCatching null
-            val bookId = parts[audioIndex + 1]
-            val fileName = parts.last().lowercase()
-            "$bookId/$fileName"
+            val file = URI(url).path.substringAfterLast('/').lowercase()
+            val number = Regex("(?:track[-_ ]?)?(\\d{1,3})(?:-1)?\\.[a-z0-9]+$").find(file)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            if (number != null) "track/$number" else file
         }.getOrNull()
 
         fun trackNumber(url: String): Int? = runCatching {
             val file = URI(url).path.substringAfterLast('/').substringBeforeLast('.')
-            Regex("(?<!\\d)(\\d{1,4})(?!\\d)").findAll(file)
+            Regex("(?<!\\d)(\\d{1,3})(?:-1)?(?!\\d)").findAll(file)
                 .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
                 .lastOrNull()
         }.getOrNull()
@@ -154,8 +149,7 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
             (()=>{
               const n=s=>String(s||'').replace(/\s+/g,' ').trim();
               const all=[...document.querySelectorAll('button,a,div,span,li,label,input')];
-              const full=all.find(e=>/слушать полностью/i.test(n(e.innerText||e.value)));try{full?.click()}catch(_){}
-              const large=all.find(e=>/больш|крупн|длинн.*отрез|фрагмент/i.test(n(e.innerText||e.value)));
+              const large=all.find(e=>/большие отрезки/i.test(n(e.innerText||e.value)));
               let c=large?.matches?.('input[type=checkbox]')?large:large?.querySelector?.('input[type=checkbox]');
               if(!c)c=document.querySelector('input[type=checkbox][name*=large i],input[type=checkbox][id*=large i]');
               if(c&&!c.checked){try{c.click();c.dispatchEvent(new Event('change',{bubbles:true}));AudoibooMediaCapture.event('enabled-large-segments')}catch(_){}}
@@ -164,21 +158,27 @@ class KnigavuheWebViewMediaCapture(private val context: Context) {
             })();
         """.trimIndent()
 
-        private val ACTIVATE_TRACKS = """
+        private val WALK_VISIBLE_PLAYLIST = """
             (()=>{
-              const emit=u=>{try{if(u)AudoibooMediaCapture.media(String(u))}catch(_){}};
-              const n=s=>String(s||'').replace(/\s+/g,' ').trim();
-              const roots=()=>{const a=[],seen=new Set();const add=r=>{if(!r||seen.has(r))return;seen.add(r);a.push(r);try{r.querySelectorAll('*').forEach(e=>{if(e.shadowRoot)add(e.shadowRoot)});r.querySelectorAll('iframe,frame').forEach(f=>{try{if(f.contentDocument)add(f.contentDocument)}catch(_){}})}catch(_){}};add(document);return a};
-              const tracks=[];
-              roots().forEach(r=>{try{
-                r.querySelectorAll('audio[src],source[src]').forEach(e=>emit(e.currentSrc||e.src));
-                r.querySelectorAll('script').forEach(s=>{const t=String(s.textContent||'').replaceAll('\\/','/');(t.match(/https?:[^\"'<>\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)(?:\?[^\"'<>\s]*)?/gi)||[]).forEach(emit)});
-                r.querySelectorAll('button,a,div,span,li').forEach(e=>{const t=n(e.innerText||e.textContent);if(t.length<=180&&(/^\d{1,3}(?:\s|$)/.test(t)||/_\d+(?:\s|$)/.test(t)))tracks.push(e)});
-              }catch(_){}});
-              const u=[...new Set(tracks)].slice(0,120);
-              u.forEach((e,i)=>setTimeout(()=>{try{e.scrollIntoView({block:'center'});e.click()}catch(_){}},i*150));
-              try{performance.getEntriesByType('resource').forEach(e=>emit(e.name))}catch(_){}
-              AudoibooMediaCapture.event('track-candidates='+u.length);return u.length;
+              if(window.__audoibooKnigaWalk)return'already';window.__audoibooKnigaWalk=true;
+              const norm=s=>String(s||'').replace(/\s+/g,' ').trim();
+              const rows=[...document.querySelectorAll('body *')].filter(e=>{
+                const t=norm(e.innerText||e.textContent);
+                if(!/^.+_\d+$/.test(t))return false;
+                return ![...e.children].some(c=>norm(c.innerText||c.textContent)===t);
+              });
+              const uniq=[];const seen=new Set();
+              rows.forEach(e=>{const t=norm(e.innerText||e.textContent);if(!seen.has(t)){seen.add(t);uniq.push(e)}});
+              uniq.sort((a,b)=>{const na=Number(norm(a.innerText||a.textContent).match(/_(\d+)$/)?.[1]||999),nb=Number(norm(b.innerText||b.textContent).match(/_(\d+)$/)?.[1]||999);return na-nb});
+              AudoibooMediaCapture.event('visible-tracks='+uniq.length);
+              let i=0;
+              const step=()=>{
+                if(i>=uniq.length){window.__audoibooKnigaWalk=false;AudoibooMediaCapture.event('walk-done='+i);return;}
+                const e=uniq[i++];const row=e.closest('li,[role=button],[onclick],div')||e;
+                try{row.scrollIntoView({block:'center'});row.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));row.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true}));row.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true}));row.dispatchEvent(new PointerEvent('pointerup',{bubbles:true}));row.click();}catch(_){}
+                setTimeout(step,260);
+              };
+              step();return uniq.length;
             })();
         """.trimIndent()
     }

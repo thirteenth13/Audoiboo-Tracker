@@ -53,22 +53,15 @@ object DeviceWebViewResolutionRuntime {
                 if (continuation.isActive) continuation.resume(result)
             }
 
-            when (manifest.id) {
-                "baza-knig" -> BazaSequentialMediaCapture(context).capture(url, rule.timeoutMs) { result ->
+            // Keep the proven Baza sequential traversal, and route the four sites that were
+            // previously solved in Scrapling/CDP experiments back through the ported runtime.
+            // Do not bypass PortedExperimentalMediaRuntime with newer per-site WebView classes.
+            when {
+                manifest.id == "baza-knig" -> BazaSequentialMediaCapture(context).capture(url, rule.timeoutMs) { result ->
                     complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
                 }
-                "izib" -> IzibWebViewMediaCapture(context).capture(url, rule.timeoutMs) { result ->
-                    complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
-                }
-                "knigavuhe" -> KnigavuheWebViewMediaCapture(context).capture(url, rule.timeoutMs) { result ->
-                    complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
-                }
-                "lis10book" -> Lis10BookWebViewMediaCapture(context).capture(url, rule.timeoutMs) { result ->
-                    complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
-                }
-                "poleknig" -> PoleknigWebViewMediaCapture(context).capture(url, rule.timeoutMs) { result ->
-                    complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
-                }
+                PortedExperimentalMediaRuntime.supports(manifest.id) ->
+                    PortedExperimentalMediaRuntime.capture(context, manifest, rule, url, complete)
                 else -> PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url, complete)
             }
         }

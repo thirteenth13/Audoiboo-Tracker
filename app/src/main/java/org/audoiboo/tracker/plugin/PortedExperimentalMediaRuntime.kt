@@ -59,9 +59,7 @@ object PortedExperimentalMediaRuntime {
                 val accepted = isAcceptedMedia(url) || isResolver(url)
                 synchronized(found) {
                     if (!accepted) {
-                        if (looksAudio(url) && diagnostics.size < 120) {
-                            diagnostics += "rejected-$source:${host(url)}:${url.take(500)}"
-                        }
+                        if (looksAudio(url) && diagnostics.size < 120) diagnostics += "rejected-$source:${host(url)}:${url.take(500)}"
                         return
                     }
                     val key = PluginWebViewMediaCaptureRuntime.mediaKey(url) ?: url
@@ -78,9 +76,7 @@ object PortedExperimentalMediaRuntime {
                 val all = synchronized(found) { found.toList() }
                 val direct = all.filter(::isAcceptedMedia)
                 val selected = if (rule.preferDirectMedia && direct.isNotEmpty()) direct else all
-                val sorted = if (rule.sortTrackNumber) {
-                    selected.sortedWith(compareBy({ PluginWebViewMediaCaptureRuntime.trackNumber(it) ?: Int.MAX_VALUE }, { it }))
-                } else selected
+                val sorted = if (rule.sortTrackNumber) selected.sortedWith(compareBy({ PluginWebViewMediaCaptureRuntime.trackNumber(it) ?: Int.MAX_VALUE }, { it })) else selected
                 synchronized(found) {
                     diagnostics += reason
                     diagnostics += "ported-clicks=$clicks"
@@ -103,17 +99,14 @@ object PortedExperimentalMediaRuntime {
                 handler.postDelayed({
                     if (finished.get()) return@postDelayed
                     if (manifest.id == "knigavuhe") {
-                        synchronized(found) {
-                            found.clear()
-                            keys.clear()
-                        }
+                        synchronized(found) { found.clear(); keys.clear() }
                         captureArmed.set(true)
                         diagnostics += "ported-armed"
                     }
                     prepareAndTraverse(view, manifest.id, handler, diagnostics) { clicks++ }
                 }, if (manifest.id == "knigavuhe") 2_200L else 700L)
                 handler.postDelayed({ if (!finished.get()) view.evaluateJavascript(scanScript(manifest.id), null) }, 3_200L)
-                handler.postDelayed({ if (!finished.get()) finish("ported-finished") }, minOf(rule.timeoutMs, 16_000L))
+                handler.postDelayed({ if (!finished.get()) finish("ported-finished") }, minOf(rule.timeoutMs, 24_000L))
             }
 
             @SuppressLint("SetJavaScriptEnabled")
@@ -126,9 +119,7 @@ object PortedExperimentalMediaRuntime {
 
             webView.addJavascriptInterface(object {
                 @JavascriptInterface fun media(value: String?) = handler.post { remember(value, "js") }
-                @JavascriptInterface fun body(value: String?) = handler.post {
-                    scanCandidates(value, pageUrl).forEach { remember(it, "body") }
-                }
+                @JavascriptInterface fun body(value: String?) = handler.post { scanCandidates(value, pageUrl).forEach { remember(it, "body") } }
                 @JavascriptInterface fun event(value: String?) = handler.post {
                     if (!value.isNullOrBlank() && diagnostics.size < 140) synchronized(found) { diagnostics += "js:$value" }
                 }
@@ -140,13 +131,9 @@ object PortedExperimentalMediaRuntime {
                     remember(request?.url?.toString(), "network")
                     return super.shouldInterceptRequest(view, request)
                 }
-
                 override fun onPageCommitVisible(view: WebView, url: String) {
-                    if (PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url)) {
-                        startCapture(view, "commit-visible")
-                    }
+                    if (PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url)) startCapture(view, "commit-visible")
                 }
-
                 override fun onPageFinished(view: WebView, url: String) {
                     if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url) || finished.get()) return
                     diagnostics += "ported-loaded"
@@ -154,21 +141,13 @@ object PortedExperimentalMediaRuntime {
                 }
             }
 
-            handler.postDelayed({
-                if (!finished.get() && !started.get()) startCapture(webView, "fallback-timer")
-            }, 2_000L)
-            handler.postDelayed({ finish("ported-timeout") }, minOf(rule.timeoutMs + 1000L, 18_000L))
+            handler.postDelayed({ if (!finished.get() && !started.get()) startCapture(webView, "fallback-timer") }, 2_000L)
+            handler.postDelayed({ finish("ported-timeout") }, minOf(rule.timeoutMs + 1_500L, 26_000L))
             webView.loadUrl(pageUrl)
         }
     }
 
-    private fun prepareAndTraverse(
-        view: WebView,
-        site: String,
-        handler: Handler,
-        diagnostics: MutableList<String>,
-        clicked: () -> Unit
-    ) {
+    private fun prepareAndTraverse(view: WebView, site: String, handler: Handler, diagnostics: MutableList<String>, clicked: () -> Unit) {
         if (site == "knigavuhe") {
             view.evaluateJavascript(markActionScript("(?:^|\\s)Слушать полностью(?:\\s|$)")) { raw ->
                 val rect = parseRect(raw)
@@ -178,11 +157,10 @@ object PortedExperimentalMediaRuntime {
                     clicked()
                 } else diagnostics += "ported-prepare-miss"
                 handler.postDelayed({ probeKnigavuheApi(view, diagnostics) }, 450L)
-                handler.postDelayed({ traverseSequential(view, site, handler, diagnostics, clicked) }, 1_500L)
+                // Poll for the dynamically injected playlist instead of consuming four misses immediately.
+                handler.postDelayed({ traverseSequential(view, site, handler, diagnostics, clicked, firstTrackWaits = 0) }, 1_500L)
             }
-        } else {
-            traverseSequential(view, site, handler, diagnostics, clicked)
-        }
+        } else traverseSequential(view, site, handler, diagnostics, clicked)
         handler.postDelayed({ view.evaluateJavascript(scanScript(site), null) }, 5_500L)
     }
 
@@ -196,10 +174,7 @@ object PortedExperimentalMediaRuntime {
         """.trimIndent()
         view.evaluateJavascript(findIdScript) { raw ->
             val id = raw.trim('"')
-            if (id.isBlank()) {
-                diagnostics += "kv-play-api:book-id-miss"
-                return@evaluateJavascript
-            }
+            if (id.isBlank()) { diagnostics += "kv-play-api:book-id-miss"; return@evaluateJavascript }
             diagnostics += "kv-play-api:id=$id"
             val probeScript = """
                 fetch('/play/id/$id',{headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json,text/plain,*/*'}})
@@ -218,7 +193,8 @@ object PortedExperimentalMediaRuntime {
         diagnostics: MutableList<String>,
         clicked: () -> Unit,
         index: Int = 0,
-        misses: Int = 0
+        misses: Int = 0,
+        firstTrackWaits: Int = 0
     ) {
         if (index >= 60 || misses >= 4) {
             diagnostics += "ported-track-stop:index=$index misses=$misses"
@@ -227,14 +203,19 @@ object PortedExperimentalMediaRuntime {
         view.evaluateJavascript(trackTargetScript(site, index)) { raw ->
             val rect = parseRect(raw)
             if (rect == null) {
-                handler.postDelayed({ traverseSequential(view, site, handler, diagnostics, clicked, index + 1, misses + 1) }, 150L)
+                if (site == "knigavuhe" && index == 0 && firstTrackWaits < 14) {
+                    diagnostics += "kv-playlist-wait=${firstTrackWaits + 1}"
+                    handler.postDelayed({ traverseSequential(view, site, handler, diagnostics, clicked, 0, 0, firstTrackWaits + 1) }, 500L)
+                } else {
+                    handler.postDelayed({ traverseSequential(view, site, handler, diagnostics, clicked, index + 1, misses + 1, firstTrackWaits) }, 150L)
+                }
             } else {
                 if (site != "poleknig") dispatchTap(view, rect.first, rect.second)
                 clicked()
                 handler.postDelayed({
                     view.evaluateJavascript(scanScript(site), null)
-                    traverseSequential(view, site, handler, diagnostics, clicked, index + 1, 0)
-                }, if (site == "poleknig") 520L else 360L)
+                    traverseSequential(view, site, handler, diagnostics, clicked, index + 1, 0, firstTrackWaits)
+                }, if (site == "poleknig") 420L else 360L)
             }
         }
     }
@@ -243,10 +224,7 @@ object PortedExperimentalMediaRuntime {
         val now = SystemClock.uptimeMillis()
         val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0)
         val up = MotionEvent.obtain(now, now + 45L, MotionEvent.ACTION_UP, x, y, 0)
-        view.dispatchTouchEvent(down)
-        view.dispatchTouchEvent(up)
-        down.recycle()
-        up.recycle()
+        view.dispatchTouchEvent(down); view.dispatchTouchEvent(up); down.recycle(); up.recycle()
     }
 
     private fun markActionScript(pattern: String): String = """
@@ -268,7 +246,8 @@ object PortedExperimentalMediaRuntime {
           const pureNumber=t=>/^\d{1,3}$/.test(t)?Number(t):null;
           const matches=t=>{
             t=n(t);if(!t)return false;
-            if(site==='poleknig')return pureNumber(t)===oneNumber;
+            // Poleknig's proven browser experiment uses strict two-digit labels 01..N.
+            if(site==='poleknig')return t===onePadded;
             if(site==='izib'){
               const m=t.match(/(?:^|\s)(\d{1,3})(?:\s+\d{1,2}:\d{2})?$/);
               return !!m&&Number(m[1])===oneNumber;
@@ -290,12 +269,7 @@ object PortedExperimentalMediaRuntime {
           a.sort((x,y)=>{let a=x.getBoundingClientRect(),b=y.getBoundingClientRect();return a.width*a.height-b.width*b.height});
           AudoibooPortedCapture.event('target-'+idx+'='+a.length);
           let e=a[0];if(!e)return null;
-          let c;
-          if(site==='poleknig'){
-            c=e.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]')||e;
-          }else{
-            c=e.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file],li,tr,[class*=track],[class*=playlist] > *,[class*=audio] > *')||e;
-          }
+          let c=site==='poleknig'?(e.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]')||e):(e.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file],li,tr,[class*=track],[class*=playlist] > *,[class*=audio] > *')||e);
           let cq=c.getBoundingClientRect(),cs=getComputedStyle(c);if(cq.height>180||cq.height<3||cs.display==='none'||cs.visibility==='hidden')c=e;
           c.scrollIntoView({block:'center'});let q=c.getBoundingClientRect();
           AudoibooPortedCapture.event('tap='+idx+':'+n(e.innerText||e.textContent).slice(0,90));
@@ -309,8 +283,8 @@ object PortedExperimentalMediaRuntime {
                 document.querySelectorAll('audio,source').forEach(x=>{window.__audoibooPortedEmit?.(x.currentSrc);window.__audoibooPortedEmit?.(x.src);window.__audoibooPortedEmit?.(x.getAttribute?.('src'))});
                 AudoibooPortedCapture.body(document.documentElement.outerHTML);
               }catch(_){}
-            },260);
-            AudoibooPortedCapture.event('dom-click='+onePadded+'/'+one);
+            },240);
+            AudoibooPortedCapture.event('dom-click='+onePadded);
           }
           return {x:q.left+Math.min(Math.max(14,q.width*.12),q.width/2),y:q.top+q.height/2};
         })()
@@ -322,10 +296,16 @@ object PortedExperimentalMediaRuntime {
           const emit=u=>{try{if(u)AudoibooPortedCapture.media(new URL(String(u),location.href).href)}catch(e){}};
           const scan=t=>{try{let v=String(t||'').replaceAll('\\/','/');let a=v.match(/(?:https?:\/\/|\/\/|\/)[^\"'<>\s]+(?:\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)|\/files\/\d+)(?:\?[^\"'<>\s]*)?/gi)||[];a.forEach(emit)}catch(e){}};
           window.__audoibooPortedEmit=emit;window.__audoibooPortedScan=scan;
+          // Keep media loading/request generation, but force every HTML media element silent.
           try{
-            const p=HTMLMediaElement.prototype.play;
-            HTMLMediaElement.prototype.play=function(){try{this.muted=true;this.volume=0}catch(_){}return p.apply(this,arguments)};
-            document.querySelectorAll('audio,video').forEach(x=>{try{x.muted=true;x.volume=0}catch(_){}});
+            const mp=HTMLMediaElement.prototype;
+            const muted=Object.getOwnPropertyDescriptor(mp,'muted');
+            if(muted&&muted.set)Object.defineProperty(mp,'muted',{configurable:true,enumerable:muted.enumerable,get:muted.get,set(v){return muted.set.call(this,true)}});
+            const volume=Object.getOwnPropertyDescriptor(mp,'volume');
+            if(volume&&volume.set)Object.defineProperty(mp,'volume',{configurable:true,enumerable:volume.enumerable,get:volume.get,set(v){return volume.set.call(this,0)}});
+            const p=mp.play;mp.play=function(){try{if(muted&&muted.set)muted.set.call(this,true);if(volume&&volume.set)volume.set.call(this,0)}catch(_){};return p.apply(this,arguments)};
+            const silence=()=>document.querySelectorAll('audio,video').forEach(x=>{try{if(muted&&muted.set)muted.set.call(x,true);if(volume&&volume.set)volume.set.call(x,0);x.setAttribute('muted','')}catch(_){}});
+            silence();setInterval(silence,120);
           }catch(_){}
           try{
             const A=window.Audio;
@@ -365,26 +345,22 @@ object PortedExperimentalMediaRuntime {
 
     private fun host(url: String): String = runCatching { URI(url).host.orEmpty() }.getOrDefault("")
 
-    private fun looksAudio(url: String): Boolean = runCatching {
-        URI(url).path.orEmpty().lowercase().substringAfterLast('.', "") in setOf("mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac", "m3u8")
-    }.getOrDefault(false)
+    private fun looksAudio(url: String): Boolean = Regex("""\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)(?:[?#]|$)""", RegexOption.IGNORE_CASE).containsMatchIn(url)
 
-    private fun trustedExternalMedia(site: String, url: String): Boolean = runCatching {
-        if (!looksAudio(url)) return@runCatching false
-        val h = URI(url).host?.lowercase().orEmpty()
-        when (site) {
-            "izib" -> h == "abookfiles.online" || h.endsWith(".abookfiles.online")
-            "lis10book" -> h == "fantbox.net" || h.endsWith(".fantbox.net")
+    private fun trustedExternalMedia(site: String, url: String): Boolean {
+        if (!looksAudio(url)) return false
+        val lower = url.lowercase()
+        return when (site) {
+            "izib" -> lower.startsWith("https://abookfiles.online/") || Regex("""^https://[^/]+\.abookfiles\.online/""").containsMatchIn(lower)
+            "lis10book" -> lower.startsWith("https://fantbox.net/") || Regex("""^https://[^/]+\.fantbox\.net/""").containsMatchIn(lower)
             else -> false
         }
-    }.getOrDefault(false)
+    }
 
     private fun scanCandidates(text: String?, base: String): List<String> {
         val clean = text.orEmpty().replace("\\/", "/")
-        val audio = Regex("""https?://[^\\"'<>\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)(?:\?[^\\"'<>\s]*)?""", RegexOption.IGNORE_CASE)
-            .findAll(clean).map { it.value }
-        val resolver = Regex("""(?:https?://[^\\"'<>\s]+)?/files/\d+(?:\?[^\\"'<>\s]*)?""", RegexOption.IGNORE_CASE)
-            .findAll(clean).mapNotNull { normalize(it.value, base) }
+        val audio = Regex("""https?://[^\\"'<>\s]+\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)(?:\?[^\\"'<>\s]*)?""", RegexOption.IGNORE_CASE).findAll(clean).map { it.value }
+        val resolver = Regex("""(?:https?://[^\\"'<>\s]+)?/files/\d+(?:\?[^\\"'<>\s]*)?""", RegexOption.IGNORE_CASE).findAll(clean).mapNotNull { normalize(it.value, base) }
         return (audio + resolver).distinct().take(700).toList()
     }
 }

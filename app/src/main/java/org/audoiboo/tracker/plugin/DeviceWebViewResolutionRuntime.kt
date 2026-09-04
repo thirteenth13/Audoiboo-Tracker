@@ -53,12 +53,15 @@ object DeviceWebViewResolutionRuntime {
                 if (continuation.isActive) continuation.resume(result)
             }
 
-            // Keep the proven Baza sequential traversal, and route the four sites that were
-            // previously solved in Scrapling/CDP experiments back through the ported runtime.
-            // Do not bypass PortedExperimentalMediaRuntime with newer per-site WebView classes.
             when {
                 manifest.id == "baza-knig" -> BazaSequentialMediaCapture(context).capture(url, rule.timeoutMs) { result ->
                     complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
+                }
+                // CI 833 proved the generic activator sees all Izib audio requests while the
+                // ported native-tap path only produced playback without surfacing media URLs.
+                manifest.id == "izib" -> {
+                    val effectiveRule = rule.copy(mediaHosts = rule.mediaHosts + "abookfiles.online")
+                    PluginWebViewMediaCaptureRuntime(context).capture(manifest, effectiveRule, url, complete)
                 }
                 PortedExperimentalMediaRuntime.supports(manifest.id) ->
                     PortedExperimentalMediaRuntime.capture(context, manifest, rule, url, complete)

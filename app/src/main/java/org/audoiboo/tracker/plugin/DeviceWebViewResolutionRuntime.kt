@@ -1,6 +1,7 @@
 package org.audoiboo.tracker.plugin
 
 import android.content.Context
+import android.media.AudioManager
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import kotlin.coroutines.resume
@@ -49,7 +50,21 @@ object DeviceWebViewResolutionRuntime {
         val context = appContext ?: return null
         if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url)) return null
         return suspendCancellableCoroutine { continuation ->
+            // Hidden capture WebViews exist only to surface media URLs. Some site players ignore
+            // DOM muted/volume hooks or create audio outside the element we hooked. Mute Android's
+            // music stream for the short capture window and restore its previous mute state after.
+            val audio = runCatching { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }.getOrNull()
+            val wasMuted = runCatching { audio?.isStreamMute(AudioManager.STREAM_MUSIC) == true }.getOrDefault(false)
+            if (!wasMuted) runCatching { audio?.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0) }
+
+            fun restoreAudio() {
+                if (!wasMuted) runCatching { audio?.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0) }
+            }
+
+            continuation.invokeOnCancellation { restoreAudio() }
+
             val complete: (PluginMediaCaptureResult) -> Unit = { result ->
+                restoreAudio()
                 if (continuation.isActive) continuation.resume(result)
             }
 

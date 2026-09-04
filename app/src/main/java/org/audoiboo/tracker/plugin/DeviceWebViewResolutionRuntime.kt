@@ -82,6 +82,11 @@ object DeviceWebViewResolutionRuntime {
                 // use that declarative runner instead of the ported zero-label traversal.
                 manifest.id == "knigavuhe" ->
                     PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url, complete)
+                // Poleknig's custom player only requests /files/<id> after a real user-style play
+                // gesture. The dedicated runtime taps 01..N and the large square play control with
+                // native MotionEvents, instead of relying on synthetic DOM click().
+                manifest.id == "poleknig" ->
+                    PoleknigPlayerCapture(context).capture(manifest, rule, url, complete)
                 PortedExperimentalMediaRuntime.supports(manifest.id) ->
                     PortedExperimentalMediaRuntime.capture(context, manifest, rule, url, complete)
                 else -> PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url, complete)

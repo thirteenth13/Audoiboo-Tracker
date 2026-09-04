@@ -157,7 +157,6 @@ object PortedExperimentalMediaRuntime {
                     clicked()
                 } else diagnostics += "ported-prepare-miss"
                 handler.postDelayed({ probeKnigavuheApi(view, diagnostics) }, 450L)
-                // Poll for the dynamically injected playlist instead of consuming four misses immediately.
                 handler.postDelayed({ traverseSequential(view, site, handler, diagnostics, clicked, firstTrackWaits = 0) }, 1_500L)
             }
         } else traverseSequential(view, site, handler, diagnostics, clicked)
@@ -215,7 +214,7 @@ object PortedExperimentalMediaRuntime {
                 handler.postDelayed({
                     view.evaluateJavascript(scanScript(site), null)
                     traverseSequential(view, site, handler, diagnostics, clicked, index + 1, 0, firstTrackWaits)
-                }, if (site == "poleknig") 420L else 360L)
+                }, if (site == "poleknig") 520L else 360L)
             }
         }
     }
@@ -242,19 +241,20 @@ object PortedExperimentalMediaRuntime {
     private fun trackTargetScript(site: String, index: Int): String = """
         (function(){
           const site=${JSONObject.quote(site)},idx=$index,n=s=>String(s||'').replace(/\s+/g,' ').trim();
-          const oneNumber=idx+1,one=String(oneNumber),onePadded=one.padStart(2,'0'),zeroPadded=String(idx).padStart(2,'0');
+          const oneNumber=idx+1,one=String(oneNumber),onePadded=one.padStart(2,'0');
           const pureNumber=t=>/^\d{1,3}$/.test(t)?Number(t):null;
           const matches=t=>{
             t=n(t);if(!t)return false;
-            // Poleknig's proven browser experiment uses strict two-digit labels 01..N.
             if(site==='poleknig')return t===onePadded;
             if(site==='izib'){
               const m=t.match(/(?:^|\s)(\d{1,3})(?:\s+\d{1,2}:\d{2})?$/);
               return !!m&&Number(m[1])===oneNumber;
             }
             if(site==='knigavuhe'){
-              if(new RegExp('_0*'+idx+'(?:\\s+\\d{1,2}:\\d{2})?$').test(t))return true;
-              return t===zeroPadded||new RegExp('^'+zeroPadded+'\\s+\\d{1,2}:\\d{2}$').test(t);
+              // Real mobile rows are "Book title_0 ... Book title_38" and duration can be H:MM:SS.
+              // Match the _N suffix, not the separate 00/01 duration/position labels.
+              const m=t.match(/_(\d+)(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/);
+              return !!m&&Number(m[1])===idx;
             }
             if(site==='lis10book'){
               if(pureNumber(t)===oneNumber)return true;
@@ -265,25 +265,47 @@ object PortedExperimentalMediaRuntime {
           };
           let a=[...document.querySelectorAll('body *')].filter(e=>matches(e.innerText||e.textContent));
           let l=a.filter(e=>![...e.children].some(c=>matches(c.innerText||c.textContent)));if(l.length)a=l;
-          a=a.filter(e=>{let q=e.getBoundingClientRect(),s=getComputedStyle(e);return q.width>3&&q.height>3&&q.height<160&&s.display!=='none'&&s.visibility!=='hidden'});
+          a=a.filter(e=>{let q=e.getBoundingClientRect(),s=getComputedStyle(e);return q.width>3&&q.height>3&&q.height<180&&s.display!=='none'&&s.visibility!=='hidden'});
           a.sort((x,y)=>{let a=x.getBoundingClientRect(),b=y.getBoundingClientRect();return a.width*a.height-b.width*b.height});
           AudoibooPortedCapture.event('target-'+idx+'='+a.length);
           let e=a[0];if(!e)return null;
           let c=site==='poleknig'?(e.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]')||e):(e.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file],li,tr,[class*=track],[class*=playlist] > *,[class*=audio] > *')||e);
-          let cq=c.getBoundingClientRect(),cs=getComputedStyle(c);if(cq.height>180||cq.height<3||cs.display==='none'||cs.visibility==='hidden')c=e;
+          let cq=c.getBoundingClientRect(),cs=getComputedStyle(c);if(cq.height>220||cq.height<3||cs.display==='none'||cs.visibility==='hidden')c=e;
           c.scrollIntoView({block:'center'});let q=c.getBoundingClientRect();
-          AudoibooPortedCapture.event('tap='+idx+':'+n(e.innerText||e.textContent).slice(0,90));
+          AudoibooPortedCapture.event('tap='+idx+':'+n(e.innerText||e.textContent).slice(0,100));
           if(site==='poleknig'){
             try{AudoibooPortedCapture.body((c.outerHTML||'')+'\n'+(c.parentElement?.outerHTML||''))}catch(_){}
             try{c.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}))}catch(_){}
             try{c.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}))}catch(_){}
             try{c.click()}catch(_){}
+            // The numbered row selects a track. The large play control is what asks /files/<id>
+            // for the selected track, so trigger it after every selection while media is muted.
+            setTimeout(()=>{
+              try{
+                const selectors=[
+                  "button[aria-label*='play' i]","[role='button'][aria-label*='play' i]","button[title*='play' i]",
+                  ".player-play",".play-button",".jp-play","button[class*='play']","[class*='play'][role='button']"
+                ];
+                let p=null;
+                for(const s of selectors){const x=document.querySelector(s);if(x){const r=x.getBoundingClientRect(),st=getComputedStyle(x);if(r.width>8&&r.height>8&&st.display!=='none'&&st.visibility!=='hidden'){p=x;break}}}
+                if(!p){
+                  const all=[...document.querySelectorAll('button,[role=button],div,span')];
+                  p=all.find(x=>{const r=x.getBoundingClientRect(),t=n(x.innerText||x.textContent),cl=String(x.className||'');return r.width>40&&r.height>40&&r.width<220&&r.height<220&&(/play/i.test(cl)||t==='▶'||t==='►')})||null;
+                }
+                if(p){
+                  p.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
+                  p.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
+                  p.click();
+                  AudoibooPortedCapture.event('pole-play='+onePadded);
+                }else AudoibooPortedCapture.event('pole-play-miss='+onePadded);
+              }catch(_){AudoibooPortedCapture.event('pole-play-error='+onePadded)}
+            },90);
             setTimeout(()=>{
               try{
                 document.querySelectorAll('audio,source').forEach(x=>{window.__audoibooPortedEmit?.(x.currentSrc);window.__audoibooPortedEmit?.(x.src);window.__audoibooPortedEmit?.(x.getAttribute?.('src'))});
                 AudoibooPortedCapture.body(document.documentElement.outerHTML);
               }catch(_){}
-            },240);
+            },360);
             AudoibooPortedCapture.event('dom-click='+onePadded);
           }
           return {x:q.left+Math.min(Math.max(14,q.width*.12),q.width/2),y:q.top+q.height/2};
@@ -296,7 +318,6 @@ object PortedExperimentalMediaRuntime {
           const emit=u=>{try{if(u)AudoibooPortedCapture.media(new URL(String(u),location.href).href)}catch(e){}};
           const scan=t=>{try{let v=String(t||'').replaceAll('\\/','/');let a=v.match(/(?:https?:\/\/|\/\/|\/)[^\"'<>\s]+(?:\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)|\/files\/\d+)(?:\?[^\"'<>\s]*)?/gi)||[];a.forEach(emit)}catch(e){}};
           window.__audoibooPortedEmit=emit;window.__audoibooPortedScan=scan;
-          // Keep media loading/request generation, but force every HTML media element silent.
           try{
             const mp=HTMLMediaElement.prototype;
             const muted=Object.getOwnPropertyDescriptor(mp,'muted');
@@ -305,7 +326,7 @@ object PortedExperimentalMediaRuntime {
             if(volume&&volume.set)Object.defineProperty(mp,'volume',{configurable:true,enumerable:volume.enumerable,get:volume.get,set(v){return volume.set.call(this,0)}});
             const p=mp.play;mp.play=function(){try{if(muted&&muted.set)muted.set.call(this,true);if(volume&&volume.set)volume.set.call(this,0)}catch(_){};return p.apply(this,arguments)};
             const silence=()=>document.querySelectorAll('audio,video').forEach(x=>{try{if(muted&&muted.set)muted.set.call(x,true);if(volume&&volume.set)volume.set.call(x,0);x.setAttribute('muted','')}catch(_){}});
-            silence();setInterval(silence,120);
+            silence();setInterval(silence,100);
           }catch(_){}
           try{
             const A=window.Audio;

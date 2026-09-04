@@ -50,10 +50,13 @@ object PortedExperimentalMediaRuntime {
                 manifest.hosts.any { host == it || host.endsWith(".$it") } && regex.matches(uri.path.orEmpty())
             }.getOrDefault(false)
 
+            fun isAcceptedMedia(url: String): Boolean =
+                PluginWebViewMediaCaptureRuntime.isMedia(manifest, rule, url) || trustedExternalMedia(manifest.id, url)
+
             fun remember(raw: String?, source: String) {
                 if (!captureArmed.get()) return
                 val url = normalize(raw, pageUrl) ?: return
-                val accepted = PluginWebViewMediaCaptureRuntime.isMedia(manifest, rule, url) || isResolver(url)
+                val accepted = isAcceptedMedia(url) || isResolver(url)
                 synchronized(found) {
                     if (!accepted) {
                         if (looksAudio(url) && diagnostics.size < 120) {
@@ -73,7 +76,7 @@ object PortedExperimentalMediaRuntime {
                 if (!finished.compareAndSet(false, true)) return
                 handler.removeCallbacksAndMessages(null)
                 val all = synchronized(found) { found.toList() }
-                val direct = all.filter { PluginWebViewMediaCaptureRuntime.isMedia(manifest, rule, it) }
+                val direct = all.filter(::isAcceptedMedia)
                 val selected = if (rule.preferDirectMedia && direct.isNotEmpty()) direct else all
                 val sorted = if (rule.sortTrackNumber) {
                     selected.sortedWith(compareBy({ PluginWebViewMediaCaptureRuntime.trackNumber(it) ?: Int.MAX_VALUE }, { it }))
@@ -175,8 +178,6 @@ object PortedExperimentalMediaRuntime {
                     clicked()
                 } else diagnostics += "ported-prepare-miss"
                 handler.postDelayed({ probeKnigavuheApi(view, diagnostics) }, 450L)
-                // The numbered Knigavuhe playlist is injected after the player initializes.
-                // CI 827 showed labels 00/01/02 in the raw probe while the earlier traversal saw none.
                 handler.postDelayed({ traverseSequential(view, site, handler, diagnostics, clicked) }, 1_500L)
             }
         } else {
@@ -210,7 +211,6 @@ object PortedExperimentalMediaRuntime {
         }
     }
 
-    /** Re-resolve and scroll each exact row immediately before activation. */
     private fun traverseSequential(
         view: WebView,
         site: String,
@@ -229,15 +229,12 @@ object PortedExperimentalMediaRuntime {
             if (rect == null) {
                 handler.postDelayed({ traverseSequential(view, site, handler, diagnostics, clicked, index + 1, misses + 1) }, 150L)
             } else {
-                // Poleknig's proven experiment uses DOM mousedown/mouseup/click on the exact row.
-                // The JS target script performs that activation itself; native MotionEvent taps did
-                // not switch the player even though all 30 labels were found.
                 if (site != "poleknig") dispatchTap(view, rect.first, rect.second)
                 clicked()
                 handler.postDelayed({
                     view.evaluateJavascript(scanScript(site), null)
                     traverseSequential(view, site, handler, diagnostics, clicked, index + 1, 0)
-                }, if (site == "poleknig") 320L else 360L)
+                }, if (site == "poleknig") 520L else 360L)
             }
         }
     }
@@ -267,7 +264,7 @@ object PortedExperimentalMediaRuntime {
     private fun trackTargetScript(site: String, index: Int): String = """
         (function(){
           const site=${JSONObject.quote(site)},idx=$index,n=s=>String(s||'').replace(/\s+/g,' ').trim();
-          const oneNumber=idx+1,one=String(oneNumber),onePadded=one.padStart(2,'0'),zero=String(idx),zeroPadded=zero.padStart(2,'0');
+          const oneNumber=idx+1,one=String(oneNumber),onePadded=one.padStart(2,'0'),zeroPadded=String(idx).padStart(2,'0');
           const pureNumber=t=>/^\d{1,3}$/.test(t)?Number(t):null;
           const matches=t=>{
             t=n(t);if(!t)return false;
@@ -278,8 +275,7 @@ object PortedExperimentalMediaRuntime {
             }
             if(site==='knigavuhe'){
               if(new RegExp('_0*'+idx+'(?:\\s+\\d{1,2}:\\d{2})?$').test(t))return true;
-              const m=t.match(/^(\d{1,3})(?:\s+\d{1,2}:\d{2})?$/);
-              return !!m&&Number(m[1])===idx;
+              return t===zeroPadded||new RegExp('^'+zeroPadded+'\\s+\\d{1,2}:\\d{2}$').test(t);
             }
             if(site==='lis10book'){
               if(pureNumber(t)===oneNumber)return true;
@@ -304,9 +300,16 @@ object PortedExperimentalMediaRuntime {
           c.scrollIntoView({block:'center'});let q=c.getBoundingClientRect();
           AudoibooPortedCapture.event('tap='+idx+':'+n(e.innerText||e.textContent).slice(0,90));
           if(site==='poleknig'){
+            try{AudoibooPortedCapture.body((c.outerHTML||'')+'\n'+(c.parentElement?.outerHTML||''))}catch(_){}
             try{c.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}))}catch(_){}
             try{c.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}))}catch(_){}
             try{c.click()}catch(_){}
+            setTimeout(()=>{
+              try{
+                document.querySelectorAll('audio,source').forEach(x=>{window.__audoibooPortedEmit?.(x.currentSrc);window.__audoibooPortedEmit?.(x.src);window.__audoibooPortedEmit?.(x.getAttribute?.('src'))});
+                AudoibooPortedCapture.body(document.documentElement.outerHTML);
+              }catch(_){}
+            },260);
             AudoibooPortedCapture.event('dom-click='+onePadded+'/'+one);
           }
           return {x:q.left+Math.min(Math.max(14,q.width*.12),q.width/2),y:q.top+q.height/2};
@@ -319,11 +322,20 @@ object PortedExperimentalMediaRuntime {
           const emit=u=>{try{if(u)AudoibooPortedCapture.media(new URL(String(u),location.href).href)}catch(e){}};
           const scan=t=>{try{let v=String(t||'').replaceAll('\\/','/');let a=v.match(/(?:https?:\/\/|\/\/|\/)[^\"'<>\s]+(?:\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)|\/files\/\d+)(?:\?[^\"'<>\s]*)?/gi)||[];a.forEach(emit)}catch(e){}};
           window.__audoibooPortedEmit=emit;window.__audoibooPortedScan=scan;
+          try{
+            const p=HTMLMediaElement.prototype.play;
+            HTMLMediaElement.prototype.play=function(){try{this.muted=true;this.volume=0}catch(_){}return p.apply(this,arguments)};
+            document.querySelectorAll('audio,video').forEach(x=>{try{x.muted=true;x.volume=0}catch(_){}});
+          }catch(_){}
+          try{
+            const A=window.Audio;
+            if(A){window.Audio=function(src){const a=new A(src);try{a.muted=true;a.volume=0}catch(_){};emit(src);return a};window.Audio.prototype=A.prototype;}
+          }catch(_){}
           if(broad){
             try{let f=window.fetch;if(f)window.fetch=function(...a){a.forEach(scan);return f.apply(this,a).then(r=>{try{scan(r.url);r.clone().text().then(t=>{scan(t);AudoibooPortedCapture.body(t)}).catch(()=>{})}catch(e){}return r})}}catch(e){}
             try{let o=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(...a){a.forEach(scan);this.addEventListener('load',()=>{try{scan(this.responseURL);scan(this.responseText);AudoibooPortedCapture.body(this.responseText)}catch(e){}});return o.apply(this,a)}}catch(e){}
           }
-          try{let s=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src');if(s&&s.set)Object.defineProperty(HTMLMediaElement.prototype,'src',{configurable:s.configurable,enumerable:s.enumerable,get:s.get,set(v){emit(v);return s.set.call(this,v)}})}catch(e){}
+          try{let s=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src');if(s&&s.set)Object.defineProperty(HTMLMediaElement.prototype,'src',{configurable:s.configurable,enumerable:s.enumerable,get:s.get,set(v){emit(v);try{this.muted=true;this.volume=0}catch(_){}return s.set.call(this,v)}})}catch(e){}
           return true;
         })()
     """.trimIndent()
@@ -331,11 +343,9 @@ object PortedExperimentalMediaRuntime {
     private fun scanScript(site: String): String = """
         (function(){
           const site=${JSONObject.quote(site)},e=window.__audoibooPortedEmit||(()=>{}),s=window.__audoibooPortedScan||(()=>{});
-          if(site==='knigavuhe'){
-            document.querySelectorAll('audio,source').forEach(x=>{e(x.currentSrc);e(x.src);e(x.getAttribute&&x.getAttribute('src'))});
-            return true;
-          }
-          document.querySelectorAll('audio[src],audio source[src],source[src],a[href],[data-src],[data-url],[data-file],[data-audio]').forEach(x=>['src','href','data-src','data-url','data-file','data-audio'].forEach(a=>e(x.getAttribute&&x.getAttribute(a))));
+          document.querySelectorAll('audio,source').forEach(x=>{try{if('muted' in x)x.muted=true;if('volume' in x)x.volume=0}catch(_){};e(x.currentSrc);e(x.src);e(x.getAttribute&&x.getAttribute('src'))});
+          if(site==='knigavuhe') return true;
+          document.querySelectorAll('a[href],[data-src],[data-url],[data-file],[data-audio]').forEach(x=>['href','data-src','data-url','data-file','data-audio'].forEach(a=>e(x.getAttribute&&x.getAttribute(a))));
           try{performance.getEntriesByType('resource').forEach(x=>e(x.name))}catch(_){}
           s(document.documentElement.outerHTML);return true
         })()
@@ -357,6 +367,16 @@ object PortedExperimentalMediaRuntime {
 
     private fun looksAudio(url: String): Boolean = runCatching {
         URI(url).path.orEmpty().lowercase().substringAfterLast('.', "") in setOf("mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac", "m3u8")
+    }.getOrDefault(false)
+
+    private fun trustedExternalMedia(site: String, url: String): Boolean = runCatching {
+        if (!looksAudio(url)) return@runCatching false
+        val h = URI(url).host?.lowercase().orEmpty()
+        when (site) {
+            "izib" -> h == "abookfiles.online" || h.endsWith(".abookfiles.online")
+            "lis10book" -> h == "fantbox.net" || h.endsWith(".fantbox.net")
+            else -> false
+        }
     }.getOrDefault(false)
 
     private fun scanCandidates(text: String?, base: String): List<String> {

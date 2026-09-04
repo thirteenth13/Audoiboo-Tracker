@@ -16,18 +16,9 @@ import java.net.URI
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Device-WebView traversal for Poleknig's custom player.
- *
- * The visible mobile player has exact track labels 01..N and a large square play control.
- * Selecting a label alone does not request the track; the play control must be activated after
- * every selection. Use native MotionEvent taps for both controls because the site's delegated
- * handlers do not reliably react to synthetic DOM click() in Android WebView.
- */
+/** Device-WebView traversal for Poleknig's custom player. */
 class PoleknigPlayerCapture(private val context: Context) {
-    private companion object {
-        const val BRIDGE = "AudoibooPoleCapture"
-    }
+    private companion object { const val BRIDGE = "AudoibooPoleCapture" }
 
     fun capture(
         manifest: PluginPackageManifest,
@@ -72,9 +63,7 @@ class PoleknigPlayerCapture(private val context: Context) {
                 val all = synchronized(found) { found.toList() }
                 val direct = all.filter { PluginWebViewMediaCaptureRuntime.isMedia(manifest, rule, it) }
                 val selected = if (rule.preferDirectMedia && direct.isNotEmpty()) direct else all
-                return if (rule.sortTrackNumber) {
-                    selected.sortedWith(compareBy({ PluginWebViewMediaCaptureRuntime.trackNumber(it) ?: Int.MAX_VALUE }, { it }))
-                } else selected
+                return if (rule.sortTrackNumber) selected.sortedWith(compareBy({ PluginWebViewMediaCaptureRuntime.trackNumber(it) ?: Int.MAX_VALUE }, { it })) else selected
             }
 
             fun finish(reason: String) {
@@ -86,10 +75,8 @@ class PoleknigPlayerCapture(private val context: Context) {
                 diagnostics += "pole-requests=$requests"
                 diagnostics += "media=${media.size}"
                 runCatching {
-                    webView.stopLoading()
-                    webView.loadUrl("about:blank")
-                    webView.removeJavascriptInterface(BRIDGE)
-                    webView.destroy()
+                    webView.stopLoading(); webView.loadUrl("about:blank")
+                    webView.removeJavascriptInterface(BRIDGE); webView.destroy()
                 }
                 onComplete(PluginMediaCaptureResult(pageUrl, media, diagnostics.toList()))
             }
@@ -98,10 +85,8 @@ class PoleknigPlayerCapture(private val context: Context) {
                 val now = SystemClock.uptimeMillis()
                 val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0)
                 val up = MotionEvent.obtain(now, now + 55L, MotionEvent.ACTION_UP, x, y, 0)
-                webView.dispatchTouchEvent(down)
-                webView.dispatchTouchEvent(up)
-                down.recycle(); up.recycle()
-                clicks++
+                webView.dispatchTouchEvent(down); webView.dispatchTouchEvent(up)
+                down.recycle(); up.recycle(); clicks++
             }
 
             fun parseRect(raw: String?): Pair<Float, Float>? = runCatching {
@@ -122,8 +107,7 @@ class PoleknigPlayerCapture(private val context: Context) {
                       try{performance.getEntriesByType('resource').forEach(e=>emit(e.name))}catch(_){}
                       const h=document.documentElement.outerHTML.replaceAll('\\/','/');
                       const m=h.match(/(?:https?:\/\/|\/\/|\/)[^\"'<>\s]+(?:\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)|\/files\/\d+)(?:\?[^\"'<>\s]*)?/gi)||[];
-                      m.slice(0,500).forEach(emit);
-                      return m.length;
+                      m.slice(0,500).forEach(emit); return m.length;
                     })()
                     """.trimIndent(), null
                 )
@@ -131,24 +115,34 @@ class PoleknigPlayerCapture(private val context: Context) {
 
             fun playTargetScript(): String = """
                 (()=>{
-                  const vis=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>20&&r.height>20&&s.display!=='none'&&s.visibility!=='hidden'};
-                  const all=[...document.querySelectorAll('button,a,[role=button],div,span')].filter(vis);
+                  const vis=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>20&&r.height>20&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'&&s.pointerEvents!=='none'};
+                  const bad=e=>/swiper|lazy|preload|loader|spinner|progress/i.test(String(e.className||'')+' '+String(e.id||''));
+                  const all=[...document.querySelectorAll('button,a,[role=button],div,span')].filter(vis).filter(e=>!bad(e));
                   let best=null,bestScore=-1;
+                  const candidates=[];
                   for(const e of all){
                     const r=e.getBoundingClientRect();
-                    if(r.width<55||r.height<55||r.width>230||r.height>230)continue;
-                    const ratio=Math.min(r.width,r.height)/Math.max(r.width,r.height);if(ratio<0.62)continue;
+                    if(r.width<58||r.height<58||r.width>220||r.height>220)continue;
+                    const ratio=Math.min(r.width,r.height)/Math.max(r.width,r.height);if(ratio<0.72)continue;
                     const cls=String(e.className||''),id=String(e.id||''),aria=String(e.getAttribute?.('aria-label')||''),title=String(e.getAttribute?.('title')||'');
+                    const meta=(cls+' '+id+' '+aria+' '+title).toLowerCase();
                     const svg=!!e.querySelector?.('svg,path,polygon');
+                    const onclick=!!e.onclick||e.hasAttribute?.('onclick');
+                    const role=String(e.getAttribute?.('role')||'');
                     const style=getComputedStyle(e);
-                    let score=ratio*4 + Math.min(r.width,r.height)/80;
-                    if(/play|start|main.?button|control/i.test(cls+' '+id+' '+aria+' '+title))score+=8;
-                    if(svg)score+=4;
-                    if(r.left<innerWidth*0.45)score+=2;
-                    if(r.top<innerHeight*0.75)score+=1;
-                    if(style.cursor==='pointer')score+=1;
+                    const interactive=e.tagName==='BUTTON'||e.tagName==='A'||role==='button'||onclick||style.cursor==='pointer';
+                    let score=ratio*5 + Math.min(r.width,r.height)/50;
+                    if(/play|start|main.?button|control/.test(meta))score+=12;
+                    if(interactive)score+=8;
+                    if(svg)score+=5;
+                    if(r.left<innerWidth*0.38)score+=4;
+                    if(r.top<innerHeight*0.72)score+=2;
+                    if(r.width>=70&&r.height>=70)score+=3;
+                    candidates.push({e,score,r});
                     if(score>bestScore){bestScore=score;best=e;}
                   }
+                  candidates.sort((a,b)=>b.score-a.score);
+                  candidates.slice(0,3).forEach((x,i)=>AudoibooPoleCapture.event('play-cand'+i+':'+x.e.tagName+':'+String(x.e.className||'').slice(0,60)+':'+Math.round(x.r.width)+'x'+Math.round(x.r.height)+':'+Math.round(x.score)));
                   if(!best){AudoibooPoleCapture.event('play-geom-miss');return null;}
                   const r=best.getBoundingClientRect();
                   AudoibooPoleCapture.event('play-geom:'+best.tagName+':'+String(best.className||'').slice(0,80)+':'+Math.round(r.width)+'x'+Math.round(r.height));
@@ -195,32 +189,25 @@ class PoleknigPlayerCapture(private val context: Context) {
                                 dispatchTap(play.first, play.second)
                                 diagnostics += "pole-play-native=${number.toString().padStart(2, '0')}"
                             } else diagnostics += "pole-play-native-miss=${number.toString().padStart(2, '0')}"
-                            handler.postDelayed({
-                                scan()
-                                traverse(number + 1, 0)
-                            }, 430L)
+                            handler.postDelayed({ scan(); traverse(number + 1, 0) }, 500L)
                         }
-                    }, 140L)
+                    }, 160L)
                 }
             }
 
             @SuppressLint("SetJavaScriptEnabled")
             webView.settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
+                javaScriptEnabled = true; domStorageEnabled = true
                 mediaPlaybackRequiresUserGesture = false
                 userAgentString = userAgentString.replace("; wv", "")
             }
             webView.addJavascriptInterface(object {
                 @JavascriptInterface fun media(value: String?) = handler.post { remember(value, "js") }
-                @JavascriptInterface fun event(value: String?) = handler.post {
-                    if (!value.isNullOrBlank() && diagnostics.size < 140) diagnostics += "js:$value"
-                }
+                @JavascriptInterface fun event(value: String?) = handler.post { if (!value.isNullOrBlank() && diagnostics.size < 160) diagnostics += "js:$value" }
             }, BRIDGE)
             webView.webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                    requests++
-                    remember(request?.url?.toString(), "network")
+                    requests++; remember(request?.url?.toString(), "network")
                     return super.shouldInterceptRequest(view, request)
                 }
                 override fun onPageFinished(view: WebView, url: String) {
@@ -229,7 +216,7 @@ class PoleknigPlayerCapture(private val context: Context) {
                     handler.postDelayed({ scan(); traverse() }, 900L)
                 }
             }
-            handler.postDelayed({ finish("pole-timeout") }, minOf(rule.timeoutMs + 5_000L, 28_000L))
+            handler.postDelayed({ finish("pole-timeout") }, minOf(rule.timeoutMs + 7_000L, 30_000L))
             webView.loadUrl(pageUrl)
         }
     }

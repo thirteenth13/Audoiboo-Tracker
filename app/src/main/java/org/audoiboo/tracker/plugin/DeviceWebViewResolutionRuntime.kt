@@ -57,12 +57,16 @@ object DeviceWebViewResolutionRuntime {
                 manifest.id == "baza-knig" -> BazaSequentialMediaCapture(context).capture(url, rule.timeoutMs) { result ->
                     complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
                 }
-                // CI 833 proved the generic activator sees all Izib audio requests while the
-                // ported native-tap path only produced playback without surfacing media URLs.
+                // The generic declarative runner is the path that actually surfaces Izib media URLs.
                 manifest.id == "izib" -> {
                     val effectiveRule = rule.copy(mediaHosts = rule.mediaHosts + "abookfiles.online")
                     PluginWebViewMediaCaptureRuntime(context).capture(manifest, effectiveRule, url, complete)
                 }
+                // The source browser shows real rows named "Игра Кота_0" ... "Игра Кота_38".
+                // The Knigavuhe plugin rule already matches .+_\d+ and toggles "Большие отрезки";
+                // use that declarative runner instead of the ported zero-label traversal.
+                manifest.id == "knigavuhe" ->
+                    PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url, complete)
                 PortedExperimentalMediaRuntime.supports(manifest.id) ->
                     PortedExperimentalMediaRuntime.capture(context, manifest, rule, url, complete)
                 else -> PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url, complete)

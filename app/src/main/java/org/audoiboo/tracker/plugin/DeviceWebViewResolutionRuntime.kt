@@ -32,7 +32,6 @@ object DeviceWebViewResolutionRuntime {
         }
     }
 
-    /** Runs the exact host-owned WebView capture used by downloads and preserves runtime diagnostics. */
     suspend fun captureDiagnostics(url: String): PluginMediaCaptureResult? {
         val registration = captureRegistration(url) ?: return null
         val manifest = registration.manifest ?: return null
@@ -50,9 +49,6 @@ object DeviceWebViewResolutionRuntime {
         val context = appContext ?: return null
         if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url)) return null
         return suspendCancellableCoroutine { continuation ->
-            // Hidden capture WebViews exist only to surface media URLs. Some site players ignore
-            // DOM muted/volume hooks or create audio outside the element we hooked. Mute Android's
-            // music stream for the short capture window and restore its previous mute state after.
             val audio = runCatching { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }.getOrNull()
             val wasMuted = runCatching { audio?.isStreamMute(AudioManager.STREAM_MUSIC) == true }.getOrDefault(false)
             if (!wasMuted) runCatching { audio?.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0) }
@@ -72,19 +68,18 @@ object DeviceWebViewResolutionRuntime {
                 manifest.id == "baza-knig" -> BazaSequentialMediaCapture(context).capture(url, rule.timeoutMs) { result ->
                     complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
                 }
-                // The generic declarative runner is the path that actually surfaces Izib media URLs.
                 manifest.id == "izib" -> {
                     val effectiveRule = rule.copy(mediaHosts = rule.mediaHosts + "abookfiles.online")
                     PluginWebViewMediaCaptureRuntime(context).capture(manifest, effectiveRule, url, complete)
                 }
-                // The source browser shows real rows named "Игра Кота_0" ... "Игра Кота_38".
-                // The Knigavuhe plugin rule already matches .+_\d+ and toggles "Большие отрезки";
-                // use that declarative runner instead of the ported zero-label traversal.
+                manifest.id == "lis10book" -> {
+                    // CI 840 raw-probe accepted the real Fantbox media while the ported runner
+                    // missed them. Use the same generic capture path that proved reliable for Izib.
+                    val effectiveRule = rule.copy(mediaHosts = rule.mediaHosts + "fantbox.net")
+                    PluginWebViewMediaCaptureRuntime(context).capture(manifest, effectiveRule, url, complete)
+                }
                 manifest.id == "knigavuhe" ->
-                    PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url, complete)
-                // Poleknig's custom player only requests /files/<id> after a real user-style play
-                // gesture. The dedicated runtime taps 01..N and the large square play control with
-                // native MotionEvents, instead of relying on synthetic DOM click().
+                    KnigavuhePlayerCapture(context).capture(manifest, rule, url, complete)
                 manifest.id == "poleknig" ->
                     PoleknigPlayerCapture(context).capture(manifest, rule, url, complete)
                 PortedExperimentalMediaRuntime.supports(manifest.id) ->

@@ -1,6 +1,8 @@
 package org.audoiboo.tracker.plugin
 
 import android.os.SystemClock
+import kotlinx.coroutines.async
+import kotlinx.coroutines.supervisorScope
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
@@ -22,71 +24,72 @@ object CatalogProviderDiagnostics {
         registry: SourcePluginRegistry,
         authorQuery: String,
         bookQuery: String
-    ): List<CatalogProviderDiagnosticResult> {
+    ): List<CatalogProviderDiagnosticResult> = supervisorScope {
         val author = authorQuery.trim().ifBlank { "Роман Прокофьев" }
         val book = bookQuery.trim().ifBlank { "Игра Кота" }
-        return listOf(
-            probe(
-                registry = registry,
-                providerId = "open-library",
+        val specs = listOf(
+            ProviderSpec(
+                id = "open-library",
                 authorUrl = "https://openlibrary.org/search/authors.json?q=${encode(author)}&limit=5",
                 bookUrl = "https://openlibrary.org/search.json?title=${encode(book)}&limit=10&fields=key,title,author_name,series"
             ),
-            probe(
-                registry = registry,
-                providerId = "fantlab",
+            ProviderSpec(
+                id = "fantlab",
                 authorUrl = "https://api.fantlab.ru/search-autors?q=${encode(author)}&page=1&onlymatches=1",
                 bookUrl = "https://api.fantlab.ru/search-works?q=${encode(book)}&page=1&onlymatches=1"
             ),
-            probe(
-                registry = registry,
-                providerId = "google-books",
+            ProviderSpec(
+                id = "google-books",
                 authorUrl = "https://www.googleapis.com/books/v1/volumes?q=${encode("inauthor:\"$author\"")}&maxResults=10",
                 bookUrl = "https://www.googleapis.com/books/v1/volumes?q=${encode("intitle:\"$book\"")}&maxResults=10"
             )
         )
+        specs.map { spec -> async { probe(registry, spec, author, book) } }.map { it.await() }
     }
 
     private suspend fun probe(
         registry: SourcePluginRegistry,
-        providerId: String,
-        authorUrl: String,
-        bookUrl: String
-    ): CatalogProviderDiagnosticResult {
+        spec: ProviderSpec,
+        authorQuery: String,
+        bookQuery: String
+    ): CatalogProviderDiagnosticResult = supervisorScope {
         val started = SystemClock.elapsedRealtime()
-        val plugin = registry.byId(providerId)
-        val displayName = plugin?.descriptor?.name ?: providerId
+        val plugin = registry.byId(spec.id)
+        val displayName = plugin?.descriptor?.name ?: spec.id
         if (plugin == null) {
-            return CatalogProviderDiagnosticResult(providerId, displayName, null, null, 0, 0, 0, "provider-not-registered")
+            return@supervisorScope CatalogProviderDiagnosticResult(spec.id, displayName, null, null, 0, 0, 0, "provider-not-registered")
         }
-        return try {
-            val authorHttp = httpStatus(authorUrl)
-            val bookHttp = httpStatus(bookUrl)
-            val authorProvider = plugin as? AuthorCatalogProvider
-            val bookProvider = plugin as? CatalogBookSearchProvider
-            val authors = authorProvider?.searchAuthors(authorQuery = extractQuery(authorUrl), limit = 5)?.size ?: 0
-            val books = bookProvider?.searchBooks(query = extractBookQuery(bookUrl), limit = 10)?.size ?: 0
-            CatalogProviderDiagnosticResult(
-                providerId = providerId,
-                displayName = displayName,
-                authorHttp = authorHttp,
-                bookHttp = bookHttp,
-                authors = authors,
-                books = books,
-                elapsedMs = SystemClock.elapsedRealtime() - started
-            )
-        } catch (t: Throwable) {
-            CatalogProviderDiagnosticResult(
-                providerId = providerId,
-                displayName = displayName,
-                authorHttp = runCatching { httpStatus(authorUrl) }.getOrNull(),
-                bookHttp = runCatching { httpStatus(bookUrl) }.getOrNull(),
-                authors = 0,
-                books = 0,
-                elapsedMs = SystemClock.elapsedRealtime() - started,
-                error = "${t.javaClass.simpleName}: ${t.message.orEmpty()}".take(180)
-            )
+
+        val authorHttpTask = async { runCatching { httpStatus(spec.authorUrl) }.getOrNull() }
+        val bookHttpTask = async { runCatching { httpStatus(spec.bookUrl) }.getOrNull() }
+        val authorTask = async {
+            runCatching { (plugin as? AuthorCatalogProvider)?.searchAuthors(authorQuery, 5)?.size ?: 0 }
         }
+        val bookTask = async {
+            runCatching { (plugin as? CatalogBookSearchProvider)?.searchBooks(bookQuery, 10)?.size ?: 0 }
+        }
+
+        val authorHttp = authorHttpTask.await()
+        val bookHttp = bookHttpTask.await()
+        val authorResult = authorTask.await()
+        val bookResult = bookTask.await()
+        val errors = buildList {
+            authorResult.exceptionOrNull()?.let { add("authors=${it.javaClass.simpleName}:${it.message.orEmpty()}") }
+            bookResult.exceptionOrNull()?.let { add("books=${it.javaClass.simpleName}:${it.message.orEmpty()}") }
+            if (authorHttp == null) add("author-http=failed")
+            if (bookHttp == null) add("book-http=failed")
+        }
+
+        CatalogProviderDiagnosticResult(
+            providerId = spec.id,
+            displayName = displayName,
+            authorHttp = authorHttp,
+            bookHttp = bookHttp,
+            authors = authorResult.getOrDefault(0),
+            books = bookResult.getOrDefault(0),
+            elapsedMs = SystemClock.elapsedRealtime() - started,
+            error = errors.takeIf { it.isNotEmpty() }?.joinToString("; ")?.take(220)
+        )
     }
 
     private fun httpStatus(url: String): Int {
@@ -104,27 +107,11 @@ object CatalogProviderDiagnostics {
         }
     }
 
-    private fun extractQuery(url: String): String = when {
-        "openlibrary.org" in url -> decodeParam(url, "q")
-        "fantlab.ru" in url -> decodeParam(url, "q")
-        "googleapis.com" in url -> decodeParam(url, "q").removePrefix("inauthor:\"").removeSuffix("\"")
-        else -> ""
-    }
-
-    private fun extractBookQuery(url: String): String = when {
-        "openlibrary.org" in url -> decodeParam(url, "title")
-        "fantlab.ru" in url -> decodeParam(url, "q")
-        "googleapis.com" in url -> decodeParam(url, "q").removePrefix("intitle:\"").removeSuffix("\"")
-        else -> ""
-    }
-
-    private fun decodeParam(url: String, name: String): String = runCatching {
-        URI(url).rawQuery.orEmpty().split('&')
-            .firstOrNull { it.substringBefore('=') == name }
-            ?.substringAfter('=', "")
-            ?.let { java.net.URLDecoder.decode(it, StandardCharsets.UTF_8.name()) }
-            .orEmpty()
-    }.getOrDefault("")
-
     private fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
+
+    private data class ProviderSpec(
+        val id: String,
+        val authorUrl: String,
+        val bookUrl: String
+    )
 }

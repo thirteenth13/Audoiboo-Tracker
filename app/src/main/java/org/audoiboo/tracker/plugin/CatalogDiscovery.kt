@@ -6,6 +6,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** A normalized catalog series assembled from bibliographic providers before audio-source matching. */
 data class CatalogSeries(
@@ -98,11 +99,13 @@ object CatalogSeriesHeuristics {
 class CatalogDiscoveryEngine(
     private val registry: SourcePluginRegistry,
     private val maxAuthorsPerProvider: Int = 3,
-    private val maxBooksPerAuthor: Int = 200
+    private val maxBooksPerAuthor: Int = 200,
+    private val providerTimeoutMs: Long = 7_000L
 ) {
     init {
         require(maxAuthorsPerProvider in 1..10)
         require(maxBooksPerAuthor in 1..500)
+        require(providerTimeoutMs in 1_000L..60_000L)
     }
 
     suspend fun discoverByAuthor(authorQuery: String): List<CatalogDiscoveryResult> {
@@ -111,7 +114,9 @@ class CatalogDiscoveryEngine(
             registry.withCapability(SourceCapability.AUTHOR_CATALOG).mapNotNull { plugin ->
                 val provider = plugin as? AuthorCatalogProvider ?: return@mapNotNull null
                 async {
-                    discoverProvider(plugin, provider, authorQuery)
+                    withTimeoutOrNull(providerTimeoutMs) {
+                        discoverProvider(plugin, provider, authorQuery)
+                    }.orEmpty()
                 }
             }.awaitAll().flatten()
         }

@@ -1,7 +1,7 @@
 {
   "id": "knigavuhe",
   "name": "Knigavuhe",
-  "version": 8,
+  "version": 9,
   "apiVersion": 1,
   "runtime": "DECLARATIVE",
   "hosts": ["knigavuhe.org", "m.knigavuhe.org"],

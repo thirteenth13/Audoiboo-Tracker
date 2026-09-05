@@ -68,7 +68,7 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
             CatalogSearchMode.AUTHOR -> {
                 val cache = CatalogSearchCaches.authorDiscovery
                 if (!forceRefresh) {
-                    cache.get(value)?.let {
+                    cache.get(value)?.takeIf { it.isNotEmpty() }?.let {
                         results = it
                         bookHits = emptyList()
                         cacheHit = true
@@ -82,7 +82,7 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
                         .onSuccess {
                             results = it
                             bookHits = emptyList()
-                            cache.put(value, it)
+                            if (it.isNotEmpty()) cache.put(value, it) else cache.invalidate(value)
                         }
                         .onFailure { error = it.message ?: "Не вдалося виконати пошук" }
                     loading = false
@@ -91,7 +91,7 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
             CatalogSearchMode.BOOK -> {
                 val cache = CatalogSearchCaches.bookSearch
                 if (!forceRefresh) {
-                    cache.get(value)?.let {
+                    cache.get(value)?.takeIf { it.isNotEmpty() }?.let {
                         bookHits = it
                         cacheHit = true
                         return
@@ -103,7 +103,7 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
                     runCatching { CatalogBookSearchEngine(PluginPackageRuntime.registry).search(value) }
                         .onSuccess {
                             bookHits = it
-                            cache.put(value, it)
+                            if (it.isNotEmpty()) cache.put(value, it) else cache.invalidate(value)
                         }
                         .onFailure { error = it.message ?: "Не вдалося знайти книгу" }
                     loading = false

@@ -37,6 +37,7 @@
             <intent-filter><action android:name="androidx.media3.session.MediaLibraryService" /><action android:name="android.media.browse.MediaBrowserService" /></intent-filter>
         </service>
         <activity android:name=".DiagnosticActivity" android:exported="false" android:label="Audoiboo DOM" />
+        <activity android:name=".CatalogDiagnosticsActivity" android:exported="false" android:label="Діагностика каталогу" />
         <activity android:name=".PluginDiagnosticsActivity" android:exported="false" android:label="Діагностика плагіна" />
         <activity android:name=".SettingsActivity" android:exported="false" android:label="Налаштування" />
         <activity android:name=".PluginManagementActivity" android:exported="false" android:label="Плагіни джерел" />

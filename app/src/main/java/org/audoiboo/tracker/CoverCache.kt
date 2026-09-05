@@ -78,7 +78,12 @@ internal object CoverCache {
         conn.connectTimeout = 15_000
         conn.readTimeout = 30_000
         conn.instanceFollowRedirects = true
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0 Audoiboo-Tracker")
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36")
+        conn.setRequestProperty("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+        val host = runCatching { URL(url).host.lowercase() }.getOrDefault("")
+        if (host.endsWith("frontroute.org") || host.endsWith("redirectto.cc")) {
+            conn.setRequestProperty("Referer", "https://baza-knig.info/")
+        }
         try {
             if (conn.responseCode !in 200..299) error("Cover HTTP ${conn.responseCode}")
             val type = conn.contentType.orEmpty().lowercase()

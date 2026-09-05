@@ -13,10 +13,10 @@
     {
       "id": "knigavuhe",
       "name": "Knigavuhe",
-      "version": 9,
+      "version": 10,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-9.abplugin",
-      "sha256": "85cfa0c86474210ba5476f685ba0cadf47ec261cc4c5442509dc62ae9d8089ac",
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-10.abplugin",
+      "sha256": "64c283ccb63af7f2a462b9d71ef1822abeaa7e51ba3ad91809f25c33b896cb0b",
       "description": "Цикли, пошук серій, книги та декларативний WebView mediaCapture Knigavuhe; v7 виправляє followLink для /series/ і /serie/ та нормалізує назву книги без префікса автора."
     },
     {

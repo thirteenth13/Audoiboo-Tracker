@@ -39,7 +39,7 @@ class PoleknigPlayerCapture(private val context: Context) {
                 val url = runCatching { val v=raw?.trim()?.replace("\\/", "/").orEmpty(); if(v.isBlank()) return@runCatching null; URI(pageUrl).resolve(v).toString() }.getOrNull() ?: return
                 if (!isResolver(url) && !PluginWebViewMediaCaptureRuntime.isMedia(manifest, rule, url)) return
                 val key = PluginWebViewMediaCaptureRuntime.mediaKey(url) ?: url
-                synchronized(found) { if (keys.add(key) && found.size < rule.maxResults) { found += url; if (diagnostics.size < 140) diagnostics += "accepted-$source:${url.take(500)}" } }
+                synchronized(found) { if (keys.add(key) && found.size < rule.maxResults) { found += url; if (diagnostics.size < 160) diagnostics += "accepted-$source:${url.take(500)}" } }
             }
             fun snapshot(): List<String> { val all=synchronized(found){found.toList()}; val direct=all.filter{PluginWebViewMediaCaptureRuntime.isMedia(manifest,rule,it)}; val selected=if(rule.preferDirectMedia&&direct.isNotEmpty())direct else all; return if(rule.sortTrackNumber)selected.sortedWith(compareBy({PluginWebViewMediaCaptureRuntime.trackNumber(it)?:Int.MAX_VALUE},{it})) else selected }
             fun finish(reason: String) { if(!finished.compareAndSet(false,true))return; handler.removeCallbacksAndMessages(null); val media=snapshot(); diagnostics+=reason; diagnostics+="pole-native-clicks=$clicks"; diagnostics+="pole-requests=$requests"; diagnostics+="media=${media.size}"; runCatching{webView.stopLoading();webView.loadUrl("about:blank");webView.removeJavascriptInterface(BRIDGE);webView.destroy()}; onComplete(PluginMediaCaptureResult(pageUrl,media,diagnostics.toList())) }
@@ -47,26 +47,37 @@ class PoleknigPlayerCapture(private val context: Context) {
             fun rect(raw:String?):Pair<Float,Float>?=runCatching{val t=raw?.takeIf{it!="null"}?:return@runCatching null;val o=JSONObject(t);o.optDouble("x").toFloat() to o.optDouble("y").toFloat()}.getOrNull()
             fun scan(){webView.evaluateJavascript("""(()=>{const emit=u=>{try{if(u)AudoibooPoleCapture.media(new URL(String(u),location.href).href)}catch(_){}};document.querySelectorAll('audio,source,a[href],[data-src],[data-url],[data-file],[data-audio]').forEach(e=>{['src','href','data-src','data-url','data-file','data-audio'].forEach(a=>emit(e.getAttribute&&e.getAttribute(a)));emit(e.currentSrc)});try{performance.getEntriesByType('resource').forEach(e=>emit(e.name))}catch(_){};const h=document.documentElement.outerHTML.replaceAll('\\/','/');const m=h.match(/(?:https?:\/\/|\/\/|\/)[^\"'<>\s]+(?:\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)|\/files\/\d+)(?:\?[^\"'<>\s]*)?/gi)||[];m.slice(0,500).forEach(emit);return m.length})()""",null)}
 
-            fun primePlayScript(): String = """
-                (()=>{
-                  const vis=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>8&&r.height>8&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'&&s.pointerEvents!=='none'};
-                  const sels=['button[aria-label*=play i]','[role=button][aria-label*=play i]','button[title*=play i]','.player-play','.play-button','.jp-play','button[class*=play]','[class*=play][role=button]'];
-                  for(const s of sels){for(const e of document.querySelectorAll(s)){if(!vis(e))continue;const r=e.getBoundingClientRect();AudoibooPoleCapture.event('prime-selector:'+s+':'+e.tagName+':'+String(e.className||'').slice(0,60));e.scrollIntoView({block:'center'});const q=e.getBoundingClientRect();return{x:q.left+q.width/2,y:q.top+q.height/2}}}
-                  let a=[...document.querySelectorAll('button,a,[role=button],[onclick]')].filter(vis).filter(e=>{const r=e.getBoundingClientRect();return r.top<innerHeight*.72&&r.width>=30&&r.height>=30&&r.width<=280&&r.height<=280});
-                  a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return B.width*B.height-A.width*A.height});
-                  a.slice(0,5).forEach((e,i)=>{const r=e.getBoundingClientRect();AudoibooPoleCapture.event('prime-cand'+i+':'+e.tagName+':'+String(e.className||'').slice(0,60)+':'+Math.round(r.width)+'x'+Math.round(r.height))});
-                  const e=a[0];if(!e){AudoibooPoleCapture.event('prime-miss');return null}e.scrollIntoView({block:'center'});const q=e.getBoundingClientRect();return{x:q.left+q.width/2,y:q.top+q.height/2};
-                })()
-            """.trimIndent()
-
-            fun trackScript(number:Int):String{val label=number.toString().padStart(2,'0');return """(()=>{const label=${JSONObject.quote(label)},norm=s=>String(s||'').replace(/\s+/g,' ').trim();let a=[...document.querySelectorAll('body *')].filter(e=>norm(e.innerText||e.textContent)===label);a=a.filter(e=>![...e.children].some(c=>norm(c.innerText||c.textContent)===label));a=a.filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<120&&s.display!=='none'&&s.visibility!=='hidden'});a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return A.width*A.height-B.width*B.height});if(!a.length){AudoibooPoleCapture.event('track-miss:'+label);return null}const e=a[0];e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();AudoibooPoleCapture.event('track:'+label+':'+e.tagName+':'+String(e.className||'').slice(0,70));return{x:r.left+r.width/2,y:r.top+r.height/2}})()"""}
+            // Mirrors the proven Playwright experiment: find the exact two-digit leaf, then tap its
+            // nearest interactive ancestor. CI 850 showed the leaf itself is a PJSDIV; tapping that
+            // child does not switch Poleknig's resolver in Android WebView.
+            fun trackScript(number:Int):String {
+                val label=number.toString().padStart(2,'0')
+                return """
+                    (()=>{
+                      const label=${JSONObject.quote(label)},norm=s=>String(s||'').replace(/\s+/g,' ').trim();
+                      let a=[...document.querySelectorAll('body *')].filter(e=>norm(e.innerText||e.textContent)===label);
+                      a=a.filter(e=>![...e.children].some(c=>norm(c.innerText||c.textContent)===label));
+                      a=a.filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<120&&s.display!=='none'&&s.visibility!=='hidden'});
+                      a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return A.width*A.height-B.width*B.height});
+                      if(!a.length){AudoibooPoleCapture.event('track-miss:'+label);return null}
+                      const leaf=a[0];
+                      let c=leaf.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]')||leaf;
+                      const cr=c.getBoundingClientRect(),cs=getComputedStyle(c);
+                      if(cr.width<3||cr.height<3||cr.height>220||cs.display==='none'||cs.visibility==='hidden')c=leaf;
+                      c.scrollIntoView({block:'center'});const r=c.getBoundingClientRect();
+                      AudoibooPoleCapture.event('track:'+label+':leaf='+leaf.tagName+'/'+String(leaf.className||'').slice(0,45)+':tap='+c.tagName+'/'+String(c.className||'').slice(0,55));
+                      try{AudoibooPoleCapture.body?.((c.outerHTML||'').slice(0,1800))}catch(_){}
+                      return{x:r.left+r.width/2,y:r.top+r.height/2}
+                    })()
+                """.trimIndent()
+            }
             fun traverse(number:Int=1,misses:Int=0){if(finished.get())return;if(number>60||misses>=3){diagnostics+="pole-track-stop:number=$number misses=$misses";handler.postDelayed({finish("pole-complete")},900);return};webView.evaluateJavascript(trackScript(number)){raw->val p=rect(raw);if(p==null){handler.postDelayed({traverse(number+1,misses+1)},180);return@evaluateJavascript};tap(p.first,p.second);handler.postDelayed({scan();traverse(number+1,0)},650)}}
 
             @SuppressLint("SetJavaScriptEnabled") webView.settings.apply{javaScriptEnabled=true;domStorageEnabled=true;mediaPlaybackRequiresUserGesture=false;userAgentString=userAgentString.replace("; wv","")}
-            webView.addJavascriptInterface(object{@JavascriptInterface fun media(value:String?)=handler.post{remember(value,"js")};@JavascriptInterface fun event(value:String?)=handler.post{if(!value.isNullOrBlank()&&diagnostics.size<180)diagnostics+= "js:$value"}},BRIDGE)
+            webView.addJavascriptInterface(object{@JavascriptInterface fun media(value:String?)=handler.post{remember(value,"js")};@JavascriptInterface fun event(value:String?)=handler.post{if(!value.isNullOrBlank()&&diagnostics.size<200)diagnostics+= "js:$value"}},BRIDGE)
             webView.webViewClient=object:WebViewClient(){
                 override fun shouldInterceptRequest(view:WebView?,request:WebResourceRequest?):WebResourceResponse?{requests++;remember(request?.url?.toString(),"network");return super.shouldInterceptRequest(view,request)}
-                override fun onPageFinished(view:WebView,url:String){if(!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest,rule,url)||finished.get())return;diagnostics+="pole-loaded";handler.postDelayed({scan();webView.evaluateJavascript(primePlayScript()){raw->val p=rect(raw);if(p!=null){tap(p.first,p.second);diagnostics+="pole-prime-play-native"}else diagnostics+="pole-prime-play-miss";handler.postDelayed({traverse()},550)}},900)}
+                override fun onPageFinished(view:WebView,url:String){if(!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest,rule,url)||finished.get())return;diagnostics+="pole-loaded";handler.postDelayed({scan();traverse()},900)}
             }
             handler.postDelayed({finish("pole-timeout")},minOf(rule.timeoutMs+8000,32000));webView.loadUrl(pageUrl)
         }

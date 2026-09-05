@@ -1,9 +1,11 @@
 package org.audoiboo.tracker.plugin
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
 
 /** A normalized catalog series assembled from bibliographic providers before audio-source matching. */
 data class CatalogSeries(
@@ -126,7 +128,9 @@ class CatalogDiscoveryEngine(
         authorQuery: String
     ): List<CatalogDiscoveryResult> {
         val authors = try {
-            provider.searchAuthors(authorQuery, maxAuthorsPerProvider)
+            withContext(Dispatchers.IO) {
+                provider.searchAuthors(authorQuery, maxAuthorsPerProvider)
+            }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             return emptyList()
@@ -136,7 +140,10 @@ class CatalogDiscoveryEngine(
                 if (author.providerId != plugin.descriptor.id) return@mapNotNull null
                 async {
                     try {
-                        CatalogSeriesHeuristics.group(provider.loadAuthorCatalog(author, maxBooksPerAuthor))
+                        val catalog = withContext(Dispatchers.IO) {
+                            provider.loadAuthorCatalog(author, maxBooksPerAuthor)
+                        }
+                        CatalogSeriesHeuristics.group(catalog)
                     } catch (t: Throwable) {
                         if (t is CancellationException) throw t
                         null

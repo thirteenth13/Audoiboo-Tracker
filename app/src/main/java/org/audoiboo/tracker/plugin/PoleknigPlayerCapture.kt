@@ -44,7 +44,7 @@ class PoleknigPlayerCapture(private val context: Context) {
                 synchronized(found) {
                     if (keys.add(key) && found.size < rule.maxResults) {
                         found += url
-                        if (diagnostics.size < 160) diagnostics += "accepted-$source:${url.take(500)}"
+                        if (diagnostics.size < 180) diagnostics += "accepted-$source:${url.take(500)}"
                     }
                 }
             }
@@ -78,10 +78,6 @@ class PoleknigPlayerCapture(private val context: Context) {
                 )
             }
 
-            // This mirrors the browser experiment that proved Poleknig traversal works: select the
-            // smallest exact 01..NN element, climb only to a genuinely interactive ancestor, then
-            // dispatch mousedown/mouseup/click in JavaScript. Native taps on PJSDIV did not change
-            // the player state in Android WebView (CI 852).
             fun clickTrackScript(number: Int): String {
                 val label = number.toString().padStart(2, '0')
                 return """
@@ -92,15 +88,24 @@ class PoleknigPlayerCapture(private val context: Context) {
                       a=a.filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<120&&s.display!=='none'&&s.visibility!=='hidden'});
                       a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return A.width*A.height-B.width*B.height});
                       if(!a.length){AudoibooPoleCapture.event('track-miss:'+label);return false;}
-                      const leaf=a[0];
-                      const tap=leaf.closest('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]')||leaf;
-                      tap.scrollIntoView({block:'center'});
-                      AudoibooPoleCapture.event('track:'+label+':leaf='+leaf.tagName+'/'+String(leaf.className||'').slice(0,45)+':tap='+tap.tagName+'/'+String(tap.className||'').slice(0,45));
+                      const leaf=a[0];leaf.scrollIntoView({block:'center'});
+                      const r=leaf.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;
+                      const chain=[];let p=leaf;
+                      for(let i=0;i<6&&p&&p!==document.body;i++,p=p.parentElement)chain.push(p);
+                      AudoibooPoleCapture.event('track:'+label+':chain='+chain.map(e=>e.tagName+'/'+String(e.className||'').slice(0,28)).join('>'));
                       try{
-                        tap.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
-                        tap.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
-                        tap.click();
-                        AudoibooPoleCapture.event('track-js-click:'+label);
+                        const target=document.elementFromPoint(x,y)||leaf;
+                        const base={bubbles:true,cancelable:true,view:window,clientX:x,clientY:y};
+                        if(window.PointerEvent){target.dispatchEvent(new PointerEvent('pointerdown',{...base,pointerId:1,pointerType:'touch',isPrimary:true}));}
+                        target.dispatchEvent(new MouseEvent('mousedown',base));
+                        if(window.PointerEvent){target.dispatchEvent(new PointerEvent('pointerup',{...base,pointerId:1,pointerType:'touch',isPrimary:true}));}
+                        target.dispatchEvent(new MouseEvent('mouseup',base));
+                        target.dispatchEvent(new MouseEvent('click',base));
+                        target.click?.();
+                        for(const e of chain.slice(1,4)){
+                          if(e.matches?.('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]')) e.click?.();
+                        }
+                        AudoibooPoleCapture.event('track-event-chain:'+label+':target='+target.tagName+'/'+String(target.className||'').slice(0,40));
                         return true;
                       }catch(e){AudoibooPoleCapture.event('track-js-error:'+label+':'+String(e));return false;}
                     })()
@@ -116,14 +121,10 @@ class PoleknigPlayerCapture(private val context: Context) {
                 }
                 webView.evaluateJavascript(clickTrackScript(number)) { raw ->
                     val ok = raw == "true"
-                    if (!ok) {
-                        handler.postDelayed({ traverse(number + 1, misses + 1) }, 180L)
-                    } else {
+                    if (!ok) handler.postDelayed({ traverse(number + 1, misses + 1) }, 180L)
+                    else {
                         clicks++
-                        handler.postDelayed({
-                            scan()
-                            traverse(number + 1, 0)
-                        }, 650L)
+                        handler.postDelayed({ scan(); traverse(number + 1, 0) }, 650L)
                     }
                 }
             }
@@ -138,13 +139,12 @@ class PoleknigPlayerCapture(private val context: Context) {
             webView.addJavascriptInterface(object {
                 @JavascriptInterface fun media(value: String?) = handler.post { remember(value, "js") }
                 @JavascriptInterface fun event(value: String?) = handler.post {
-                    if (!value.isNullOrBlank() && diagnostics.size < 200) diagnostics += "js:$value"
+                    if (!value.isNullOrBlank() && diagnostics.size < 240) diagnostics += "js:$value"
                 }
             }, BRIDGE)
             webView.webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                    requests++
-                    remember(request?.url?.toString(), "network")
+                    requests++; remember(request?.url?.toString(), "network")
                     return super.shouldInterceptRequest(view, request)
                 }
                 override fun onPageFinished(view: WebView, url: String) {

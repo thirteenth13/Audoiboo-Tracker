@@ -2,9 +2,11 @@ package org.audoiboo.tracker.plugin
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
 
 class CatalogBookSearchEngine(
     private val registry: SourcePluginRegistry,
@@ -25,8 +27,9 @@ class CatalogBookSearchEngine(
                 val provider = plugin as? CatalogBookSearchProvider ?: continue
                 tasks += async {
                     try {
-                        provider.searchBooks(clean, maxResultsPerProvider)
-                            .filter { it.book.providerId == plugin.descriptor.id }
+                        withContext(Dispatchers.IO) {
+                            provider.searchBooks(clean, maxResultsPerProvider)
+                        }.filter { it.book.providerId == plugin.descriptor.id }
                     } catch (t: Throwable) {
                         if (t is CancellationException) throw t
                         emptyList<CatalogBookSearchHit>()

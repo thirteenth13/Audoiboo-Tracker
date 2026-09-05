@@ -16,7 +16,7 @@ import java.net.URI
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Exact mobile Knigavuhe traversal, with fallback to the site's short numeric segments. */
+/** Exact mobile Knigavuhe traversal, starting from the short playlist visible on initial load. */
 class KnigavuhePlayerCapture(private val context: Context) {
     private companion object { const val BRIDGE = "AudoibooKvCapture" }
 
@@ -31,6 +31,7 @@ class KnigavuhePlayerCapture(private val context: Context) {
             val armed = AtomicBoolean(false)
             var clicks = 0
             var requests = 0
+            var prepared = false
 
             fun remember(raw: String?, source: String) {
                 if (!armed.get()) return
@@ -44,7 +45,7 @@ class KnigavuhePlayerCapture(private val context: Context) {
                 synchronized(found) {
                     if (keys.add(key) && found.size < rule.maxResults) {
                         found += url
-                        if (diagnostics.size < 180) diagnostics += "accepted-$source:${url.take(500)}"
+                        if (diagnostics.size < 220) diagnostics += "accepted-$source:${url.take(500)}"
                     }
                 }
             }
@@ -132,29 +133,37 @@ class KnigavuhePlayerCapture(private val context: Context) {
                       const label='$label',n=s=>String(s||'').replace(/\s+/g,' ').trim();
                       let a=[...document.querySelectorAll('body *')].filter(e=>n(e.innerText||e.textContent)===label);
                       a=a.filter(e=>![...e.children].some(c=>n(c.innerText||c.textContent)===label));
-                      a=a.filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<120&&s.display!=='none'&&s.visibility!=='hidden'});
+                      a=a.filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<140&&s.display!=='none'&&s.visibility!=='hidden'});
                       a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return A.width*A.height-B.width*B.height});
                       if(!a.length){AudoibooKvCapture.event('short-miss:'+label);return null;}
                       const e=a[0],c=e.closest('button,a,[role=button],[onclick],li,[class*=track],[class*=item]')||e;
                       c.scrollIntoView({block:'center'});const r=c.getBoundingClientRect();
-                      AudoibooKvCapture.event('short-row:'+label+':'+e.tagName+'/'+String(e.className||'').slice(0,60));
+                      AudoibooKvCapture.event('short-row:'+label+':leaf='+e.tagName+'/'+String(e.className||'').slice(0,45)+':tap='+c.tagName+'/'+String(c.className||'').slice(0,45));
                       return{x:r.left+r.width/2,y:r.top+r.height/2};
                     })()
                 """.trimIndent()
             }
 
+            lateinit var prepareControls: () -> Unit
+
             fun traverseShort(index: Int = 0, misses: Int = 0) {
                 if (finished.get()) return
                 if (index >= 100 || misses >= 4) {
-                    diagnostics += "kv-short-stop:index=$index misses=$misses"
-                    handler.postDelayed({ scan(); finish("kv-complete-short") }, 900L)
+                    val empty = synchronized(found) { found.isEmpty() }
+                    if (empty && !prepared) {
+                        diagnostics += "kv-short-unavailable-before-prepare"
+                        armed.set(false)
+                        prepareControls()
+                    } else {
+                        diagnostics += "kv-short-stop:index=$index misses=$misses"
+                        handler.postDelayed({ scan(); finish("kv-complete-short") }, 900L)
+                    }
                     return
                 }
                 webView.evaluateJavascript(shortRowScript(index)) { raw ->
                     val p = rect(raw)
-                    if (p == null) {
-                        handler.postDelayed({ traverseShort(index + 1, misses + 1) }, 150L)
-                    } else {
+                    if (p == null) handler.postDelayed({ traverseShort(index + 1, misses + 1) }, 150L)
+                    else {
                         tap(p.first, p.second)
                         handler.postDelayed({ scan(); traverseShort(index + 1, 0) }, 420L)
                     }
@@ -178,9 +187,7 @@ class KnigavuhePlayerCapture(private val context: Context) {
                         } else if (index == 0) {
                             diagnostics += "kv-long-rows-unavailable"
                             traverseShort()
-                        } else {
-                            handler.postDelayed({ traverseLong(index + 1, misses + 1, waits) }, 150L)
-                        }
+                        } else handler.postDelayed({ traverseLong(index + 1, misses + 1, waits) }, 150L)
                     } else {
                         tap(p.first, p.second)
                         handler.postDelayed({ scan(); traverseLong(index + 1, 0, waits) }, 420L)
@@ -188,27 +195,31 @@ class KnigavuhePlayerCapture(private val context: Context) {
                 }
             }
 
-            fun armAndTraverse() {
+            fun armForShortFirst() {
                 synchronized(found) { found.clear(); keys.clear() }
                 armed.set(true)
-                diagnostics += "kv-armed"
+                diagnostics += "kv-armed-short-first"
+                traverseShort()
+            }
+
+            fun armForPreparedLong() {
+                synchronized(found) { found.clear(); keys.clear() }
+                armed.set(true)
+                diagnostics += "kv-armed-after-prepare"
                 scan()
                 traverseLong()
             }
 
-            fun prepareControls() {
+            prepareControls = {
+                prepared = true
                 webView.evaluateJavascript(controlScript("/слушать\\s+полностью/i", "full-player")) { fullRaw ->
-                    rect(fullRaw)?.let {
-                        tap(it.first, it.second)
-                        diagnostics += "kv-full-player-native"
-                    } ?: run { diagnostics += "kv-full-player-miss" }
+                    rect(fullRaw)?.let { tap(it.first, it.second); diagnostics += "kv-full-player-native" }
+                        ?: run { diagnostics += "kv-full-player-miss" }
                     handler.postDelayed({
                         webView.evaluateJavascript(controlScript("/большие\\s+отрезки/i", "toggle-long")) { toggleRaw ->
-                            rect(toggleRaw)?.let {
-                                tap(it.first, it.second)
-                                diagnostics += "kv-toggle-long-native"
-                            } ?: run { diagnostics += "kv-toggle-long-miss" }
-                            handler.postDelayed({ armAndTraverse() }, 1200L)
+                            rect(toggleRaw)?.let { tap(it.first, it.second); diagnostics += "kv-toggle-long-native" }
+                                ?: run { diagnostics += "kv-toggle-long-miss" }
+                            handler.postDelayed({ armForPreparedLong() }, 1200L)
                         }
                     }, 900L)
                 }
@@ -224,7 +235,7 @@ class KnigavuhePlayerCapture(private val context: Context) {
             webView.addJavascriptInterface(object {
                 @JavascriptInterface fun media(value: String?) = handler.post { remember(value, "js") }
                 @JavascriptInterface fun event(value: String?) = handler.post {
-                    if (!value.isNullOrBlank() && diagnostics.size < 220) diagnostics += "js:$value"
+                    if (!value.isNullOrBlank() && diagnostics.size < 260) diagnostics += "js:$value"
                 }
             }, BRIDGE)
             webView.webViewClient = object : WebViewClient() {
@@ -237,7 +248,7 @@ class KnigavuhePlayerCapture(private val context: Context) {
                     if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url) || finished.get()) return
                     diagnostics += "kv-loaded"
                     installHooks()
-                    handler.postDelayed({ prepareControls() }, 1200L)
+                    handler.postDelayed({ armForShortFirst() }, 900L)
                 }
             }
             handler.postDelayed({ finish("kv-timeout") }, minOf(rule.timeoutMs + 12_000L, 36_000L))

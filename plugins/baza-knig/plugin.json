@@ -1,7 +1,7 @@
 {
   "id": "baza-knig",
   "name": "Baza-Knig",
-  "version": 9,
+  "version": 10,
   "apiVersion": 1,
   "runtime": "DECLARATIVE",
   "hosts": ["baza-knig.info", "baza-knig.top"],

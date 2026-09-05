@@ -2,7 +2,9 @@ package org.audoiboo.tracker.plugin
 
 import android.content.Context
 import android.media.AudioManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.coroutines.resume
 
@@ -48,6 +50,14 @@ object DeviceWebViewResolutionRuntime {
     ): PluginMediaCaptureResult? {
         val context = appContext ?: return null
         if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url)) return null
+
+        // These sites publish a complete player playlist/config. Prefer that deterministic source;
+        // the existing WebView/sequential engines below remain compatibility fallbacks.
+        val direct = withContext(Dispatchers.IO) { DirectSiteMediaResolver.resolve(manifest, url) }
+        if (direct != null) {
+            return PluginMediaCaptureResult(url, direct.mediaUrls, direct.diagnostics + "direct-playlist")
+        }
+
         return suspendCancellableCoroutine { continuation ->
             val audio = runCatching { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }.getOrNull()
             val wasMuted = runCatching { audio?.isStreamMute(AudioManager.STREAM_MUSIC) == true }.getOrDefault(false)
@@ -60,7 +70,9 @@ object DeviceWebViewResolutionRuntime {
             continuation.invokeOnCancellation { restoreAudio() }
             val complete: (PluginMediaCaptureResult) -> Unit = { result ->
                 restoreAudio()
-                if (continuation.isActive) continuation.resume(result)
+                if (continuation.isActive) continuation.resume(
+                    result.copy(diagnostics = result.diagnostics + "direct-playlist-fallback")
+                )
             }
 
             when {

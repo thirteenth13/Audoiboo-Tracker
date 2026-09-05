@@ -16,7 +16,7 @@ import java.net.URI
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Exact mobile Knigavuhe traversal, starting from the short playlist visible on initial load. */
+/** Exact mobile Knigavuhe traversal. The site has "Большие отрезки" enabled by default. */
 class KnigavuhePlayerCapture(private val context: Context) {
     private companion object { const val BRIDGE = "AudoibooKvCapture" }
 
@@ -84,7 +84,7 @@ class KnigavuhePlayerCapture(private val context: Context) {
             fun scan() {
                 if (!armed.get()) return
                 webView.evaluateJavascript(
-                    """(()=>{const emit=u=>{try{if(u)AudoibooKvCapture.media(new URL(String(u),location.href).href)}catch(_){}};document.querySelectorAll('audio,source').forEach(e=>{emit(e.currentSrc);emit(e.src);emit(e.getAttribute&&e.getAttribute('src'))});try{performance.getEntriesByType('resource').forEach(e=>emit(e.name))}catch(_){};return true})()""",
+                    """(()=>{const emit=u=>{try{if(u)AudoibooKvCapture.media(new URL(String(u),location.href).href)}catch(_){}};document.querySelectorAll('audio,source').forEach(e=>{emit(e.currentSrc);emit(e.src);emit(e.getAttribute&&e.getAttribute('src'))});return true})()""",
                     null
                 )
             }
@@ -116,7 +116,7 @@ class KnigavuhePlayerCapture(private val context: Context) {
                   const match=t=>{const m=n(t).match(/_(\d+)(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/);return !!m&&Number(m[1])===idx};
                   let a=[...document.querySelectorAll('body *')].filter(e=>match(e.innerText||e.textContent));
                   a=a.filter(e=>![...e.children].some(c=>match(c.innerText||c.textContent)));
-                  a=a.filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<180&&s.display!=='none'&&s.visibility!=='hidden'});
+                  a=a.filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<220&&s.display!=='none'&&s.visibility!=='hidden'});
                   a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return A.width*A.height-B.width*B.height});
                   if(!a.length){AudoibooKvCapture.event('row-miss:'+idx);return null;}
                   const e=a[0],c=e.closest('button,a,[role=button],[onclick],li,[class*=track],[class*=item]')||e;
@@ -126,67 +126,19 @@ class KnigavuhePlayerCapture(private val context: Context) {
                 })()
             """.trimIndent()
 
-            fun shortRowScript(index: Int): String {
-                val label = index.toString().padStart(2, '0')
-                return """
-                    (()=>{
-                      const label='$label',n=s=>String(s||'').replace(/\s+/g,' ').trim();
-                      let a=[...document.querySelectorAll('body *')].filter(e=>n(e.innerText||e.textContent)===label);
-                      a=a.filter(e=>![...e.children].some(c=>n(c.innerText||c.textContent)===label));
-                      a=a.filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<140&&s.display!=='none'&&s.visibility!=='hidden'});
-                      a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return A.width*A.height-B.width*B.height});
-                      if(!a.length){AudoibooKvCapture.event('short-miss:'+label);return null;}
-                      const e=a[0],c=e.closest('button,a,[role=button],[onclick],li,[class*=track],[class*=item]')||e;
-                      c.scrollIntoView({block:'center'});const r=c.getBoundingClientRect();
-                      AudoibooKvCapture.event('short-row:'+label+':leaf='+e.tagName+'/'+String(e.className||'').slice(0,45)+':tap='+c.tagName+'/'+String(c.className||'').slice(0,45));
-                      return{x:r.left+r.width/2,y:r.top+r.height/2};
-                    })()
-                """.trimIndent()
-            }
-
-            lateinit var prepareControls: () -> Unit
-
-            fun traverseShort(index: Int = 0, misses: Int = 0) {
-                if (finished.get()) return
-                if (index >= 100 || misses >= 4) {
-                    val empty = synchronized(found) { found.isEmpty() }
-                    if (empty && !prepared) {
-                        diagnostics += "kv-short-unavailable-before-prepare"
-                        armed.set(false)
-                        prepareControls()
-                    } else {
-                        diagnostics += "kv-short-stop:index=$index misses=$misses"
-                        handler.postDelayed({ scan(); finish("kv-complete-short") }, 900L)
-                    }
-                    return
-                }
-                webView.evaluateJavascript(shortRowScript(index)) { raw ->
-                    val p = rect(raw)
-                    if (p == null) handler.postDelayed({ traverseShort(index + 1, misses + 1) }, 150L)
-                    else {
-                        tap(p.first, p.second)
-                        handler.postDelayed({ scan(); traverseShort(index + 1, 0) }, 420L)
-                    }
-                }
-            }
-
             fun traverseLong(index: Int = 0, misses: Int = 0, waits: Int = 0) {
                 if (finished.get()) return
                 if (index >= 90 || misses >= 4) {
                     diagnostics += "kv-track-stop:index=$index misses=$misses"
-                    diagnostics += "kv-fallback-short"
-                    traverseShort()
+                    handler.postDelayed({ scan(); finish("kv-complete") }, 900L)
                     return
                 }
                 webView.evaluateJavascript(longRowScript(index)) { raw ->
                     val p = rect(raw)
                     if (p == null) {
-                        if (index == 0 && waits < 10) {
+                        if (index == 0 && waits < 16) {
                             diagnostics += "kv-row-wait=${waits + 1}"
                             handler.postDelayed({ traverseLong(0, 0, waits + 1) }, 500L)
-                        } else if (index == 0) {
-                            diagnostics += "kv-long-rows-unavailable"
-                            traverseShort()
                         } else handler.postDelayed({ traverseLong(index + 1, misses + 1, waits) }, 150L)
                     } else {
                         tap(p.first, p.second)
@@ -195,33 +147,24 @@ class KnigavuhePlayerCapture(private val context: Context) {
                 }
             }
 
-            fun armForShortFirst() {
+            fun armAndTraverse() {
                 synchronized(found) { found.clear(); keys.clear() }
                 armed.set(true)
-                diagnostics += "kv-armed-short-first"
-                traverseShort()
-            }
-
-            fun armForPreparedLong() {
-                synchronized(found) { found.clear(); keys.clear() }
-                armed.set(true)
-                diagnostics += "kv-armed-after-prepare"
+                diagnostics += "kv-armed-long-default"
                 scan()
                 traverseLong()
             }
 
-            prepareControls = {
+            fun prepareOnce() {
+                if (prepared) return
                 prepared = true
+                // User-visible Knigavuhe defaults to "Большие отрезки" ON. Never click that toggle:
+                // doing so can switch the site back to short chunks and hide the _0.._38 rows.
+                diagnostics += "kv-long-toggle-preserved-default"
                 webView.evaluateJavascript(controlScript("/слушать\\s+полностью/i", "full-player")) { fullRaw ->
                     rect(fullRaw)?.let { tap(it.first, it.second); diagnostics += "kv-full-player-native" }
                         ?: run { diagnostics += "kv-full-player-miss" }
-                    handler.postDelayed({
-                        webView.evaluateJavascript(controlScript("/большие\\s+отрезки/i", "toggle-long")) { toggleRaw ->
-                            rect(toggleRaw)?.let { tap(it.first, it.second); diagnostics += "kv-toggle-long-native" }
-                                ?: run { diagnostics += "kv-toggle-long-miss" }
-                            handler.postDelayed({ armForPreparedLong() }, 1200L)
-                        }
-                    }, 900L)
+                    handler.postDelayed({ armAndTraverse() }, 1400L)
                 }
             }
 
@@ -248,7 +191,7 @@ class KnigavuhePlayerCapture(private val context: Context) {
                     if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url) || finished.get()) return
                     diagnostics += "kv-loaded"
                     installHooks()
-                    handler.postDelayed({ armForShortFirst() }, 900L)
+                    handler.postDelayed({ prepareOnce() }, 900L)
                 }
             }
             handler.postDelayed({ finish("kv-timeout") }, minOf(rule.timeoutMs + 12_000L, 36_000L))

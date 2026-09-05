@@ -79,6 +79,13 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
                 result?.seriesId != null -> {
                     Toast.makeText(activity, "${result.name}: ${result.books} книг додано", Toast.LENGTH_LONG).show()
                 }
+                result?.review != null -> {
+                    Toast.makeText(
+                        activity,
+                        "${result.name}: серію знайдено (${result.books} книг), але збіг із бібліотекою потребує підтвердження",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
                 plugin == null -> {
                     Toast.makeText(activity, "Для цього сайту немає активного плагіна", Toast.LENGTH_LONG).show()
                 }

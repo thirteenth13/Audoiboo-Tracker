@@ -117,10 +117,12 @@ class KnigavuhePlayerCapture(private val context: Context) {
                   const oldMatch=t=>{const m=n(t).match(/_(\d+)(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/);return !!m&&Number(m[1])===idx};
                   const exactIndex=t=>{const v=n(t);return /^\d{1,3}$/.test(v)&&Number(v)===idx};
                   const duration=t=>/^\d{1,2}:\d{2}(?::\d{2})?$/.test(n(t));
+                  const hasDuration=t=>/(?:^|\s)\d{1,2}:\d{2}(?::\d{2})?(?=\s|$)/.test(n(t));
                   const rowOf=e=>e.closest('.book_player_playlist_item,[class*=playlist_item],[class*=playlist-item],[class*=track],[data-track],li,[role=listitem]')||e.parentElement||e;
+                  const validRow=e=>!!e&&visible(e)&&hasDuration(e.innerText||e.textContent);
 
                   let a=[...document.querySelectorAll('body *')].filter(e=>oldMatch(e.innerText||e.textContent));
-                  a=a.filter(e=>![...e.children].some(c=>oldMatch(c.innerText||c.textContent))).filter(visible);
+                  a=a.filter(e=>![...e.children].some(c=>oldMatch(c.innerText||c.textContent))).filter(visible).map(rowOf).filter(validRow);
                   let mode='legacy';
 
                   if(!a.length){
@@ -128,7 +130,7 @@ class KnigavuhePlayerCapture(private val context: Context) {
                       .filter(e=>exactIndex(e.innerText||e.textContent))
                       .filter(e=>![...e.children].some(c=>exactIndex(c.innerText||c.textContent)))
                       .filter(visible);
-                    a=indexNodes.map(rowOf).filter(visible);
+                    a=indexNodes.map(rowOf).filter(validRow);
                     mode='index';
                   }
 
@@ -137,7 +139,7 @@ class KnigavuhePlayerCapture(private val context: Context) {
                       .filter(e=>duration(e.innerText||e.textContent))
                       .filter(e=>![...e.children].some(c=>duration(c.innerText||c.textContent)))
                       .filter(visible);
-                    const rows=[...new Set(durationNodes.map(rowOf).filter(visible))];
+                    const rows=[...new Set(durationNodes.map(rowOf).filter(validRow))];
                     if(idx<rows.length)a=[rows[idx]];
                     mode='duration';
                   }
@@ -145,10 +147,9 @@ class KnigavuhePlayerCapture(private val context: Context) {
                   a=[...new Set(a)];
                   a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return A.top-B.top||A.width*A.height-B.width*B.height});
                   if(!a.length){AudoibooKvCapture.event('row-miss:'+idx);return null;}
-                  const e=a[0];
-                  const c=rowOf(e);
+                  const c=a[0];
                   c.scrollIntoView({block:'center'});const r=c.getBoundingClientRect();
-                  AudoibooKvCapture.event('row:'+idx+':mode='+mode+':leaf='+e.tagName+'/'+String(e.className||'').slice(0,70)+':tap='+c.tagName+'/'+String(c.className||'').slice(0,90)+':text='+n(c.innerText||c.textContent).slice(0,90));
+                  AudoibooKvCapture.event('row:'+idx+':mode='+mode+':tap='+c.tagName+'/'+String(c.className||'').slice(0,90)+':text='+n(c.innerText||c.textContent).slice(0,90));
                   try{c.click()}catch(_){}
                   return{x:r.left+r.width/2,y:r.top+r.height/2};
                 })()

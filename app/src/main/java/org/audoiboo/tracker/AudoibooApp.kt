@@ -3,6 +3,7 @@ package org.audoiboo.tracker
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import android.webkit.WebView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -44,6 +45,13 @@ class AudoibooApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+
+        // Diagnostic/dev APKs are debuggable. Expose their hidden parser WebViews to
+        // desktop Chrome (chrome://inspect/#devices), while keeping release builds closed.
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
+
         AppSettingsStore.initialize(this)
         ManagedDownloads.initialize(this)
         DownloadScheduler.recover(this)

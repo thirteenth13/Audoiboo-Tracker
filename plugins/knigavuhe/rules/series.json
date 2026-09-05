@@ -1,8 +1,8 @@
 {
   "operation": "seriesLookup",
   "series": {
-    "title": "meta[property='og:title']@content",
-    "titleRegex": "(?i)^\\s*цикл\\s+(.+?)\\s*(?:-|—)\\s*слушать\\s+онлайн.*$",
+    "title": "h1",
+    "titleRegex": "(?i)^цикл\\s*[«\"“]?(.+?)[»\"”]?\\s*(?:-|—|автор\\b|$)",
     "followLink": "a[href*='/series/']@href || a[href*='/serie/']@href",
     "books": {
       "item": "a[href*='/book/']",

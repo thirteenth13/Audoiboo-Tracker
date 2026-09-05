@@ -6,7 +6,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import kotlin.coroutines.resume
 
-/** Host-owned device browser runtime. Site-specific behavior comes from installed plugin mediaCapture rules. */
+/** Host-owned device browser runtime. Plugins provide only declarative site configuration. */
 object DeviceWebViewResolutionRuntime {
     @Volatile private var appContext: Context? = null
 
@@ -58,7 +58,6 @@ object DeviceWebViewResolutionRuntime {
             }
 
             continuation.invokeOnCancellation { restoreAudio() }
-
             val complete: (PluginMediaCaptureResult) -> Unit = { result ->
                 restoreAudio()
                 if (continuation.isActive) continuation.resume(result)
@@ -69,19 +68,22 @@ object DeviceWebViewResolutionRuntime {
                     complete(PluginMediaCaptureResult(result.pageUrl, result.mediaUrls, result.diagnostics))
                 }
                 manifest.id == "izib" -> {
-                    val effectiveRule = rule.copy(mediaHosts = rule.mediaHosts + "abookfiles.online")
+                    // v5+ packages declare abookfiles.online themselves. Keep only a compatibility
+                    // shim for already-installed v4 packages until the package updater replaces them.
+                    val effectiveRule = if (manifest.version < 5) {
+                        rule.copy(mediaHosts = rule.mediaHosts + "abookfiles.online")
+                    } else rule
                     PluginWebViewMediaCaptureRuntime(context).capture(manifest, effectiveRule, url, complete)
                 }
                 manifest.id == "lis10book" -> {
-                    // CI 840 raw-probe accepted the real Fantbox media while the ported runner
-                    // missed them. Use the same generic capture path that proved reliable for Izib.
-                    val effectiveRule = rule.copy(mediaHosts = rule.mediaHosts + "fantbox.net")
+                    // v5+ packages declare fantbox.net themselves; v4 gets a temporary compatibility shim.
+                    val effectiveRule = if (manifest.version < 5) {
+                        rule.copy(mediaHosts = rule.mediaHosts + "fantbox.net")
+                    } else rule
                     PluginWebViewMediaCaptureRuntime(context).capture(manifest, effectiveRule, url, complete)
                 }
-                manifest.id == "knigavuhe" ->
-                    KnigavuhePlayerCapture(context).capture(manifest, rule, url, complete)
-                manifest.id == "poleknig" ->
-                    PoleknigPlayerCapture(context).capture(manifest, rule, url, complete)
+                manifest.id == "knigavuhe" -> KnigavuhePlayerCapture(context).capture(manifest, rule, url, complete)
+                manifest.id == "poleknig" -> PoleknigPlayerCapture(context).capture(manifest, rule, url, complete)
                 PortedExperimentalMediaRuntime.supports(manifest.id) ->
                     PortedExperimentalMediaRuntime.capture(context, manifest, rule, url, complete)
                 else -> PluginWebViewMediaCaptureRuntime(context).capture(manifest, rule, url, complete)

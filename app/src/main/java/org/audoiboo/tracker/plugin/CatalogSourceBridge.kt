@@ -1,5 +1,8 @@
 package org.audoiboo.tracker.plugin
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
 /** Result of resolving one bibliographic catalog series against audio-source plugins. */
 data class CatalogSourceMatch(
     val catalogProviderId: String,
@@ -160,7 +163,9 @@ class CatalogSourceBridge(
 
     private suspend fun resolveEntry(entry: CatalogSeriesEntry): CatalogSourceMatch {
         val canonical = CatalogCanonicalMapper.toCanonical(entry.providerId, entry.author, entry.series)
-        val findings = sourceDiscovery.discoverSeries(canonical = canonical, excludeSourceId = entry.providerId)
+        val findings = withContext(Dispatchers.IO) {
+            sourceDiscovery.discoverSeries(canonical = canonical, excludeSourceId = entry.providerId)
+        }
         return CatalogSourceMatch(
             catalogProviderId = entry.providerId,
             author = entry.author,

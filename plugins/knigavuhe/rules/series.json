@@ -1,9 +1,9 @@
 {
   "operation": "seriesLookup",
   "series": {
-    "title": "h1",
-    "titleRegex": "(?i)^цикл\\s*[«\"“]?(.+?)[»\"”]?\\s*(?:-|—|автор\\b|$)",
-    "followLink": "a[href*='/series/']@href || a[href*='/serie/']@href",
+    "title": "title || h1",
+    "titleRegex": "(?i)^(?:цикл\\s*[«\"“]?)?(.+?)(?:[»\"”]?\\s*[-—]\\s*слушать.*|[»\"”]?\\s+автор\\b|[»\"”]?\\s*$)",
+    "followLink": "a[href*='/serie/']@href || a[href*='/series/']@href",
     "books": {
       "item": "a[href*='/book/']",
       "title": "@text",

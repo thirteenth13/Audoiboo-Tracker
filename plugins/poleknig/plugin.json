@@ -1,5 +1,5 @@
 {
-  "id":"poleknig","name":"Poleknig","version":4,"apiVersion":1,"runtime":"DECLARATIVE","hosts":["poleknig.com"],
+  "id":"poleknig","name":"Poleknig","version":5,"apiVersion":1,"runtime":"DECLARATIVE","hosts":["poleknig.com"],
   "capabilities":["SERIES_LOOKUP","SERIES_SEARCH","BOOK_LOOKUP","DOWNLOAD_RESOLUTION"],
   "permissions":{"networkHosts":["poleknig.com"],"downloadHosts":["poleknig.com"],"cookies":false,"javascript":false},
   "entrypoints":{"seriesLookup":"rules/series.json","seriesSearch":"rules/search.json","bookLookup":"rules/book.json","downloadResolution":"rules/download.json","mediaCapture":"rules/media-capture.json"}

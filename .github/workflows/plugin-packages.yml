@@ -1,0 +1,46 @@
+name: Plugin Packages
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "plugins/**"
+      - "tools/build_plugin_packages.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Build deterministic packages and catalog hashes
+        run: python3 tools/build_plugin_packages.py
+      - name: Verify package contents
+        run: |
+          set -euo pipefail
+          for manifest in plugins/*/plugin.json; do
+            id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$manifest")
+            version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$manifest")
+            pkg="plugins/packages/${id}-${version}.abplugin"
+            test -f "$pkg"
+            unzip -p "$pkg" plugin.json | python3 -m json.tool >/dev/null
+          done
+      - name: Commit generated packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- plugins/catalog.json plugins/packages; then
+            echo "Plugin packages already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add plugins/catalog.json plugins/packages
+          git commit -m "Rebuild plugin packages [skip ci]"
+          git push origin HEAD:main

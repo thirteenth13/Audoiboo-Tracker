@@ -4,10 +4,10 @@
     {
       "id": "baza-knig",
       "name": "Baza-Knig",
-      "version": 10,
+      "version": 11,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/baza-knig-10.abplugin",
-      "sha256": "24460ff4ac3f9fc3b723fdf9a08e733bb0a0b72378f152417356af17c939cdf5",
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/baza-knig-11.abplugin",
+      "sha256": "dfafd870c5e334d5375b79bda96dfb7e8a176da4f6b9031e416509573096866c",
       "description": "Серії, пошук серій, книги та декларативний WebView mediaCapture для Baza-Knig; v9 переносить логіку пошуку аудіотреків у плагін і використовує послідовну активацію треків для багатофайлових книг."
     },
     {

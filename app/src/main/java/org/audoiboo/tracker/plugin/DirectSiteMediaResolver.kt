@@ -30,7 +30,7 @@ object DirectSiteMediaResolver {
         val playlist = get(playlistUrl) ?: return null
         if (playlist.statusCode !in 200..299) return null
         val urls = extractJsonMedia(playlist.body, playlist.finalUrl)
-            .filter { isHttpMedia(it) }
+            .filter { isHttpMedia(it) && hostAllowed(it, manifest.permissions.effectiveDownloadHosts) }
             .distinct()
         if (urls.isEmpty()) return null
         return Result(urls, listOf(

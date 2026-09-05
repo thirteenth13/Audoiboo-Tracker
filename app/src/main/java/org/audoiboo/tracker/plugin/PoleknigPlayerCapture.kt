@@ -9,11 +9,12 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import org.json.JSONArray
 import java.net.URI
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Device-WebView traversal for Poleknig's custom player. */
+/** Poleknig exposes the complete player playlist as /books/<id>/playlist.txt. */
 class PoleknigPlayerCapture(private val context: Context) {
     private companion object { const val BRIDGE = "AudoibooPoleCapture" }
 
@@ -25,11 +26,12 @@ class PoleknigPlayerCapture(private val context: Context) {
             val keys = LinkedHashSet<String>()
             val diagnostics = mutableListOf<String>()
             val finished = AtomicBoolean(false)
-            var clicks = 0
             var requests = 0
 
             fun isResolver(url: String): Boolean = runCatching {
-                val uri = URI(url); val host = uri.host?.lowercase().orEmpty(); val regex = rule.resolverPathRegex ?: return@runCatching false
+                val uri = URI(url)
+                val host = uri.host?.lowercase().orEmpty()
+                val regex = rule.resolverPathRegex ?: return@runCatching false
                 manifest.hosts.any { host == it || host.endsWith(".$it") } && regex.matches(uri.path.orEmpty())
             }.getOrDefault(false)
 
@@ -61,7 +63,6 @@ class PoleknigPlayerCapture(private val context: Context) {
                 handler.removeCallbacksAndMessages(null)
                 val media = snapshot()
                 diagnostics += reason
-                diagnostics += "pole-js-clicks=$clicks"
                 diagnostics += "pole-requests=$requests"
                 diagnostics += "media=${media.size}"
                 runCatching {
@@ -71,61 +72,42 @@ class PoleknigPlayerCapture(private val context: Context) {
                 onComplete(PluginMediaCaptureResult(pageUrl, media, diagnostics.toList()))
             }
 
-            fun scan() {
-                webView.evaluateJavascript(
-                    """(()=>{const emit=u=>{try{if(u)AudoibooPoleCapture.media(new URL(String(u),location.href).href)}catch(_){}};document.querySelectorAll('audio,source,a[href],[data-src],[data-url],[data-file],[data-audio]').forEach(e=>{['src','href','data-src','data-url','data-file','data-audio'].forEach(a=>emit(e.getAttribute&&e.getAttribute(a)));emit(e.currentSrc)});try{performance.getEntriesByType('resource').forEach(e=>emit(e.name))}catch(_){};const h=document.documentElement.outerHTML.replaceAll('\\/','/');const m=h.match(/(?:https?:\/\/|\/\/|\/)[^\"'<>\s]+(?:\.(?:mp3|m4a|m4b|aac|ogg|opus|flac|m3u8)|\/files\/\d+)(?:\?[^\"'<>\s]*)?/gi)||[];m.slice(0,500).forEach(emit);return m.length})()""",
-                    null
-                )
+            fun parsePlaylist(raw: String?) {
+                val text = raw?.trim()?.takeIf { it.isNotBlank() } ?: return
+                runCatching {
+                    val arr = JSONArray(text)
+                    diagnostics += "pole-playlist-items=${arr.length()}"
+                    for (i in 0 until arr.length()) {
+                        val item = arr.optJSONObject(i) ?: continue
+                        val title = item.optString("title", (i + 1).toString())
+                        val file = item.optString("file").replace("\\/", "/")
+                        // Some entries contain two equivalent signed resolver URLs separated by " or ".
+                        // One valid URL is enough; prefer the first exactly as supplied by Poleknig.
+                        val url = file.split(Regex("\\s+or\\s+"), limit = 2).firstOrNull()?.trim().orEmpty()
+                        if (url.isNotBlank()) {
+                            diagnostics += "pole-playlist-track:$title"
+                            remember(url, "playlist")
+                        }
+                    }
+                }.onFailure { diagnostics += "pole-playlist-parse-error:${it.javaClass.simpleName}" }
             }
 
-            fun clickTrackScript(number: Int): String {
-                val label = number.toString().padStart(2, '0')
-                return """
+            fun fetchPlaylist() {
+                val script = """
                     (()=>{
-                      const label='$label',norm=s=>String(s||'').replace(/\s+/g,' ').trim();
-                      let a=[...document.querySelectorAll('body *')].filter(e=>norm(e.innerText||e.textContent)===label);
-                      a=a.filter(e=>![...e.children].some(c=>norm(c.innerText||c.textContent)===label));
-                      a=a.filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<120&&s.display!=='none'&&s.visibility!=='hidden'});
-                      a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return A.width*A.height-B.width*B.height});
-                      if(!a.length){AudoibooPoleCapture.event('track-miss:'+label);return false;}
-                      const leaf=a[0];leaf.scrollIntoView({block:'center'});
-                      const r=leaf.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;
-                      const chain=[];let p=leaf;
-                      for(let i=0;i<6&&p&&p!==document.body;i++,p=p.parentElement)chain.push(p);
-                      AudoibooPoleCapture.event('track:'+label+':chain='+chain.map(e=>e.tagName+'/'+String(e.className||'').slice(0,28)).join('>'));
-                      try{
-                        const target=document.elementFromPoint(x,y)||leaf;
-                        const base={bubbles:true,cancelable:true,view:window,clientX:x,clientY:y};
-                        if(window.PointerEvent){target.dispatchEvent(new PointerEvent('pointerdown',{...base,pointerId:1,pointerType:'touch',isPrimary:true}));}
-                        target.dispatchEvent(new MouseEvent('mousedown',base));
-                        if(window.PointerEvent){target.dispatchEvent(new PointerEvent('pointerup',{...base,pointerId:1,pointerType:'touch',isPrimary:true}));}
-                        target.dispatchEvent(new MouseEvent('mouseup',base));
-                        target.dispatchEvent(new MouseEvent('click',base));
-                        target.click?.();
-                        for(const e of chain.slice(1,4)){
-                          if(e.matches?.('button,a,[role=button],[onclick],[data-track],[data-audio],[data-file]')) e.click?.();
-                        }
-                        AudoibooPoleCapture.event('track-event-chain:'+label+':target='+target.tagName+'/'+String(target.className||'').slice(0,40));
-                        return true;
-                      }catch(e){AudoibooPoleCapture.event('track-js-error:'+label+':'+String(e));return false;}
+                      const m=location.pathname.match(/^\/books\/(\d+)/);
+                      if(!m){AudoibooPoleCapture.event('playlist-book-id-miss');return false;}
+                      const u='/books/'+m[1]+'/playlist.txt?t='+Date.now();
+                      AudoibooPoleCapture.event('playlist-fetch:'+u);
+                      fetch(u,{credentials:'include',cache:'no-store'})
+                        .then(r=>{AudoibooPoleCapture.event('playlist-http:'+r.status);if(!r.ok)throw new Error('HTTP '+r.status);return r.text()})
+                        .then(t=>AudoibooPoleCapture.playlist(t))
+                        .catch(e=>AudoibooPoleCapture.event('playlist-error:'+String(e)));
+                      return true;
                     })()
                 """.trimIndent()
-            }
-
-            fun traverse(number: Int = 1, misses: Int = 0) {
-                if (finished.get()) return
-                if (number > 60 || misses >= 3) {
-                    diagnostics += "pole-track-stop:number=$number misses=$misses"
-                    handler.postDelayed({ scan(); finish("pole-complete") }, 900L)
-                    return
-                }
-                webView.evaluateJavascript(clickTrackScript(number)) { raw ->
-                    val ok = raw == "true"
-                    if (!ok) handler.postDelayed({ traverse(number + 1, misses + 1) }, 180L)
-                    else {
-                        clicks++
-                        handler.postDelayed({ scan(); traverse(number + 1, 0) }, 650L)
-                    }
+                webView.evaluateJavascript(script) { raw ->
+                    if (raw != "true") diagnostics += "pole-playlist-start-miss"
                 }
             }
 
@@ -137,23 +119,26 @@ class PoleknigPlayerCapture(private val context: Context) {
                 userAgentString = userAgentString.replace("; wv", "")
             }
             webView.addJavascriptInterface(object {
-                @JavascriptInterface fun media(value: String?) = handler.post { remember(value, "js") }
+                @JavascriptInterface fun playlist(value: String?) = handler.post {
+                    parsePlaylist(value)
+                    handler.postDelayed({ finish("pole-playlist-complete") }, 150L)
+                }
                 @JavascriptInterface fun event(value: String?) = handler.post {
                     if (!value.isNullOrBlank() && diagnostics.size < 240) diagnostics += "js:$value"
                 }
             }, BRIDGE)
             webView.webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                    requests++; remember(request?.url?.toString(), "network")
+                    requests++
                     return super.shouldInterceptRequest(view, request)
                 }
                 override fun onPageFinished(view: WebView, url: String) {
                     if (!PluginWebViewMediaCaptureRuntime.isAllowedPage(manifest, rule, url) || finished.get()) return
                     diagnostics += "pole-loaded"
-                    handler.postDelayed({ scan(); traverse() }, 900L)
+                    handler.postDelayed({ fetchPlaylist() }, 250L)
                 }
             }
-            handler.postDelayed({ finish("pole-timeout") }, minOf(rule.timeoutMs + 8_000L, 32_000L))
+            handler.postDelayed({ finish("pole-playlist-timeout") }, minOf(rule.timeoutMs + 2_000L, 14_000L))
             webView.loadUrl(pageUrl)
         }
     }

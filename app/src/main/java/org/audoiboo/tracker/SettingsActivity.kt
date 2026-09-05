@@ -179,7 +179,23 @@ private fun SettingsScreen(activity: ComponentActivity) {
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("Про додаток"); Text("Audoiboo Tracker 1.1.4-dev", style = MaterialTheme.typography.bodySmall) } }
 
                 SectionTitle("Розробка")
-                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { SettingRow("Інструменти налагодження", "DOM-діагностика") { Switch(checked = dev, onCheckedChange = { dev = it; save() }) }; if (dev) OutlinedButton(onClick = { activity.startActivity(Intent(activity, DiagnosticActivity::class.java)) }) { Text("Відкрити DOM-діагностику") } } }
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SettingRow("Інструменти налагодження", "DOM-діагностика та діагностика каталогу") {
+                            Switch(checked = dev, onCheckedChange = { dev = it; save() })
+                        }
+                        if (dev) {
+                            OutlinedButton(
+                                onClick = { activity.startActivity(Intent(activity, DiagnosticActivity::class.java)) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Відкрити DOM-діагностику") }
+                            OutlinedButton(
+                                onClick = { activity.startActivity(Intent(activity, CatalogDiagnosticsActivity::class.java)) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Діагностика каталогу") }
+                        }
+                    }
+                }
             }
         }
     }

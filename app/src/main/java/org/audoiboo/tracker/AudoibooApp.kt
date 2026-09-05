@@ -46,11 +46,11 @@ class AudoibooApp : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // Diagnostic/dev APKs are debuggable. Expose their hidden parser WebViews to
-        // desktop Chrome (chrome://inspect/#devices), while keeping release builds closed.
-        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
-            WebView.setWebContentsDebuggingEnabled(true)
-        }
+        // Current CI/dev builds are diagnostic builds even when the APK itself is not marked
+        // android:debuggable. Always expose their hidden parser WebViews so they can be inspected
+        // from desktop Chrome at chrome://inspect/#devices. This is temporary diagnostic plumbing
+        // and should be narrowed/removed before producing a production release.
+        WebView.setWebContentsDebuggingEnabled(true)
 
         AppSettingsStore.initialize(this)
         ManagedDownloads.initialize(this)

@@ -113,16 +113,43 @@ class KnigavuhePlayerCapture(private val context: Context) {
             fun longRowScript(index: Int): String = """
                 (()=>{
                   const idx=$index,n=s=>String(s||'').replace(/\s+/g,' ').trim();
-                  const match=t=>{const m=n(t).match(/_(\d+)(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/);return !!m&&Number(m[1])===idx};
-                  let a=[...document.querySelectorAll('body *')].filter(e=>match(e.innerText||e.textContent));
-                  a=a.filter(e=>![...e.children].some(c=>match(c.innerText||c.textContent)));
-                  a=a.filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<220&&s.display!=='none'&&s.visibility!=='hidden'});
-                  a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return A.width*A.height-B.width*B.height});
+                  const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<260&&s.display!=='none'&&s.visibility!=='hidden'};
+                  const oldMatch=t=>{const m=n(t).match(/_(\d+)(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/);return !!m&&Number(m[1])===idx};
+                  const exactIndex=t=>{const v=n(t);return /^\d{1,3}$/.test(v)&&Number(v)===idx};
+                  const duration=t=>/^\d{1,2}:\d{2}(?::\d{2})?$/.test(n(t));
+                  const rowOf=e=>e.closest('.book_player_playlist_item,[class*=playlist_item],[class*=playlist-item],[class*=track],[data-track],li,[role=listitem]')||e.parentElement||e;
+
+                  let a=[...document.querySelectorAll('body *')].filter(e=>oldMatch(e.innerText||e.textContent));
+                  a=a.filter(e=>![...e.children].some(c=>oldMatch(c.innerText||c.textContent))).filter(visible);
+                  let mode='legacy';
+
+                  if(!a.length){
+                    const indexNodes=[...document.querySelectorAll('body *')]
+                      .filter(e=>exactIndex(e.innerText||e.textContent))
+                      .filter(e=>![...e.children].some(c=>exactIndex(c.innerText||c.textContent)))
+                      .filter(visible);
+                    a=indexNodes.map(rowOf).filter(visible);
+                    mode='index';
+                  }
+
+                  if(!a.length){
+                    const durationNodes=[...document.querySelectorAll('body *')]
+                      .filter(e=>duration(e.innerText||e.textContent))
+                      .filter(e=>![...e.children].some(c=>duration(c.innerText||c.textContent)))
+                      .filter(visible);
+                    const rows=[...new Set(durationNodes.map(rowOf).filter(visible))];
+                    if(idx<rows.length)a=[rows[idx]];
+                    mode='duration';
+                  }
+
+                  a=[...new Set(a)];
+                  a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return A.top-B.top||A.width*A.height-B.width*B.height});
                   if(!a.length){AudoibooKvCapture.event('row-miss:'+idx);return null;}
                   const e=a[0];
-                  const c=e.closest('.book_player_playlist_item')||e;
+                  const c=rowOf(e);
                   c.scrollIntoView({block:'center'});const r=c.getBoundingClientRect();
-                  AudoibooKvCapture.event('row:'+idx+':leaf='+e.tagName+'/'+String(e.className||'').slice(0,70)+':tap='+c.tagName+'/'+String(c.className||'').slice(0,90)+':id='+String(c.id||''));
+                  AudoibooKvCapture.event('row:'+idx+':mode='+mode+':leaf='+e.tagName+'/'+String(e.className||'').slice(0,70)+':tap='+c.tagName+'/'+String(c.className||'').slice(0,90)+':text='+n(c.innerText||c.textContent).slice(0,90));
+                  try{c.click()}catch(_){}
                   return{x:r.left+r.width/2,y:r.top+r.height/2};
                 })()
             """.trimIndent()
@@ -160,8 +187,6 @@ class KnigavuhePlayerCapture(private val context: Context) {
             fun prepareOnce() {
                 if (prepared) return
                 prepared = true
-                // User-visible Knigavuhe defaults to "Большие отрезки" ON. Never click that toggle:
-                // doing so can switch the site back to short chunks and hide the _0.._38 rows.
                 diagnostics += "kv-long-toggle-preserved-default"
                 webView.evaluateJavascript(controlScript("/слушать\\s+полностью/i", "full-player")) { fullRaw ->
                     rect(fullRaw)?.let { tap(it.first, it.second); diagnostics += "kv-full-player-native" }

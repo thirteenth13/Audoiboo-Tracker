@@ -76,7 +76,7 @@ private fun PluginDiagnosticsScreen(activity: ComponentActivity) {
                 OutlinedButton(onClick = ::copy, modifier = Modifier.fillMaxWidth()) { Text("Скопіювати звіт") }
                 Text(report, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
             } else {
-                Text("Серія перевіряється швидко: повний список книг, bookLookup для перших двох позицій і лише один реальний WebView mediaCapture. Якщо він порожній, raw-probe показує URL до фільтрації, джерело, host/extension, причину відхилення, activation і timings.", style = MaterialTheme.typography.bodySmall)
+                Text("Серія перевіряється швидко: повний список книг, bookLookup для перших двох позицій і лише один реальний WebView mediaCapture. Якщо він порожній, raw-probe показує URL до фільтрації, джерело, host/extension, причину відхилення, activation і timings. Наприкінці звіту окремо перевіряються Open Library, FantLab і Google Books.", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -199,9 +199,6 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
                     lines += "     metadata-only"
                 }
             }
-            // Lis10book's first item can remain metadata-valid after the audio was removed by
-            // the rights holder. Prefer the second resolved sample so diagnostics exercise an
-            // actually playable series item instead of repeatedly reporting a known false failure.
             val mediaBook = if (pluginId == "lis10book" && samples.size > 1) samples[1] else samples.firstOrNull()
             if (mediaBook != null) {
                 lines += if (pluginId == "lis10book" && samples.size > 1) "media-sample: second-valid-book (skip unavailable first item)" else "media-sample: first-valid-book"
@@ -221,6 +218,29 @@ private suspend fun diagnosePlugin(pluginId: String, url: String): String {
     } else {
         lines += "mediaResolution: skipped: no book resolved"
     }
+
+    val catalogAuthor = rootBook?.authors?.firstOrNull()?.name
+        ?: series?.authors?.firstOrNull()?.name
+        ?: "Роман Прокофьев"
+    val catalogBook = rootBook?.title
+        ?: series?.books?.firstOrNull()?.title
+        ?: series?.title
+        ?: "Игра Кота"
+    lines += "catalog-providers: author=${catalogAuthor.take(100)} | book=${catalogBook.take(100)}"
+    val catalogStarted = SystemClock.elapsedRealtime()
+    runCatching {
+        CatalogProviderDiagnostics.run(PluginPackageRuntime.registry, catalogAuthor, catalogBook)
+    }.onSuccess { results ->
+        results.forEach { result ->
+            val http = "http(author=${result.authorHttp ?: -1},book=${result.bookHttp ?: -1})"
+            val parsed = "authors=${result.authors} books=${result.books}"
+            val error = result.error?.let { " ERROR=$it" }.orEmpty()
+            lines += "  ${result.providerId}: $http $parsed elapsed=${result.elapsedMs}ms$error"
+        }
+    }.onFailure { error ->
+        lines += "  ERROR ${error.javaClass.simpleName}: ${error.message.orEmpty().take(180)}"
+    }
+    lines += "catalog-total=${SystemClock.elapsedRealtime() - catalogStarted}ms"
 
     val snapshot = PluginDiagnostics.snapshot(pluginId)
     if (snapshot.entries.isNotEmpty()) {

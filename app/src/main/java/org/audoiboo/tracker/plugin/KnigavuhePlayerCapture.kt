@@ -119,10 +119,11 @@ class KnigavuhePlayerCapture(private val context: Context) {
                   a=a.filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>3&&r.height>3&&r.height<220&&s.display!=='none'&&s.visibility!=='hidden'});
                   a.sort((x,y)=>{const A=x.getBoundingClientRect(),B=y.getBoundingClientRect();return A.width*A.height-B.width*B.height});
                   if(!a.length){AudoibooKvCapture.event('row-miss:'+idx);return null;}
-                  const e=a[0],c=e.closest('button,a,[role=button],[onclick],li,[class*=track],[class*=item]')||e;
+                  const e=a[0];
+                  const c=e.closest('.book_player_playlist_item')||e;
                   c.scrollIntoView({block:'center'});const r=c.getBoundingClientRect();
-                  AudoibooKvCapture.event('row:'+idx+':'+n(e.innerText||e.textContent).slice(0,100));
-                  return{x:r.left+Math.min(Math.max(18,r.width*.12),r.width/2),y:r.top+r.height/2};
+                  AudoibooKvCapture.event('row:'+idx+':leaf='+e.tagName+'/'+String(e.className||'').slice(0,70)+':tap='+c.tagName+'/'+String(c.className||'').slice(0,90)+':id='+String(c.id||''));
+                  return{x:r.left+r.width/2,y:r.top+r.height/2};
                 })()
             """.trimIndent()
 
@@ -142,7 +143,8 @@ class KnigavuhePlayerCapture(private val context: Context) {
                         } else handler.postDelayed({ traverseLong(index + 1, misses + 1, waits) }, 150L)
                     } else {
                         tap(p.first, p.second)
-                        handler.postDelayed({ scan(); traverseLong(index + 1, 0, waits) }, 420L)
+                        diagnostics += "kv-row-native-click=$index"
+                        handler.postDelayed({ scan(); traverseLong(index + 1, 0, waits) }, 520L)
                     }
                 }
             }
@@ -178,7 +180,7 @@ class KnigavuhePlayerCapture(private val context: Context) {
             webView.addJavascriptInterface(object {
                 @JavascriptInterface fun media(value: String?) = handler.post { remember(value, "js") }
                 @JavascriptInterface fun event(value: String?) = handler.post {
-                    if (!value.isNullOrBlank() && diagnostics.size < 260) diagnostics += "js:$value"
+                    if (!value.isNullOrBlank() && diagnostics.size < 280) diagnostics += "js:$value"
                 }
             }, BRIDGE)
             webView.webViewClient = object : WebViewClient() {

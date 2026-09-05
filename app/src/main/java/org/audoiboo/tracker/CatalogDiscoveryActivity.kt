@@ -144,6 +144,21 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
         }
     }
 
+    fun addCatalogOnly(result: CatalogSourceMatch) {
+        if (importingId != null) return
+        importingId = result.canonical.id
+        scope.launch {
+            val imported = runCatching { CatalogLibraryImport.addCatalogOnly(activity, result) }.getOrNull()
+            if (imported != null) {
+                Toast.makeText(activity, "${imported.name}: додано ${imported.books} книг без аудіо", Toast.LENGTH_LONG).show()
+                activity.startActivity(Intent(activity, RoomLibraryActivity::class.java))
+            } else {
+                Toast.makeText(activity, "Не вдалося додати серію з каталогу", Toast.LENGTH_LONG).show()
+            }
+            importingId = null
+        }
+    }
+
     Scaffold(topBar = {
         TopAppBar(
             title = { Text("Каталог") },
@@ -195,6 +210,7 @@ private fun CatalogDiscoveryScreen(activity: ComponentActivity) {
                             importing = importingId == result.canonical.id,
                             actionsEnabled = importingId == null && resolvingBookId == null,
                             onAdd = { sourceId -> addToLibrary(result, sourceId) },
+                            onAddCatalogOnly = { addCatalogOnly(result) },
                             onOpenSource = ::openSource
                         )
                     }
@@ -252,6 +268,7 @@ private fun CatalogSeriesCard(
     importing: Boolean,
     actionsEnabled: Boolean,
     onAdd: (String?) -> Unit,
+    onAddCatalogOnly: () -> Unit,
     onOpenSource: (String) -> Unit
 ) {
     val bookAvailability = remember(result) { CatalogBookAvailabilityResolver.resolve(result) }
@@ -285,6 +302,16 @@ private fun CatalogSeriesCard(
                 }
                 Button(onClick = { onAdd(null) }, enabled = actionsEnabled, modifier = Modifier.fillMaxWidth()) {
                     Text(if (importing) "Додаю…" else "Додати найкраще джерело (${candidate.matchedBooks}/${candidate.totalBooks})")
+                }
+            }
+
+            if (best == null) {
+                Button(onClick = onAddCatalogOnly, enabled = actionsEnabled, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (importing) "Додаю…" else "Додати серію без аудіо (${result.series.books.size} книг)")
+                }
+            } else {
+                OutlinedButton(onClick = onAddCatalogOnly, enabled = actionsEnabled, modifier = Modifier.fillMaxWidth()) {
+                    Text("Додати тільки каталог (${result.series.books.size} книг)")
                 }
             }
 

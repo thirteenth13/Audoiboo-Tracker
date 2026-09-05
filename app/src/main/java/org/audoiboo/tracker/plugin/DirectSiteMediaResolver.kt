@@ -43,6 +43,20 @@ object DirectSiteMediaResolver {
     private fun resolveKnigavuhe(manifest: PluginPackageManifest, pageUrl: String): Result? {
         val page = get(pageUrl) ?: return null
         if (page.statusCode !in 200..299) return null
+
+        // Some Knigavuhe responses already embed init_data/merged_playlist in the page source.
+        // Prefer it when present because it removes one dependency on recovering the numeric book id.
+        extractKnigavuheMergedPlaylist(page.body)?.let { merged ->
+            val urls = extractKnigavuheUrls(manifest, merged)
+            if (urls.isNotEmpty()) {
+                return Result(urls, listOf(
+                    "knigavuhe-source=page-merged-playlist",
+                    "knigavuhe-merged=${merged.length()}",
+                    "media=${urls.size}"
+                ))
+            }
+        }
+
         val bookId = extractKnigavuheBookId(page.body) ?: return null
         val origin = URI(page.finalUrl)
         val apiUrl = "${origin.scheme}://${origin.authority}/ajax/book_data/$bookId/"
@@ -52,22 +66,25 @@ object DirectSiteMediaResolver {
         val init = root.optJSONObject(1)?.optJSONObject("result")?.optJSONObject("init_data") ?: return null
         val shortCount = init.optJSONArray("playlist")?.length() ?: 0
         val merged = init.optJSONArray("merged_playlist") ?: return null
-        val urls = buildList {
-            for (i in 0 until merged.length()) {
-                val item = merged.optJSONObject(i) ?: continue
-                if (item.optInt("error", 0) != 0) continue
-                val url = firstHttpString(item, "url", "src", "file") ?: continue
-                if (isHttpMedia(url) && hostAllowed(url, manifest.permissions.effectiveDownloadHosts)) add(url)
-            }
-        }.distinct()
+        val urls = extractKnigavuheUrls(manifest, merged)
         if (urls.isEmpty()) return null
         return Result(urls, listOf(
+            "knigavuhe-source=ajax-book-data",
             "knigavuhe-book-id=$bookId",
             "knigavuhe-playlist=$shortCount",
             "knigavuhe-merged=${merged.length()}",
             "media=${urls.size}"
         ))
     }
+
+    private fun extractKnigavuheUrls(manifest: PluginPackageManifest, merged: JSONArray): List<String> = buildList {
+        for (i in 0 until merged.length()) {
+            val item = merged.optJSONObject(i) ?: continue
+            if (item.optInt("error", 0) != 0) continue
+            val url = firstHttpString(item, "url", "src", "file") ?: continue
+            if (isHttpMedia(url) && hostAllowed(url, manifest.permissions.effectiveDownloadHosts)) add(url)
+        }
+    }.distinct()
 
     private fun resolveIzib(manifest: PluginPackageManifest, pageUrl: String): Result? {
         val page = get(pageUrl) ?: return null
@@ -141,9 +158,23 @@ object DirectSiteMediaResolver {
         val patterns = listOf(
             Regex("/ajax/book_data/(\\d+)/"),
             Regex("/play/id/(\\d+)/"),
+            Regex("/audio/(\\d+)/(?:mobile/)?"),
+            Regex("(?i)data-book-id\\s*=\\s*[\\\"'](\\d+)[\\\"']"),
+            Regex("(?i)[\\\"']book_id[\\\"']\\s*:\\s*[\\\"']?(\\d+)"),
+            Regex("(?i)[\\\"']bookId[\\\"']\\s*:\\s*[\\\"']?(\\d+)"),
             Regex("(?i)book[_-]?id[\\\"']?\\s*[:=]\\s*[\\\"']?(\\d+)")
         )
         return patterns.firstNotNullOfOrNull { it.find(html)?.groupValues?.getOrNull(1) }
+    }
+
+    private fun extractKnigavuheMergedPlaylist(html: String): JSONArray? {
+        val markers = listOf("\"merged_playlist\"", "'merged_playlist'", "merged_playlist")
+        for (marker in markers) {
+            val raw = extractBalancedArrayAfter(html, marker) ?: continue
+            val parsed = runCatching { JSONArray(raw) }.getOrNull() ?: continue
+            if (parsed.length() > 0) return parsed
+        }
+        return null
     }
 
     private fun extractBalancedObjectAfter(text: String, marker: String): String? {
@@ -151,6 +182,18 @@ object DirectSiteMediaResolver {
         if (startMarker < 0) return null
         val start = text.indexOf('{', startMarker + marker.length)
         if (start < 0) return null
+        return extractBalanced(text, start, '{', '}')
+    }
+
+    private fun extractBalancedArrayAfter(text: String, marker: String): String? {
+        val startMarker = text.indexOf(marker)
+        if (startMarker < 0) return null
+        val start = text.indexOf('[', startMarker + marker.length)
+        if (start < 0) return null
+        return extractBalanced(text, start, '[', ']')
+    }
+
+    private fun extractBalanced(text: String, start: Int, open: Char, close: Char): String? {
         var depth = 0
         var quote: Char? = null
         var escaped = false
@@ -163,8 +206,8 @@ object DirectSiteMediaResolver {
                 continue
             }
             if (c == '\"' || c == '\'') { quote = c; continue }
-            if (c == '{') depth++
-            if (c == '}') {
+            if (c == open) depth++
+            if (c == close) {
                 depth--
                 if (depth == 0) return text.substring(start, i + 1)
             }

@@ -22,10 +22,10 @@
     {
       "id": "poleknig",
       "name": "Poleknig",
-      "version": 4,
+      "version": 5,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/poleknig-4.abplugin",
-      "sha256": "d6a08c3bfafc43bc94099a0020ce6e366ce615b6951f58205604315d428c7b60",
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/poleknig-5.abplugin",
+      "sha256": "7aef0c286c5cd07341d9d7bb014054adb5544a789090bfbfa50f89766d7c5600",
       "description": "Книги, цикли, пошук серій та декларативний WebView mediaCapture Poleknig; v4 переносить resolver /files та збір прямих аудіопосилань у плагін."
     },
     {

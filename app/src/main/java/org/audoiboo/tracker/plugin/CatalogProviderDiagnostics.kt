@@ -44,6 +44,9 @@ object CatalogProviderDiagnostics {
                 bookUrl = "https://www.googleapis.com/books/v1/volumes?q=${encode("intitle:\"$book\"")}&maxResults=10"
             )
         )
+        // Providers run in parallel, but author/book calls for the same provider are sequential.
+        // This avoids doubling pressure on rate-limited APIs (notably Google Books) and reduces
+        // Open Library timeouts on slower mobile networks.
         specs.map { spec -> async { probe(registry, spec, author, book) } }.map { it.await() }
     }
 
@@ -52,35 +55,42 @@ object CatalogProviderDiagnostics {
         spec: ProviderSpec,
         authorQuery: String,
         bookQuery: String
-    ): CatalogProviderDiagnosticResult = supervisorScope {
+    ): CatalogProviderDiagnosticResult {
         val started = SystemClock.elapsedRealtime()
         val plugin = registry.byId(spec.id)
         val displayName = plugin?.descriptor?.name ?: spec.id
         if (plugin == null) {
-            return@supervisorScope CatalogProviderDiagnosticResult(spec.id, displayName, null, null, 0, 0, 0, "provider-not-registered")
+            return CatalogProviderDiagnosticResult(spec.id, displayName, null, null, 0, 0, 0, "provider-not-registered")
         }
 
-        val authorHttpTask = async { runCatching { httpStatus(spec.authorUrl) }.getOrNull() }
-        val bookHttpTask = async { runCatching { httpStatus(spec.bookUrl) }.getOrNull() }
-        val authorTask = async {
-            runCatching { (plugin as? AuthorCatalogProvider)?.searchAuthors(authorQuery, 5)?.size ?: 0 }
+        val authorResult = runCatching {
+            (plugin as? AuthorCatalogProvider)?.searchAuthors(authorQuery, 5)?.size ?: 0
         }
-        val bookTask = async {
-            runCatching { (plugin as? CatalogBookSearchProvider)?.searchBooks(bookQuery, 10)?.size ?: 0 }
+        val authorHttp = if (authorResult.isSuccess && authorResult.getOrDefault(0) > 0) {
+            200
+        } else {
+            runCatching { httpStatus(spec.authorUrl) }.getOrNull()
         }
 
-        val authorHttp = authorHttpTask.await()
-        val bookHttp = bookHttpTask.await()
-        val authorResult = authorTask.await()
-        val bookResult = bookTask.await()
+        val bookResult = runCatching {
+            (plugin as? CatalogBookSearchProvider)?.searchBooks(bookQuery, 10)?.size ?: 0
+        }
+        val bookHttp = if (bookResult.isSuccess && bookResult.getOrDefault(0) > 0) {
+            200
+        } else {
+            runCatching { httpStatus(spec.bookUrl) }.getOrNull()
+        }
+
         val errors = buildList {
             authorResult.exceptionOrNull()?.let { add("authors=${it.javaClass.simpleName}:${it.message.orEmpty()}") }
             bookResult.exceptionOrNull()?.let { add("books=${it.javaClass.simpleName}:${it.message.orEmpty()}") }
             if (authorHttp == null) add("author-http=failed")
             if (bookHttp == null) add("book-http=failed")
+            if (authorHttp != null && authorHttp !in 200..299) add("author-http=$authorHttp")
+            if (bookHttp != null && bookHttp !in 200..299) add("book-http=$bookHttp")
         }
 
-        CatalogProviderDiagnosticResult(
+        return CatalogProviderDiagnosticResult(
             providerId = spec.id,
             displayName = displayName,
             authorHttp = authorHttp,
@@ -100,7 +110,7 @@ object CatalogProviderDiagnostics {
             connection.readTimeout = 6_000
             connection.requestMethod = "GET"
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("User-Agent", "Audoiboo-Catalog-Diagnostics/1")
+            connection.setRequestProperty("User-Agent", "Audoiboo-Catalog-Diagnostics/2")
             connection.responseCode
         } finally {
             connection.disconnect()

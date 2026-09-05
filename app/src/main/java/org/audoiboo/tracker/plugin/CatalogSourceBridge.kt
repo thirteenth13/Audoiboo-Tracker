@@ -1,7 +1,11 @@
 package org.audoiboo.tracker.plugin
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Result of resolving one bibliographic catalog series against audio-source plugins. */
 data class CatalogSourceMatch(
@@ -122,11 +126,19 @@ object CatalogCanonicalMapper {
 class CatalogSourceBridge(
     private val registry: SourcePluginRegistry,
     private val catalogDiscovery: CatalogDiscoveryEngine = CatalogDiscoveryEngine(registry),
-    private val sourceDiscovery: SourceDiscoveryEngine = SourceDiscoveryEngine(registry)
+    private val sourceDiscovery: SourceDiscoveryEngine = SourceDiscoveryEngine(registry),
+    private val sourceResolveTimeoutMs: Long = 10_000L
 ) {
+    init {
+        require(sourceResolveTimeoutMs in 1_000L..60_000L)
+    }
+
     suspend fun discoverByAuthor(authorQuery: String): List<CatalogSourceMatch> {
         val catalogs = catalogDiscovery.discoverByAuthor(authorQuery)
-        return CatalogSeriesDeduplicationPolicy.select(catalogs).map { entry -> resolveEntry(entry) }
+        val entries = CatalogSeriesDeduplicationPolicy.select(catalogs)
+        return supervisorScope {
+            entries.map { entry -> async { resolveEntry(entry) } }.awaitAll()
+        }
     }
 
     suspend fun discoverByBook(hit: CatalogBookSearchHit): List<CatalogSourceMatch> {
@@ -163,9 +175,11 @@ class CatalogSourceBridge(
 
     private suspend fun resolveEntry(entry: CatalogSeriesEntry): CatalogSourceMatch {
         val canonical = CatalogCanonicalMapper.toCanonical(entry.providerId, entry.author, entry.series)
-        val findings = withContext(Dispatchers.IO) {
-            sourceDiscovery.discoverSeries(canonical = canonical, excludeSourceId = entry.providerId)
-        }
+        val findings = withTimeoutOrNull(sourceResolveTimeoutMs) {
+            withContext(Dispatchers.IO) {
+                sourceDiscovery.discoverSeries(canonical = canonical, excludeSourceId = entry.providerId)
+            }
+        }.orEmpty()
         return CatalogSourceMatch(
             catalogProviderId = entry.providerId,
             author = entry.author,

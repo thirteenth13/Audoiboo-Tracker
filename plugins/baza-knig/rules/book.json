@@ -5,7 +5,7 @@
     "titleRegex": "(?i)^(?:скачать\\s+аудиокнигу\\s+)?(.+?)(?=\\s+-\\s+.+?(?:\\s+автор\\b|$)|\\s+автор\\b|$)",
     "author": "a[href*='/avtor-'] || a[href*='/xfsearch/autor/']",
     "seriesTitle": "a[href*='/series-'] || a[href*='/xfsearch/cikl/']",
-    "coverUrl": "meta[property='og:image']@content",
+    "coverUrl": "meta[property='og:image']@content || meta[name='twitter:image']@content || .fullstory img@src || article img@src || .poster img@src || img[itemprop='image']@src",
     "description": "meta[name='description']@content"
   }
 }

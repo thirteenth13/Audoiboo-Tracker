@@ -1,12 +1,13 @@
 {
   "operation": "seriesLookup",
   "series": {
-    "title": "h1",
+    "title": "meta[property='og:title']@content || meta[name='twitter:title']@content || title || h1 || h2",
+    "titleRegex": "(?i)^(?:серия|цикл)?\\s*[:«\\\"“]?(.+?)[»\\\"”]?\\s*(?:[|—-]\\s*(?:полекниг|poleknig).*)?$",
     "followLink": "a[href*='/series/']@href",
     "books": {
-      "item": "a[href*='/books/']",
-      "title": "@text",
-      "link": "@href"
+      "item": "a[href*='/books/'], article:has(a[href*='/books/']), .book:has(a[href*='/books/']), [class*='book']:has(a[href*='/books/'])",
+      "title": "@text || a[href*='/books/']@text || h2 || h3 || [class*='title']",
+      "link": "@href || a[href*='/books/']@href"
     }
   }
 }

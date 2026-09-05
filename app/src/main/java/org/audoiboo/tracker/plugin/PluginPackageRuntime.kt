@@ -108,18 +108,35 @@ object PluginPackageRuntime {
         val root = pluginRootRef ?: return installedDir; val patched = File(root, "runtime-patches/${manifest.id}-${manifest.version}")
         runCatching {
             if (patched.exists()) patched.deleteRecursively(); installedDir.copyRecursively(patched, overwrite = true)
-            when (manifest.id) { "izib" -> patchIzibRules(manifest, patched); "knigavuhe" -> patchKnigavuheRules(manifest, patched); "baza-knig" -> patchBazaKnigRules(manifest, patched) }
+            when (manifest.id) {
+                "izib" -> patchIzibRules(manifest, patched)
+                "knigavuhe" -> patchKnigavuheRules(manifest, patched)
+                "baza-knig" -> patchBazaKnigRules(manifest, patched)
+                "lis10book" -> patchLis10bookRules(manifest, patched)
+            }
         }.onFailure { patched.deleteRecursively(); return installedDir }
         return patched.takeIf { it.isDirectory } ?: installedDir
     }
 
-    private fun needsRuntimePatch(manifest: PluginPackageManifest): Boolean = when (manifest.id) { "izib" -> manifest.version <= 1; "knigavuhe" -> manifest.version <= 2; "baza-knig" -> manifest.version <= 4; else -> false }
+    private fun needsRuntimePatch(manifest: PluginPackageManifest): Boolean = when (manifest.id) {
+        "izib" -> manifest.version <= 5
+        "knigavuhe" -> manifest.version <= 2
+        "baza-knig" -> manifest.version <= 4
+        "lis10book" -> manifest.version <= 5
+        else -> false
+    }
 
     private fun patchIzibRules(manifest: PluginPackageManifest, packageDir: File) {
         patchJsonRule(manifest, packageDir, "seriesLookup") { root ->
             val series = root.getJSONObject("series"); series.remove("followLink"); series.put("title", "h1, h2, .book-title, .title")
             series.put("titleRegex", "(?i)^(?:серия|серія|серії)\\s*[«\\\"“]?(.+?)[»\\\"”]?\\s*$")
             series.optJSONObject("books")?.apply { put("item", "a[href*='/art']"); put("title", "@text"); put("link", "@href") }
+        }
+        patchJsonRule(manifest, packageDir, "bookLookup") { root ->
+            root.getJSONObject("book").put(
+                "author",
+                "a[href*='/author']:not([href='/authors']):not([href$='/authors']) || a[href*='/avtor/']"
+            )
         }
     }
 
@@ -133,6 +150,12 @@ object PluginPackageRuntime {
             val series = root.getJSONObject("series")
             series.optJSONObject("books")?.apply { put("item", "article, .short, .item"); put("title", "h2 a, h3 a, .title a"); put("link", "h2 a, h3 a, .title a@href") }
             series.optJSONObject("supplement")?.apply { put("maxPages", 5); put("nextPage", "a[rel='next'], .navigation a.next@href"); optJSONObject("items")?.apply { put("item", "article, .short, .item"); put("title", "h2 a, h3 a, .title a"); put("link", "h2 a, h3 a, .title a@href") } }
+        }
+    }
+
+    private fun patchLis10bookRules(manifest: PluginPackageManifest, packageDir: File) {
+        patchJsonRule(manifest, packageDir, "bookLookup") { root ->
+            root.getJSONObject("book").put("author", "a[href*='/avtor/'] || a[href*='/author/']")
         }
     }
 

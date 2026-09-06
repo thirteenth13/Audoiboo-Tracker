@@ -94,9 +94,10 @@ object SourceIdentityMatcher {
         val evidence = mutableListOf<String>()
         val incomingTitle = normalizeTitle(incoming.title)
         val candidateTitle = normalizeTitle(candidate.title)
+        val exactSeriesTitle = incomingTitle.isNotBlank() && incomingTitle == candidateTitle
         val titleSimilarity = tokenSimilarity(incomingTitle, candidateTitle)
         var score = when {
-            incomingTitle.isNotBlank() && incomingTitle == candidateTitle -> {
+            exactSeriesTitle -> {
                 evidence += "exact series title"
                 0.78f
             }
@@ -116,7 +117,7 @@ object SourceIdentityMatcher {
                 evidence += "author overlap"
             } else {
                 score -= 0.18f
-                evidence += "conflicting authors"
+                evidence += "conflicting authors incoming=${incomingAuthors.sorted()} canonical=${candidateAuthors.sorted()}"
             }
         }
 
@@ -131,6 +132,21 @@ object SourceIdentityMatcher {
             }
         }
 
+        val relaxedOverlap = relaxedSeriesBookOverlap(incomingBooks, candidate.books, candidateTitle)
+        if (relaxedOverlap.count > 0) {
+            evidence += "relaxed book overlap ${relaxedOverlap.count}/${relaxedOverlap.denominator}"
+        }
+
+        // Provider pages often expose narrator/uploader metadata as an author. An exact series title
+        // plus several independently matching volume titles is stronger evidence than that noisy
+        // author field, so do not reject a real series solely because the provider author conflicts.
+        if (exactSeriesTitle && relaxedOverlap.count >= 2 && relaxedOverlap.ratio >= 0.30f) {
+            score = max(score, 0.97f)
+            evidence += "exact title + strong book overlap overrides author conflict"
+        } else if (relaxedOverlap.ratio > 0f) {
+            score += 0.12f * relaxedOverlap.ratio
+        }
+
         val confidence = score.coerceIn(0f, 1f)
         val disposition = when {
             confidence >= AUTO_ACCEPT_THRESHOLD -> MatchDisposition.AUTO_ACCEPT
@@ -138,6 +154,56 @@ object SourceIdentityMatcher {
             else -> MatchDisposition.REJECT
         }
         return IdentityMatch(candidate, confidence, disposition, evidence)
+    }
+
+    private data class RelaxedOverlap(val count: Int, val denominator: Int) {
+        val ratio: Float get() = if (denominator <= 0) 0f else count.toFloat() / denominator.toFloat()
+    }
+
+    private fun relaxedSeriesBookOverlap(
+        incomingBooks: List<SourceBook>,
+        candidateBooks: List<CanonicalBookMatchInput>,
+        normalizedSeriesTitle: String
+    ): RelaxedOverlap {
+        if (incomingBooks.isEmpty() || candidateBooks.isEmpty()) return RelaxedOverlap(0, 0)
+        val used = linkedSetOf<Int>()
+        var matches = 0
+        incomingBooks.forEach { incoming ->
+            val incomingNormalized = normalizeBookForSeries(incoming.title, normalizedSeriesTitle)
+            val best = candidateBooks.indices
+                .filterNot { it in used }
+                .map { index ->
+                    val candidate = candidateBooks[index]
+                    val candidateNormalized = normalizeBookForSeries(candidate.title, normalizedSeriesTitle)
+                    val titleScore = tokenSimilarity(incomingNormalized, candidateNormalized)
+                    val numberAgrees = incoming.seriesNumber != null && candidate.number != null &&
+                        kotlin.math.abs(incoming.seriesNumber - candidate.number) < 0.01
+                    Triple(index, titleScore, numberAgrees)
+                }
+                .maxByOrNull { (_, titleScore, numberAgrees) -> titleScore + if (numberAgrees) 0.35f else 0f }
+                ?: return@forEach
+            val (_, titleScore, numberAgrees) = best
+            if (titleScore >= 0.60f || (numberAgrees && titleScore >= 0.25f)) {
+                used += best.first
+                matches++
+            }
+        }
+        return RelaxedOverlap(matches, min(incomingBooks.size, candidateBooks.size))
+    }
+
+    private fun normalizeBookForSeries(value: String, normalizedSeriesTitle: String): String {
+        var normalized = normalizeTitle(value)
+        if (normalizedSeriesTitle.isNotBlank()) {
+            val seriesTokens = normalizedSeriesTitle.split(' ').filter { it.length > 1 }.toSet()
+            normalized = normalized.split(' ')
+                .filterNot { it in seriesTokens }
+                .joinToString(" ")
+        }
+        return normalized
+            .replace(Regex("\\b(книга|том|часть|частина|book|volume|vol)\\b"), " ")
+            .replace(Regex("\\b\\d+(?:[.,]\\d+)?\\b"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     private fun scoreBook(
@@ -168,7 +234,7 @@ object SourceIdentityMatcher {
                 evidence += "author overlap"
             } else {
                 score -= 0.12f
-                evidence += "conflicting authors"
+                evidence += "conflicting authors incoming=${incomingAuthors.sorted()} canonical=${candidateAuthors.sorted()}"
             }
         }
 

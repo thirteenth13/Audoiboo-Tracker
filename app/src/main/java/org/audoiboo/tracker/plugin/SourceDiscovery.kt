@@ -102,12 +102,9 @@ class SourceDiscoveryEngine(
                     info("provider $id SEARCH q=${index + 1}/${searchQueries.size} '${query.title.take(100)}' hits=${hits.size} first=${hits.firstOrNull()?.series?.url}")
                 }
 
+                val beforeInspected = inspectedBookUrls.size
+                val beforeMatches = matchedSearchBooks.size
                 val fingerprint = hits.take(4).joinToString("|") { SourceKeys.normalizeUrl(it.series.url) }
-                if (fingerprint.isNotBlank() && fingerprint == lastFingerprint) repeatedFingerprintCount++
-                else {
-                    lastFingerprint = fingerprint.takeIf { it.isNotBlank() }
-                    repeatedFingerprintCount = if (fingerprint.isBlank()) 0 else 1
-                }
 
                 hits.take(12).forEach { candidate ->
                     val url = candidate.series.url
@@ -115,6 +112,18 @@ class SourceDiscoveryEngine(
                     val bookUrl = if (canResolveBookHits) canonicalPluginBookUrl(id, url) else null
                     if (bookUrl != null) {
                         if (!inspectedBookUrls.add(normalizedUrl)) return@forEach
+
+                        val searchTitleBook = SourceBook(
+                            sourceId = id,
+                            remoteId = candidate.series.remoteId,
+                            url = bookUrl,
+                            title = candidate.series.title,
+                            authors = candidate.series.authors,
+                            seriesTitle = canonical.title
+                        )
+                        val searchTitleMatch = SourceIdentityMatcher.bestBookMatch(searchTitleBook, canonical.books)
+                            ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+
                         val resolvedBook = try {
                             bookProvider!!.loadBook(bookUrl)
                         } catch (t: Throwable) {
@@ -123,22 +132,38 @@ class SourceDiscoveryEngine(
                             error("provider $id BOOK_SEARCH_LOOKUP error=${t.javaClass.simpleName}:${t.message} url=$bookUrl", t)
                             null
                         } ?: return@forEach
-                        val match = SourceIdentityMatcher.bestBookMatch(resolvedBook, canonical.books)
+
+                        val resolvedMatch = SourceIdentityMatcher.bestBookMatch(resolvedBook, canonical.books)
                             ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
-                            ?: return@forEach
+                        val match = resolvedMatch ?: searchTitleMatch
+                        if (match == null) {
+                            if (inspectedBookUrls.size <= 8) {
+                                info("provider $id BOOK_SKIP searchTitle='${candidate.series.title.take(100)}' resolvedTitle='${resolvedBook.title.take(100)}' url=${resolvedBook.url}")
+                            }
+                            return@forEach
+                        }
+
                         val key = match.value.id
                         if (key !in matchedSearchBooks) {
+                            val title = if (resolvedMatch != null) resolvedBook.title else candidate.series.title
                             val normalizedBook = resolvedBook.copy(
+                                title = title,
                                 seriesTitle = canonical.title,
                                 seriesNumber = resolvedBook.seriesNumber ?: match.value.number
                             )
                             matchedSearchBooks[key] = normalizedBook to match.value
-                            info("provider $id BOOK_MATCH canonical='${match.value.title}' source='${resolvedBook.title}' confidence=${"%.3f".format(match.confidence)} url=${resolvedBook.url}")
+                            val via = if (resolvedMatch != null) "bookLookup" else "searchTitle"
+                            info("provider $id BOOK_MATCH via=$via canonical='${match.value.title}' source='${normalizedBook.title}' confidence=${"%.3f".format(match.confidence)} url=${resolvedBook.url}")
                         }
                     } else if (isPlausibleSeriesCandidate(id, url)) {
                         addCandidate(candidates, candidate, rawCandidateLimit)
                     }
                 }
+
+                val madeProgress = inspectedBookUrls.size > beforeInspected || matchedSearchBooks.size > beforeMatches
+                if (!madeProgress && fingerprint.isNotBlank() && fingerprint == lastFingerprint) repeatedFingerprintCount++
+                else repeatedFingerprintCount = if (fingerprint.isBlank()) 0 else 1
+                lastFingerprint = fingerprint.takeIf { it.isNotBlank() }
 
                 if (repeatedFingerprintCount >= 4) {
                     info("provider $id SEARCH short-circuit repeated result fingerprint after ${index + 1} queries")

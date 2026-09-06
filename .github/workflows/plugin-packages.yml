@@ -6,6 +6,8 @@ on:
     paths:
       - "plugins/**"
       - "tools/build_plugin_packages.py"
+      - "tools/check_plugin_version_bumps.py"
+      - ".github/workflows/plugin-packages.yml"
   workflow_dispatch:
 
 permissions:
@@ -19,6 +21,9 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Verify plugin version bumps
+        if: github.event_name == 'push'
+        run: python3 tools/check_plugin_version_bumps.py HEAD HEAD^
       - name: Build deterministic packages and catalog hashes
         run: python3 tools/build_plugin_packages.py
       - name: Verify package contents

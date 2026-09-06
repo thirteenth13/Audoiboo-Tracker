@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.audoiboo.tracker.plugin.CatalogLibrarySourcePlugin
 import org.audoiboo.tracker.plugin.DeviceWebViewResolutionRuntime
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 
@@ -65,6 +66,7 @@ class AudoibooApp : Application() {
         PlayerTagStore.initialize(this)
         PlayerStateStore.initialize(this)
         DeviceWebViewResolutionRuntime.initialize(this)
+        CatalogLibrarySourcePlugin.initialize(this)
 
         // Source discovery must see enabled package plugins from the first Activity frame.
         // initialize() is idempotent, so later callers remain safe and cheap.

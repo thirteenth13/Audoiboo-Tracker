@@ -21,8 +21,10 @@ data class SeriesDiscoveryFinding(
  * work inside one source stays sequential to avoid flooding a site. Individual failures are isolated.
  *
  * Some sites do not have a useful series search, but their normal search can find an author. For
- * those sources we also search by known author names, then hydrate the returned book pages and let
- * the normal series matcher decide whether the linked series belongs to the canonical entry.
+ * those sources we also search by known author names. A provider may also expose a narrower series
+ * name than the catalog (for example catalog cycle "Сфера Миров" vs provider series "Игра Кота").
+ * In that case the provider series is accepted when its hydrated books strongly overlap canonical
+ * books, even if the series titles themselves do not match.
  */
 class SourceDiscoveryEngine(
     private val registry: SourcePluginRegistry,
@@ -42,17 +44,12 @@ class SourceDiscoveryEngine(
             knownBooks = canonical.books.map { KnownBook(it.title, it.number, it.authors) }
         )
         val searchQueries = buildList {
-            // Prefer the exact series title first.
             add(baseQuery)
-
-            // Author fallback: on several audiobook sites this is more reliable than series search.
             canonical.authors
                 .map { it.trim() }
                 .filter { it.isNotBlank() }
                 .take(3)
                 .forEach { author -> add(baseQuery.copy(title = author)) }
-
-            // Known volume titles are the final bounded fallback.
             canonical.books
                 .sortedBy { it.number ?: Double.MAX_VALUE }
                 .take(4)
@@ -83,9 +80,7 @@ class SourceDiscoveryEngine(
         canonical: CanonicalSeriesMatchInput,
         searchQueries: List<SeriesSearchQuery>
     ): List<SeriesDiscoveryFinding> {
-        // Keep a wider raw pool than the final result cap so one noisy query cannot prevent the
-        // author fallback from being considered. Limit each query to two fresh hits for fairness.
-        val rawCandidateLimit = (maxCandidatesPerSource * 2).coerceAtMost(20)
+        val rawCandidateLimit = (maxCandidatesPerSource * 3).coerceAtMost(20)
         val candidates = mutableListOf<SeriesCandidate>()
 
         val directDiscovery = plugin as? SeriesDiscoveryProvider
@@ -96,7 +91,7 @@ class SourceDiscoveryEngine(
                 if (t is CancellationException) throw t
                 emptyList()
             }
-            hits.take(2).forEach { addCandidate(candidates, it, rawCandidateLimit) }
+            hits.take(3).forEach { addCandidate(candidates, it, rawCandidateLimit) }
         }
 
         val search = plugin as? SeriesSearchProvider
@@ -109,7 +104,7 @@ class SourceDiscoveryEngine(
                     if (t is CancellationException) throw t
                     return@queryLoop
                 }
-                hits.take(2).forEach { addCandidate(candidates, it, rawCandidateLimit) }
+                hits.take(3).forEach { addCandidate(candidates, it, rawCandidateLimit) }
             }
         }
 
@@ -137,25 +132,89 @@ class SourceDiscoveryEngine(
                 }
             } else emptyList()
 
-            val match = SourceIdentityMatcher.bestSeriesMatch(
+            val seriesMatch = SourceIdentityMatcher.bestSeriesMatch(
                 incoming = hydrated,
                 incomingBooks = books,
                 candidates = listOf(canonical)
-            ) ?: return@candidateLoop
-            if (match.disposition != MatchDisposition.REJECT) {
-                findings += SeriesDiscoveryFinding(
-                    sourceId = plugin.descriptor.id,
-                    series = hydrated,
-                    books = books,
-                    confidence = match.confidence,
-                    disposition = match.disposition,
-                    evidence = match.evidence
-                )
+            )
+
+            val overlapMatch = matchByCanonicalBooks(books, canonical)
+            val accepted = when {
+                seriesMatch != null && seriesMatch.disposition != MatchDisposition.REJECT -> {
+                    SeriesDiscoveryFinding(
+                        sourceId = plugin.descriptor.id,
+                        series = hydrated,
+                        books = books,
+                        confidence = seriesMatch.confidence,
+                        disposition = seriesMatch.disposition,
+                        evidence = seriesMatch.evidence
+                    )
+                }
+                overlapMatch != null -> {
+                    SeriesDiscoveryFinding(
+                        sourceId = plugin.descriptor.id,
+                        series = hydrated,
+                        books = books,
+                        confidence = overlapMatch.first,
+                        disposition = MatchDisposition.AUTO_ACCEPT,
+                        evidence = overlapMatch.second
+                    )
+                }
+                else -> null
             }
+
+            if (accepted != null) findings += accepted
         }
+
         return findings
             .sortedByDescending { it.confidence }
             .take(maxCandidatesPerSource)
+    }
+
+    /**
+     * Fallback for sites whose own series taxonomy differs from the catalog hierarchy.
+     * Two strong canonical book matches are enough to link the provider series. One match is enough
+     * only when the author also overlaps, which prevents an unrelated same-title book from linking.
+     */
+    private fun matchByCanonicalBooks(
+        books: List<SourceBook>,
+        canonical: CanonicalSeriesMatchInput
+    ): Pair<Float, List<String>>? {
+        if (books.isEmpty() || canonical.books.isEmpty()) return null
+
+        val matchedCanonicalIds = linkedSetOf<String>()
+        var authorSupportedMatches = 0
+        books.forEach { incoming ->
+            val match = SourceIdentityMatcher.bestBookMatch(incoming, canonical.books)
+                ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                ?: return@forEach
+            if (!matchedCanonicalIds.add(match.value.id)) return@forEach
+
+            val incomingAuthors = incoming.authors
+                .map { SourceIdentityMatcher.normalizeAuthor(it.name) }
+                .filter { it.isNotBlank() }
+                .toSet()
+            val canonicalAuthors = match.value.authors
+                .map(SourceIdentityMatcher::normalizeAuthor)
+                .filter { it.isNotBlank() }
+                .toSet()
+            if (incomingAuthors.isNotEmpty() && canonicalAuthors.isNotEmpty() &&
+                incomingAuthors.intersect(canonicalAuthors).isNotEmpty()
+            ) {
+                authorSupportedMatches++
+            }
+        }
+
+        val count = matchedCanonicalIds.size
+        val accepted = count >= 2 || (count == 1 && authorSupportedMatches == 1)
+        if (!accepted) return null
+
+        val confidence = (0.95f + (count - 1).coerceAtLeast(0) * 0.01f).coerceAtMost(0.99f)
+        return confidence to buildList {
+            add("canonical book overlap: $count")
+            if (authorSupportedMatches > 0) add("author-supported book matches: $authorSupportedMatches")
+            add("provider series title may be a nested/alternate catalog series")
+        }
     }
 
     private fun addCandidate(

@@ -117,7 +117,8 @@ object SourceIdentityMatcher {
                 evidence += "author overlap"
             } else {
                 score -= 0.18f
-                evidence += "conflicting authors incoming=${incomingAuthors.sorted()} canonical=${candidateAuthors.sorted()}"
+                evidence += "conflicting authors"
+                evidence += "author details incoming=${incomingAuthors.sorted()} canonical=${candidateAuthors.sorted()}"
             }
         }
 
@@ -234,7 +235,8 @@ object SourceIdentityMatcher {
                 evidence += "author overlap"
             } else {
                 score -= 0.12f
-                evidence += "conflicting authors incoming=${incomingAuthors.sorted()} canonical=${candidateAuthors.sorted()}"
+                evidence += "conflicting authors"
+                evidence += "author details incoming=${incomingAuthors.sorted()} canonical=${candidateAuthors.sorted()}"
             }
         }
 

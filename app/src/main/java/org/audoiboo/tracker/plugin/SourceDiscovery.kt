@@ -102,11 +102,20 @@ class SourceDiscoveryEngine(
                     info("provider $id SEARCH q=${index + 1}/${searchQueries.size} '${query.title.take(100)}' hits=${hits.size} first=${hits.firstOrNull()?.series?.url}")
                 }
 
+                val rankedHits = hits
+                    .map { it to searchCandidatePriority(id, it, canonical) }
+                    .sortedByDescending { it.second }
+                val relevantHits = rankedHits.filter { it.second >= 0.20f }.take(18)
+                val selectedHits = if (relevantHits.isNotEmpty()) relevantHits else rankedHits.take(4)
+                if (hits.size > 12 && selectedHits.isNotEmpty()) {
+                    info("provider $id SEARCH ranked total=${hits.size} selected=${selectedHits.size} bestScore=${"%.3f".format(selectedHits.first().second)} bestTitle='${selectedHits.first().first.series.title.take(100)}'")
+                }
+
                 val beforeInspected = inspectedBookUrls.size
                 val beforeMatches = matchedSearchBooks.size
-                val fingerprint = hits.take(4).joinToString("|") { SourceKeys.normalizeUrl(it.series.url) }
+                val fingerprint = selectedHits.take(4).joinToString("|") { SourceKeys.normalizeUrl(it.first.series.url) }
 
-                hits.take(12).forEach { candidate ->
+                selectedHits.forEach { (candidate, _) ->
                     val url = candidate.series.url
                     val normalizedUrl = SourceKeys.normalizeUrl(url)
                     val bookUrl = if (canResolveBookHits) canonicalPluginBookUrl(id, url) else null
@@ -222,6 +231,25 @@ class SourceDiscoveryEngine(
             .take(maxCandidatesPerSource)
         info("provider END id=$id findings=${result.size} hydrateErrors=$hydrateErrors loadErrors=$loadErrors bookLookupErrors=$bookLookupErrors candidates=${candidates.size}")
         return result
+    }
+
+    private fun searchCandidatePriority(
+        sourceId: String,
+        candidate: SeriesCandidate,
+        canonical: CanonicalSeriesMatchInput
+    ): Float {
+        val asBook = SourceBook(
+            sourceId = sourceId,
+            remoteId = candidate.series.remoteId,
+            url = candidate.series.url,
+            title = candidate.series.title,
+            authors = candidate.series.authors,
+            seriesTitle = canonical.title
+        )
+        val bookConfidence = SourceIdentityMatcher.bestBookMatch(asBook, canonical.books)?.confidence ?: 0f
+        if (!isPlausibleSeriesCandidate(sourceId, candidate.series.url)) return bookConfidence
+        val seriesConfidence = SourceIdentityMatcher.bestSeriesMatch(candidate.series, emptyList(), listOf(canonical))?.confidence ?: 0f
+        return maxOf(bookConfidence, (seriesConfidence + 0.15f).coerceAtMost(1f))
     }
 
     private fun buildBookSearchFinding(

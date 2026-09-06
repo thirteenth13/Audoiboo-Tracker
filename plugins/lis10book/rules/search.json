@@ -1,7 +1,7 @@
 {
   "operation": "seriesSearch",
   "searchUrl": "https://lis10book.com/?s={query}",
-  "maxResults": 12,
+  "maxResults": 50,
   "items": {
     "item": "a[href*='/audio/']",
     "title": "@text",

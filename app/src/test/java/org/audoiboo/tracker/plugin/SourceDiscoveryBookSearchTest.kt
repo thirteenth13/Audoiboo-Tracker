@@ -7,7 +7,7 @@ import org.junit.Test
 
 class SourceDiscoveryBookSearchTest {
     @Test
-    fun bookResultsAreHydratedAndLinkedWithoutSeriesPage() = runBlocking {
+    fun bookResultsUseSearchTitleWhenBookLookupTitleIsGeneric() = runBlocking {
         val plugin = FakePoleknigBookSearch()
         val canonical = CanonicalSeriesMatchInput(
             id = "series-1",
@@ -54,7 +54,7 @@ class SourceDiscoveryBookSearchTest {
                 SourceBook(
                     sourceId = "poleknig",
                     url = url,
-                    title = "Ранг неизвестен",
+                    title = "Аудиокниги слушать онлайн",
                     authors = listOf(SourceAuthor("Роман Прокофьев")),
                     seriesNumber = 9.0
                 )

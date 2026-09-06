@@ -21,7 +21,12 @@ class SourceIdentityMatcherTest {
 
     @Test
     fun reversedAuthorNameWithExactSeriesTitleAutoLinks() {
-        val incoming = SourceSeries("audioboo", "https://audioboo.example/stellar", "Стеллар", authors = listOf(SourceAuthor("Прокофьев Роман")))
+        val incoming = SourceSeries(
+            sourceId = "audioboo",
+            url = "https://audioboo.example/stellar",
+            title = "Стеллар",
+            authors = listOf(SourceAuthor("Прокофьев Роман"))
+        )
         val candidate = CanonicalSeriesMatchInput("catalog-stellar", "Стеллар", authors = listOf("Роман Прокофьев"))
         val match = SourceIdentityMatcher.bestSeriesMatch(incoming, emptyList(), listOf(candidate))!!
         assertEquals(MatchDisposition.AUTO_ACCEPT, match.disposition)

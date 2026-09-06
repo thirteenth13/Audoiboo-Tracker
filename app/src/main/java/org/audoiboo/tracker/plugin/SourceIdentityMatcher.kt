@@ -165,7 +165,10 @@ object SourceIdentityMatcher {
         val cleanedIncoming = normalizeBookForSeries(incoming.title, seriesTitle, incoming.authors.map { it.name })
         val cleanedCandidate = normalizeBookForSeries(candidate.title, seriesTitle, candidate.authors)
         val cleanedSimilarity = tokenSimilarity(cleanedIncoming, cleanedCandidate)
-        val decoratedExact = cleanedIncoming.isNotBlank() && cleanedIncoming == cleanedCandidate && incomingTitle != candidateTitle
+        val numberKnown = incoming.seriesNumber != null && candidate.number != null
+        val numberAgrees = numberKnown && kotlin.math.abs(incoming.seriesNumber!! - candidate.number!!) < 0.01
+        val numberConflicts = numberKnown && !numberAgrees
+        val decoratedExact = !numberConflicts && cleanedIncoming.isNotBlank() && cleanedIncoming == cleanedCandidate && incomingTitle != candidateTitle
         val titleSimilarity = max(rawSimilarity, cleanedSimilarity)
         var score = when {
             incomingTitle.isNotBlank() && incomingTitle == candidateTitle -> { evidence += "exact book title"; 0.96f }
@@ -179,9 +182,15 @@ object SourceIdentityMatcher {
             if (incomingAuthors.intersect(candidateAuthors).isNotEmpty()) { score += 0.08f; evidence += "author overlap" }
             else { score -= 0.12f; evidence += "conflicting authors"; evidence += "author details incoming=${incomingAuthors.sorted()} canonical=${candidateAuthors.sorted()}" }
         }
-        if (incoming.seriesNumber != null && candidate.number != null) {
-            if (kotlin.math.abs(incoming.seriesNumber - candidate.number) < 0.01) { score += 0.05f; evidence += "volume number agrees" }
-            else { score -= 0.08f; evidence += "volume number conflicts" }
+        if (numberKnown) {
+            if (numberAgrees) {
+                score += 0.05f
+                evidence += "volume number agrees"
+            } else {
+                evidence += "volume number conflicts"
+                if (incomingTitle != candidateTitle) score = min(score, REVIEW_THRESHOLD - 0.01f)
+                else score -= 0.08f
+            }
         }
         val confidence = score.coerceIn(0f, 1f)
         val disposition = when {

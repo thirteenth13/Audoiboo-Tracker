@@ -1,6 +1,7 @@
 package org.audoiboo.tracker.plugin
 
 import android.content.Context
+import android.util.Log
 import org.audoiboo.tracker.AudoibooDatabase
 import org.audoiboo.tracker.BookEntity
 import org.audoiboo.tracker.SeriesWithBooks
@@ -21,6 +22,7 @@ import org.audoiboo.tracker.SeriesWithBooks
  */
 object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
     private const val ID = "catalog-library"
+    private const val TAG = "AudoibooSeries"
 
     @Volatile
     private var appContext: Context? = null
@@ -32,7 +34,7 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
     override val descriptor = SourceDescriptor(
         id = ID,
         name = "Catalog library",
-        version = 2,
+        version = 3,
         hosts = setOf("catalog.local"),
         capabilities = setOf(SourceCapability.SERIES_LOOKUP)
     )
@@ -41,7 +43,12 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
 
     override suspend fun resolveSeries(url: String): SourceSeries? {
         if (!supports(url)) return null
-        val item = findSeries(url) ?: return null
+        val item = findSeries(url)
+        if (item == null) {
+            Log.w(TAG, "catalog resolve: MISS url=$url")
+            return null
+        }
+        Log.i(TAG, "catalog resolve: title=${item.series.name} id=${item.series.id} books=${item.books.size} url=$url")
         return SourceSeries(
             sourceId = descriptor.id,
             url = item.series.url,
@@ -56,10 +63,18 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
 
     override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> {
         require(series.sourceId == descriptor.id) { "Series belongs to another source" }
-        val context = appContext ?: return emptyList()
+        val context = appContext
+        if (context == null) {
+            Log.e(TAG, "catalog load: no appContext title=${series.title}")
+            return emptyList()
+        }
         val db = AudoibooDatabase.get(context)
         val dao = db.libraryDao()
-        val item = dao.library().firstOrNull { it.series.url == series.url } ?: return emptyList()
+        val item = dao.library().firstOrNull { it.series.url == series.url }
+        if (item == null) {
+            Log.e(TAG, "catalog load: Room series not found title=${series.title} url=${series.url}")
+            return emptyList()
+        }
 
         val baseBooks = item.books.sortedBy { it.sortIndex }.map { book ->
             SourceBook(
@@ -73,12 +88,40 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
             )
         }
 
-        val canonical = canonicalInput(item)
-        val findings = SourceDiscoveryEngine(PluginPackageRuntime.registry)
-            .discoverSeries(canonical, excludeSourceId = descriptor.id)
-            .filter { it.disposition == MatchDisposition.AUTO_ACCEPT }
+        val discoverable = PluginPackageRuntime.registry.plugins
+            .filter { plugin ->
+                plugin.descriptor.id != descriptor.id &&
+                    (SourceCapability.SERIES_SEARCH in plugin.descriptor.capabilities ||
+                        SourceCapability.SERIES_DISCOVERY in plugin.descriptor.capabilities)
+            }
+            .joinToString(",") { plugin ->
+                val caps = buildList {
+                    if (SourceCapability.SERIES_SEARCH in plugin.descriptor.capabilities) add("SEARCH")
+                    if (SourceCapability.SERIES_DISCOVERY in plugin.descriptor.capabilities) add("DISCOVERY")
+                }.joinToString("+")
+                "${plugin.descriptor.id}[$caps]"
+            }
+        Log.i(TAG, "catalog discovery START series=${item.series.name} canonicalBooks=${baseBooks.size} providers=$discoverable")
 
-        if (findings.isEmpty()) return baseBooks
+        val canonical = canonicalInput(item)
+        val allFindings = runCatching {
+            SourceDiscoveryEngine(PluginPackageRuntime.registry)
+                .discoverSeries(canonical, excludeSourceId = descriptor.id)
+        }.onFailure { error ->
+            Log.e(TAG, "catalog discovery FAILED series=${item.series.name}: ${error.javaClass.simpleName}: ${error.message}", error)
+        }.getOrDefault(emptyList())
+
+        allFindings.forEach { finding ->
+            Log.i(
+                TAG,
+                "catalog finding source=${finding.sourceId} disposition=${finding.disposition} confidence=${"%.3f".format(finding.confidence)} books=${finding.books.size} title=${finding.series.title} url=${finding.series.url} evidence=${finding.evidence.joinToString(" | ")}"
+            )
+        }
+        val findings = allFindings.filter { it.disposition == MatchDisposition.AUTO_ACCEPT }
+        if (findings.isEmpty()) {
+            Log.w(TAG, "catalog discovery END series=${item.series.name}: acceptedFindings=0 rawFindings=${allFindings.size}; no Room changes")
+            return baseBooks
+        }
 
         val candidates = canonical.books.toMutableList()
         val booksById = item.books.associateBy { it.id }.toMutableMap()
@@ -90,11 +133,14 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
         val now = System.currentTimeMillis()
 
         findings.forEach findingLoop@ { finding ->
-            SeriesBookMembershipPolicy.filter(finding.series, finding.books).forEach remoteLoop@ { remote ->
-                val existingMatch = SourceIdentityMatcher.bestBookMatch(
+            val memberBooks = SeriesBookMembershipPolicy.filter(finding.series, finding.books)
+            Log.i(TAG, "catalog source=${finding.sourceId}: providerBooks=${finding.books.size} membershipAccepted=${memberBooks.size}")
+            memberBooks.forEach remoteLoop@ { remote ->
+                val rawMatch = SourceIdentityMatcher.bestBookMatch(
                     incoming = remote,
                     candidates = candidates.filterNot { it.id in claimedExistingIds }
-                )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                )
+                val existingMatch = rawMatch?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
 
                 if (existingMatch != null) {
                     val existing = booksById[existingMatch.value.id]
@@ -109,9 +155,29 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
                             )
                             booksById[existing.id] = hydrated
                             roomUpdates += hydrated
+                            Log.i(
+                                TAG,
+                                "catalog book HYDRATE source=${finding.sourceId} remote='${remote.title}' -> canonical='${existing.title}' confidence=${"%.3f".format(existingMatch.confidence)} oldUrl=${existing.url} newUrl=${remote.url} cover=${!remote.coverUrl.isNullOrBlank()}"
+                            )
+                        } else {
+                            Log.i(
+                                TAG,
+                                "catalog book KEEP_REAL source=${finding.sourceId} remote='${remote.title}' -> canonical='${existing.title}' confidence=${"%.3f".format(existingMatch.confidence)} existingUrl=${existing.url}"
+                            )
                         }
+                    } else {
+                        Log.w(TAG, "catalog book MATCH_ID_MISSING source=${finding.sourceId} remote='${remote.title}' matchedId=${existingMatch.value.id}")
                     }
                     return@remoteLoop
+                }
+
+                if (rawMatch != null) {
+                    Log.w(
+                        TAG,
+                        "catalog book NOT_AUTO source=${finding.sourceId} remote='${remote.title}' best='${rawMatch.value.title}' disposition=${rawMatch.disposition} confidence=${"%.3f".format(rawMatch.confidence)} evidence=${rawMatch.evidence.joinToString(" | ")}"
+                    )
+                } else {
+                    Log.w(TAG, "catalog book NO_MATCH source=${finding.sourceId} remote='${remote.title}' number=${remote.seriesNumber} url=${remote.url}")
                 }
 
                 val promotedBook = remote.copy(
@@ -140,6 +206,7 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
                 )
                 booksById[newId] = newEntity
                 roomUpdates += newEntity
+                Log.i(TAG, "catalog book PROMOTE source=${finding.sourceId} title='${remote.title}' number=${remote.seriesNumber} sortIndex=${newEntity.sortIndex} url=${remote.url}")
 
                 candidates += CanonicalBookMatchInput(
                     id = "promoted:${syntheticIndex++}",
@@ -152,7 +219,18 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
 
         if (roomUpdates.isNotEmpty()) {
             dao.upsertBooks(roomUpdates)
+            Log.i(TAG, "catalog Room UPSERT series=${item.series.name} updates=${roomUpdates.size} hydrated=${roomUpdates.count { it.id in item.books.map(BookEntity::id).toSet() }} promoted=${promoted.size}")
+        } else {
+            Log.w(TAG, "catalog Room UPSERT series=${item.series.name}: updates=0 despite accepted findings=${findings.size}")
         }
+
+        val finalBooks = dao.seriesWithBooks(item.series.id)?.books.orEmpty().sortedBy { it.sortIndex }
+        finalBooks.forEachIndexed { index, book ->
+            val source = PluginPackageRuntime.registry.forUrl(book.url, SourceCapability.BOOK_LOOKUP)?.descriptor?.id
+                ?: if (supports(book.url)) descriptor.id else "unknown"
+            Log.i(TAG, "catalog final ${index + 1}/${finalBooks.size} source=$source title='${book.title}' url=${book.url} cover=${!book.coverUrl.isNullOrBlank()}")
+        }
+        Log.i(TAG, "catalog discovery END series=${item.series.name} finalRoomBooks=${finalBooks.size} returned=${baseBooks.size + promoted.size}")
 
         return (baseBooks + promoted)
             .distinctBy { book ->

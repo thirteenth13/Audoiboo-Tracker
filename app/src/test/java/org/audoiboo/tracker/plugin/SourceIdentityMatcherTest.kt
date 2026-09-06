@@ -35,6 +35,28 @@ class SourceIdentityMatcherTest {
     }
 
     @Test
+    fun decoratedAudiobooBookTitleMatchesCanonicalVolume() {
+        val incoming = SourceBook(
+            sourceId = "audioboo",
+            url = "https://audioboo.example/prometey",
+            title = "Прокофьев Роман - Стеллар 09. Прометей",
+            authors = listOf(SourceAuthor("Прокофьев Роман")),
+            seriesTitle = "Стеллар",
+            seriesNumber = 9.0
+        )
+        val candidate = CanonicalBookMatchInput(
+            id = "prometey",
+            title = "Прометей",
+            authors = listOf("Роман Прокофьев"),
+            number = 9.0
+        )
+        val match = SourceIdentityMatcher.bestBookMatch(incoming, listOf(candidate))!!
+        assertEquals(MatchDisposition.AUTO_ACCEPT, match.disposition)
+        assertEquals("prometey", match.value.id)
+        assertTrue(match.evidence.contains("decorated provider title resolves to canonical title"))
+    }
+
+    @Test
     fun exactSeriesWithStrongVolumeOverlapOverridesNoisyProviderAuthor() {
         val incoming = SourceSeries(sourceId = "audioboo", url = "https://audioboo.example/stellar", title = "Стеллар", authors = listOf(SourceAuthor("Исполнитель сайта")))
         val books = listOf(

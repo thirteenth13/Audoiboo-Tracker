@@ -128,10 +128,10 @@ object SourceIdentityMatcher {
         if (incomingBooks.isEmpty() || candidateBooks.isEmpty()) return RelaxedOverlap(0, 0)
         val used = linkedSetOf<Int>(); var matches = 0
         incomingBooks.forEach { incoming ->
-            val incomingNormalized = normalizeBookForSeries(incoming.title, normalizedSeriesTitle)
+            val incomingNormalized = normalizeBookForSeries(incoming.title, normalizedSeriesTitle, incoming.authors.map { it.name })
             val best = candidateBooks.indices.filterNot { it in used }.map { index ->
                 val candidate = candidateBooks[index]
-                val candidateNormalized = normalizeBookForSeries(candidate.title, normalizedSeriesTitle)
+                val candidateNormalized = normalizeBookForSeries(candidate.title, normalizedSeriesTitle, candidate.authors)
                 val titleScore = tokenSimilarity(incomingNormalized, candidateNormalized)
                 val numberAgrees = incoming.seriesNumber != null && candidate.number != null && kotlin.math.abs(incoming.seriesNumber - candidate.number) < 0.01
                 Triple(index, titleScore, numberAgrees)
@@ -142,13 +142,14 @@ object SourceIdentityMatcher {
         return RelaxedOverlap(matches, min(incomingBooks.size, candidateBooks.size))
     }
 
-    private fun normalizeBookForSeries(value: String, normalizedSeriesTitle: String): String {
-        var normalized = normalizeTitle(value)
-        if (normalizedSeriesTitle.isNotBlank()) {
-            val seriesTokens = normalizedSeriesTitle.split(' ').filter { it.length > 1 }.toSet()
-            normalized = normalized.split(' ').filterNot { it in seriesTokens }.joinToString(" ")
+    private fun normalizeBookForSeries(value: String, normalizedSeriesTitle: String, authors: List<String> = emptyList()): String {
+        var tokens = normalizeTitle(value).split(' ').filter { it.isNotBlank() }
+        val removable = buildSet {
+            normalizedSeriesTitle.split(' ').filter { it.length > 1 }.forEach(::add)
+            authors.flatMap { normalizeAuthor(it).split(' ') }.filter { it.length > 1 }.forEach(::add)
         }
-        return normalized
+        tokens = tokens.filterNot { it in removable }
+        return tokens.joinToString(" ")
             .replace(Regex("\\b(книга|том|часть|частина|book|volume|vol)\\b"), " ")
             .replace(Regex("\\b\\d+(?:[.,]\\d+)?\\b"), " ")
             .replace(Regex("\\s+"), " ")
@@ -157,10 +158,18 @@ object SourceIdentityMatcher {
 
     private fun scoreBook(incoming: SourceBook, candidate: CanonicalBookMatchInput): IdentityMatch<CanonicalBookMatchInput> {
         val evidence = mutableListOf<String>()
-        val incomingTitle = normalizeTitle(incoming.title); val candidateTitle = normalizeTitle(candidate.title)
-        val titleSimilarity = tokenSimilarity(incomingTitle, candidateTitle)
+        val incomingTitle = normalizeTitle(incoming.title)
+        val candidateTitle = normalizeTitle(candidate.title)
+        val rawSimilarity = tokenSimilarity(incomingTitle, candidateTitle)
+        val seriesTitle = normalizeTitle(incoming.seriesTitle.orEmpty())
+        val cleanedIncoming = normalizeBookForSeries(incoming.title, seriesTitle, incoming.authors.map { it.name })
+        val cleanedCandidate = normalizeBookForSeries(candidate.title, seriesTitle, candidate.authors)
+        val cleanedSimilarity = tokenSimilarity(cleanedIncoming, cleanedCandidate)
+        val decoratedExact = cleanedIncoming.isNotBlank() && cleanedIncoming == cleanedCandidate && incomingTitle != candidateTitle
+        val titleSimilarity = max(rawSimilarity, cleanedSimilarity)
         var score = when {
             incomingTitle.isNotBlank() && incomingTitle == candidateTitle -> { evidence += "exact book title"; 0.96f }
+            decoratedExact -> { evidence += "decorated provider title resolves to canonical title"; 0.96f }
             titleSimilarity >= 0.9f -> { evidence += "similar book title"; 0.78f * titleSimilarity }
             else -> 0.58f * titleSimilarity
         }

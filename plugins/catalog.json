@@ -7,7 +7,7 @@
       "version": 12,
       "apiVersion": 1,
       "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/baza-knig-12.abplugin",
-      "sha256": "effd7759c70d6f9a02834f5e36e78c95013f78143e0ae48178459581c24bc334",
+      "sha256": "36a75522f8ff33ca3ae8aec9d08d910ad662436014f80e3c0a2dc7a5f9fa8887",
       "description": "Серії, пошук серій, книги та декларативний WebView mediaCapture для Baza-Knig; v9 переносить логіку пошуку аудіотреків у плагін і використовує послідовну активацію треків для багатофайлових книг."
     },
     {
@@ -34,7 +34,7 @@
       "version": 6,
       "apiVersion": 1,
       "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/lis10book-6.abplugin",
-      "sha256": "5de150e5a01d2b0cb40a29a7f3f26ce6ebabf8141c46d049e144613b63f78256",
+      "sha256": "ebf0d3ac481152be5f8747d7e8cbec3c2e2cd371eb7faf78fb68a9bf0b31cd0b",
       "description": "Книги, цикли, пошук серій та декларативний WebView mediaCapture Lis10book; v4 переносить DOM/network/performance збір аудіотреків у плагін."
     },
     {

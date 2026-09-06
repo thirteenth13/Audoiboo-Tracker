@@ -2,11 +2,11 @@ package org.audoiboo.tracker
 
 internal object SourceDiscoveryThrottle {
     /**
-     * Series refresh is an explicit user action and is expected to re-check all enabled providers.
-     * A previous empty discovery result must not hide newly fixed/enabled plugins for six hours.
-     * Callers that really need throttling can still pass an explicit intervalMs.
+     * Prevent only an immediate duplicate pass from the same refresh pipeline. A real user refresh
+     * a few seconds later still re-checks every enabled provider, so fixed/enabled plugins are not
+     * hidden behind a long cache interval.
      */
-    const val DEFAULT_INTERVAL_MS: Long = 0L
+    const val DEFAULT_INTERVAL_MS: Long = 5_000L
 
     fun shouldRun(
         lastSuccessAt: Long,

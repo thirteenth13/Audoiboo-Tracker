@@ -1,7 +1,7 @@
 {
   "operation": "seriesSearch",
   "searchUrl": "https://baza-knig.info/index.php?do=search&subaction=search&story={query}",
-  "maxResults": 12,
+  "maxResults": 50,
   "items": {
     "item": "article.abook-item h2.abook-title a",
     "title": "@text",

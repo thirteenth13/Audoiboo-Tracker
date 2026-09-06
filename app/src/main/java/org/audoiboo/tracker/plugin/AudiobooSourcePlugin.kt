@@ -2,15 +2,18 @@ package org.audoiboo.tracker.plugin
 
 import org.audoiboo.tracker.AudiobooFastParser
 import java.net.URI
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
-object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, DownloadResolver {
+object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvider, DownloadResolver {
     override val descriptor = SourceDescriptor(
         id = "audioboo",
         name = "Audioboo",
-        version = 1,
+        version = 2,
         hosts = setOf("audioboo.org", "www.audioboo.org"),
         capabilities = setOf(
             SourceCapability.SERIES_LOOKUP,
+            SourceCapability.SERIES_DISCOVERY,
             SourceCapability.DOWNLOAD_RESOLUTION
         )
     )
@@ -43,6 +46,20 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, DownloadResolver {
                 coverUrl = book.coverUrl
             )
         }
+    }
+
+    /**
+     * Audioboo exposes stable cycle URLs but no useful conventional text-search endpoint.
+     * Build the bounded cycle URL from the canonical title and let the normal discovery matcher
+     * validate the resolved title/books before it is accepted.
+     */
+    override suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
+        val title = canonical.title.trim()
+        if (title.isBlank()) return emptyList()
+        val encoded = URLEncoder.encode(title, StandardCharsets.UTF_8.name()).replace("+", "%20")
+        val candidateUrl = "https://audioboo.org/xfsearch/cikl/$encoded/"
+        val resolved = resolveSeries(candidateUrl) ?: return emptyList()
+        return listOf(SeriesCandidate(resolved))
     }
 
     override suspend fun resolveDownloads(book: SourceBook): List<DownloadCandidate> {

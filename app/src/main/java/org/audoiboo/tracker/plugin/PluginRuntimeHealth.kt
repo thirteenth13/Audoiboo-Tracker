@@ -21,11 +21,26 @@ class PluginRuntimeHealth(
 
     @Synchronized
     fun recordFailure(pluginId: String, version: Int, reason: String): PluginRuntimeHealthState {
+        val sanitized = sanitizeReason(reason)
         val old = read(pluginId, version)
+
+        // Network/service failures are not evidence that an installed plugin package is corrupt.
+        // Counting timeouts toward automatic quarantine can move the active package away while the
+        // current plugin instance still points at its old directory; every later call then fails with
+        // "Entrypoint file is missing". Preserve the existing structural-failure count, but do not
+        // increment or quarantine for transient transport failures.
+        if (isTransientTransportFailure(sanitized)) {
+            return old ?: PluginRuntimeHealthState(
+                failures = 0,
+                lastFailureAt = clockMillis(),
+                lastReason = sanitized
+            )
+        }
+
         val state = PluginRuntimeHealthState(
             failures = (old?.failures ?: 0) + 1,
             lastFailureAt = clockMillis(),
-            lastReason = sanitizeReason(reason)
+            lastReason = sanitized
         )
         write(pluginId, version, state)
         return state
@@ -69,10 +84,31 @@ class PluginRuntimeHealth(
 
     private fun stateFile(pluginId: String, version: Int): File = File(root, "$pluginId/$version.failures")
 
+    private fun isTransientTransportFailure(value: String): Boolean {
+        val normalized = value.lowercase()
+        return TRANSIENT_TRANSPORT_MARKERS.any(normalized::contains)
+    }
+
     private fun sanitizeReason(value: String): String = value
         .replace('\r', ' ')
         .replace('\n', ' ')
         .trim()
         .take(2048)
         .ifBlank { "Plugin runtime failure" }
+
+    private companion object {
+        val TRANSIENT_TRANSPORT_MARKERS = listOf(
+            "timeout",
+            "timed out",
+            "socket closed",
+            "connection reset",
+            "connection refused",
+            "failed to connect",
+            "unable to resolve host",
+            "unknown host",
+            "network is unreachable",
+            "unexpected end of stream",
+            "stream was reset"
+        )
+    }
 }

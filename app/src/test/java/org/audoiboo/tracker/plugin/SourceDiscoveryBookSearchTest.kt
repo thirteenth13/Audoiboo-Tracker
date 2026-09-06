@@ -27,6 +27,7 @@ class SourceDiscoveryBookSearchTest {
         assertEquals(listOf("Ранг неизвестен"), finding.books.map { it.title })
         assertEquals("Звездная Кровь", finding.books.single().seriesTitle)
         assertEquals(9.0, finding.books.single().seriesNumber)
+        assertEquals(listOf("https://poleknig.com/books/212841"), plugin.loadedUrls)
         assertTrue(plugin.loadedUrls.none { it.contains("novelties") })
     }
 
@@ -43,10 +44,22 @@ class SourceDiscoveryBookSearchTest {
 
         override fun supports(url: String) = url.contains("poleknig.com")
 
-        override suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate> = listOf(
-            SeriesCandidate(SourceSeries("poleknig", url = "https://poleknig.com/books/novelties", title = "Все аудиокниги")),
-            SeriesCandidate(SourceSeries("poleknig", url = "https://poleknig.com/books/212841", title = "Ранг неизвестен"))
-        )
+        override suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate> = buildList {
+            add(SeriesCandidate(SourceSeries("poleknig", url = "https://poleknig.com/books/novelties", title = "Все аудиокниги")))
+            repeat(20) { index ->
+                add(
+                    SeriesCandidate(
+                        SourceSeries(
+                            "poleknig",
+                            url = "https://poleknig.com/books/${100000 + index}",
+                            title = "Посторонняя книга $index"
+                        )
+                    )
+                )
+            }
+            // The useful hit is deliberately beyond the old take(12) window.
+            add(SeriesCandidate(SourceSeries("poleknig", url = "https://poleknig.com/books/212841", title = "Ранг неизвестен")))
+        }
 
         override suspend fun loadBook(url: String): SourceBook? {
             loadedUrls += url

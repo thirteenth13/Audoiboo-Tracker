@@ -35,6 +35,48 @@ class SourceIdentityMatcherTest {
     }
 
     @Test
+    fun decoratedAudiobooBookTitleMatchesCanonicalVolume() {
+        val incoming = SourceBook(
+            sourceId = "audioboo",
+            url = "https://audioboo.example/prometey",
+            title = "Прокофьев Роман - Стеллар 09. Прометей",
+            authors = listOf(SourceAuthor("Прокофьев Роман")),
+            seriesTitle = "Стеллар",
+            seriesNumber = 9.0
+        )
+        val candidate = CanonicalBookMatchInput(
+            id = "prometey",
+            title = "Прометей",
+            authors = listOf("Роман Прокофьев"),
+            number = 9.0
+        )
+        val match = SourceIdentityMatcher.bestBookMatch(incoming, listOf(candidate))!!
+        assertEquals(MatchDisposition.AUTO_ACCEPT, match.disposition)
+        assertEquals("prometey", match.value.id)
+        assertTrue(match.evidence.contains("decorated provider title resolves to canonical title"))
+    }
+
+    @Test
+    fun conflictingExplicitVolumeNumberRejectsDecoratedCrossVolumeMatch() {
+        val incoming = SourceBook(
+            sourceId = "audio-source",
+            url = "https://audio.test/2",
+            title = "Звездная кровь 2",
+            authors = listOf(SourceAuthor("Роман Прокофьев")),
+            seriesNumber = 2.0
+        )
+        val candidate = CanonicalBookMatchInput(
+            id = "book-1",
+            title = "Звездная кровь 1",
+            authors = listOf("Роман Прокофьев"),
+            number = 1.0
+        )
+        val match = SourceIdentityMatcher.bestBookMatch(incoming, listOf(candidate))!!
+        assertEquals(MatchDisposition.REJECT, match.disposition)
+        assertTrue(match.evidence.contains("volume number conflicts"))
+    }
+
+    @Test
     fun exactSeriesWithStrongVolumeOverlapOverridesNoisyProviderAuthor() {
         val incoming = SourceSeries(sourceId = "audioboo", url = "https://audioboo.example/stellar", title = "Стеллар", authors = listOf(SourceAuthor("Исполнитель сайта")))
         val books = listOf(

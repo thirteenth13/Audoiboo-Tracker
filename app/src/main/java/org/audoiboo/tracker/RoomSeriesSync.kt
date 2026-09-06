@@ -45,8 +45,8 @@ internal data class RoomSeriesSyncResult(
 
 /**
  * Room-native add/update path routed through the active source plugin registry.
- * High-confidence cross-source matches reuse canonical series/books instead of creating duplicates.
- * Ambiguous matches are returned to the UI for an explicit accept/reject decision before mutation.
+ * Canonical series are a union across providers: a partial provider refresh may add/hydrate books,
+ * but never removes books learned from the catalog or another provider.
  */
 internal object RoomSeriesSync {
     private const val DISCOVERY_PREFS = "source_discovery"
@@ -103,7 +103,26 @@ internal object RoomSeriesSync {
             reviewResolution?.takeIf { !it.accept }?.let { add(it.candidateSeriesId) }
         }
 
-        val seriesMatch = if (mappedSeries == null && directSeries == null && acceptedDecisionSeries == null && forcedAcceptedSeries == null) {
+        // A provider URL may already have created a standalone series before catalog federation was
+        // introduced. Prefer an AUTO_ACCEPT catalog canonical even when that direct series exists,
+        // then retire the old duplicate below.
+        val catalogMatch = if (mappedSeries == null && forcedAcceptedSeries == null && acceptedDecisionSeries == null) {
+            SourceIdentityMatcher.bestSeriesMatch(
+                incoming = resolved,
+                incomingBooks = sourceBooks,
+                candidates = library
+                    .filter { it.series.url.startsWith("catalog://", ignoreCase = true) }
+                    .filterNot { it.series.id in rejectedSeriesIds }
+                    .filterNot { it.series.id == directSeries?.series?.id }
+                    .map(::canonicalSeriesInput)
+            )
+        } else null
+        val catalogMatchedSeries = catalogMatch
+            ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+            ?.value?.id
+            ?.let { id -> library.firstOrNull { it.series.id == id } }
+
+        val seriesMatch = if (mappedSeries == null && directSeries == null && acceptedDecisionSeries == null && forcedAcceptedSeries == null && catalogMatchedSeries == null) {
             SourceIdentityMatcher.bestSeriesMatch(
                 incoming = resolved,
                 incomingBooks = sourceBooks,
@@ -130,11 +149,11 @@ internal object RoomSeriesSync {
 
         val autoMatchedSeries = seriesMatch
             ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
-            ?.value
-            ?.id
+            ?.value?.id
             ?.let { id -> library.firstOrNull { it.series.id == id } }
 
-        val selected = mappedSeries ?: directSeries ?: forcedAcceptedSeries ?: acceptedDecisionSeries ?: autoMatchedSeries
+        val selected = mappedSeries ?: forcedAcceptedSeries ?: acceptedDecisionSeries ?: catalogMatchedSeries ?: autoMatchedSeries ?: directSeries
+        val duplicateDirectSeries = directSeries?.takeIf { selected != null && it.series.id != selected.series.id }
         val canonicalSeriesId = selected?.series?.id ?: UUID.randomUUID().toString()
         val existingBooks = selected?.books.orEmpty()
         val existingBookById = existingBooks.associateBy { it.id }
@@ -161,7 +180,7 @@ internal object RoomSeriesSync {
             val now = System.currentTimeMillis()
             val seriesEntity = when {
                 selected == null -> SeriesEntity(canonicalSeriesId, resolved.title, resolved.url, now)
-                directSeries != null -> selected.series.copy(name = resolved.title, url = resolved.url, updatedAt = now)
+                directSeries != null && selected.series.id == directSeries.series.id -> selected.series.copy(name = resolved.title, url = resolved.url, updatedAt = now)
                 else -> selected.series.copy(updatedAt = now)
             }
             dao.upsertSeries(seriesEntity)
@@ -169,20 +188,13 @@ internal object RoomSeriesSync {
             nestedTargets.groupBy { it.second.series.id }.forEach { (_, entries) ->
                 val target = entries.first().second
                 val targetBooksByUrl = target.books.associateBy { SourceKeys.normalizeUrl(it.url) }
-
                 target.books.forEach { existing ->
-                    val pseudo = SourceBook(
-                        sourceId = plugin.descriptor.id,
-                        url = existing.url,
-                        title = existing.title,
-                        seriesTitle = resolved.title
-                    )
+                    val pseudo = SourceBook(plugin.descriptor.id, existing.url, existing.title, seriesTitle = resolved.title)
                     val number = SeriesBookMembershipPolicy.inferredNestedVolumeNumber(resolved, pseudo)
                     if (number != null && existing.sortIndex != number - 1) {
                         dao.upsertBooks(listOf(existing.copy(sortIndex = (number - 1).coerceAtLeast(0), updatedAt = now)))
                     }
                 }
-
                 entries.forEach { (source, _) ->
                     val normalizedUrl = SourceKeys.normalizeUrl(source.url)
                     val directTarget = targetBooksByUrl[normalizedUrl]
@@ -190,25 +202,15 @@ internal object RoomSeriesSync {
                     val number = SeriesBookMembershipPolicy.inferredNestedVolumeNumber(resolved, source)
                     val entity = when (val existing = directTarget ?: anywhere) {
                         null -> BookEntity(
-                            id = "${target.series.id}::${source.url}",
-                            seriesId = target.series.id,
-                            title = source.title,
-                            url = source.url,
-                            author = sourceAuthor(source),
-                            coverUrl = source.coverUrl,
-                            status = "NEW",
-                            archiveUrl = null,
-                            sortIndex = number?.minus(1)?.coerceAtLeast(0)
-                                ?: ((target.books.maxOfOrNull { it.sortIndex } ?: -1) + 1),
-                            updatedAt = now
+                            id = "${target.series.id}::${source.url}", seriesId = target.series.id,
+                            title = source.title, url = source.url, author = sourceAuthor(source), coverUrl = source.coverUrl,
+                            status = "NEW", archiveUrl = null,
+                            sortIndex = number?.minus(1)?.coerceAtLeast(0) ?: ((target.books.maxOfOrNull { it.sortIndex } ?: -1) + 1), updatedAt = now
                         )
                         else -> existing.copy(
-                            seriesId = target.series.id,
-                            title = source.title,
-                            author = sourceAuthor(source) ?: existing.author,
-                            coverUrl = source.coverUrl ?: existing.coverUrl,
-                            sortIndex = number?.minus(1)?.coerceAtLeast(0) ?: existing.sortIndex,
-                            updatedAt = now
+                            seriesId = target.series.id, title = source.title,
+                            author = sourceAuthor(source) ?: existing.author, coverUrl = source.coverUrl ?: existing.coverUrl,
+                            sortIndex = number?.minus(1)?.coerceAtLeast(0) ?: existing.sortIndex, updatedAt = now
                         )
                     }
                     dao.upsertBooks(listOf(entity))
@@ -223,9 +225,7 @@ internal object RoomSeriesSync {
                 val contentMatch = if (mapped == null && direct == null) {
                     SourceIdentityMatcher.bestBookMatch(
                         incoming = source,
-                        candidates = existingBooks
-                            .filterNot { it.id in usedCanonicalBookIds }
-                            .map(::canonicalBookInput)
+                        candidates = existingBooks.filterNot { it.id in usedCanonicalBookIds }.map(::canonicalBookInput)
                     )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
                 } else null
                 val contentMatched = contentMatch?.value?.id?.let(existingBookById::get)
@@ -243,76 +243,77 @@ internal object RoomSeriesSync {
                         title = if (sameCanonicalUrl) source.title else canonical.title,
                         author = sourceAuthor(source) ?: canonical.author,
                         coverUrl = source.coverUrl ?: canonical.coverUrl,
-                        sortIndex = if (directSeries != null && sameCanonicalUrl) sourceIndex else canonical.sortIndex,
+                        sortIndex = if (directSeries != null && selected?.series?.id == directSeries.series.id && sameCanonicalUrl) sourceIndex else canonical.sortIndex,
                         updatedAt = now
                     )
                 } else {
                     val newId = "$canonicalSeriesId::${source.url}"
                     usedCanonicalBookIds += newId
                     BookEntity(
-                        id = newId,
-                        seriesId = canonicalSeriesId,
-                        title = source.title,
-                        url = source.url,
-                        author = sourceAuthor(source),
-                        coverUrl = source.coverUrl,
-                        status = "NEW",
-                        archiveUrl = null,
-                        sortIndex = if (selected == null) sourceIndex else nextSortIndex++,
-                        updatedAt = now
+                        id = newId, seriesId = canonicalSeriesId, title = source.title, url = source.url,
+                        author = sourceAuthor(source), coverUrl = source.coverUrl, status = "NEW", archiveUrl = null,
+                        sortIndex = if (selected == null) sourceIndex else nextSortIndex++, updatedAt = now
                     )
                 }
                 additions += entity
                 links += CanonicalSourceBookLink(entity.id, source, confidence)
             }
 
-            val retainedIds = if (directSeries != null) {
-                PrimarySourceBookRetentionPolicy.keepIds(
-                    existingBooks = existingBooks,
-                    incomingIds = additions.map { it.id },
-                    ownedByCurrentSource = plugin::supports
-                ).also { dao.deleteMissingBooks(canonicalSeriesId, it) }
-            } else {
-                (existingBooks.map { it.id } + additions.map { it.id }).distinct()
-            }
+            // Preserve every canonical row that another provider/catalog may know about. A provider
+            // returning 6 books after the catalog supplied 10 must leave all 10 intact.
             dao.upsertBooks(additions)
 
-            RoomSeriesSyncResult(canonicalSeriesId, seriesEntity.name, retainedIds.size)
+            // Retire a pre-federation standalone duplicate after its current provider snapshot has
+            // been linked into the preferred canonical series. Exact duplicate books are already
+            // represented by the canonical rows; unmatched legacy books are carried over first.
+            duplicateDirectSeries?.let { duplicate ->
+                val currentCanonical = (existingBooks + additions).associateBy { it.id }.toMutableMap()
+                var carryIndex = (currentCanonical.values.maxOfOrNull { it.sortIndex } ?: -1) + 1
+                val carried = duplicate.books.mapNotNull { old ->
+                    val match = SourceIdentityMatcher.bestBookMatch(
+                        incoming = SourceBook(
+                            sourceId = plugin.descriptor.id,
+                            url = old.url,
+                            title = old.title,
+                            authors = old.author?.let(::splitAuthors).orEmpty().map { org.audoiboo.tracker.plugin.SourceAuthor(it) },
+                            seriesTitle = resolved.title,
+                            seriesNumber = (old.sortIndex + 1).toDouble(),
+                            coverUrl = old.coverUrl
+                        ),
+                        candidates = currentCanonical.values.map(::canonicalBookInput)
+                    )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                    if (match != null) null
+                    else old.copy(seriesId = canonicalSeriesId, sortIndex = carryIndex++, updatedAt = now)
+                }
+                if (carried.isNotEmpty()) dao.upsertBooks(carried)
+                dao.deleteSeries(duplicate.series.id)
+            }
+
+            val finalCount = dao.seriesWithBooks(canonicalSeriesId)?.books?.size
+                ?: (existingBooks.map { it.id } + additions.map { it.id }).distinct().size
+            RoomSeriesSyncResult(canonicalSeriesId, seriesEntity.name, finalCount)
         }
 
-        val autoSeriesConfidence = seriesMatch
-            ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT && autoMatchedSeries != null }
+        val autoSeriesConfidence = catalogMatch
+            ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT && catalogMatchedSeries != null }
             ?.confidence
+            ?: seriesMatch?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT && autoMatchedSeries != null }?.confidence
         val userAcceptedConfidence = reviewResolution
             ?.takeIf { it.accept && forcedAcceptedSeries != null }
             ?.confidence
             ?: decisions.firstOrNull { it.decision == "USER_ACCEPTED" && it.canonicalSeriesId == canonicalSeriesId }?.confidence
 
         SourceMetadataRepository.recordSeriesSnapshot(
-            context = context,
-            canonicalSeriesId = canonicalSeriesId,
-            series = resolved,
-            books = links,
-            relationship = "SAME_SERIES",
-            confidence = userAcceptedConfidence ?: autoSeriesConfidence ?: 1f,
+            context = context, canonicalSeriesId = canonicalSeriesId, series = resolved, books = links,
+            relationship = "SAME_SERIES", confidence = userAcceptedConfidence ?: autoSeriesConfidence ?: 1f,
             userVerified = userAcceptedConfidence != null || (autoSeriesConfidence == null && selected != null)
         )
         rehomedLinks.forEach { (canonicalBookId, targetSeriesId, source) ->
-            SourceBookReassignment.record(
-                context = context,
-                canonicalBookId = canonicalBookId,
-                canonicalSeriesId = targetSeriesId,
-                book = source
-            )
+            SourceBookReassignment.record(context, canonicalBookId, targetSeriesId, source)
         }
         if (autoSeriesConfidence != null) {
             SourceMetadataRepository.recordSeriesMatchDecision(
-                context = context,
-                canonicalSeriesId = canonicalSeriesId,
-                series = resolved,
-                decision = "AUTO_ACCEPTED",
-                relationship = "SAME_SERIES",
-                confidence = autoSeriesConfidence
+                context, canonicalSeriesId, resolved, "AUTO_ACCEPTED", "SAME_SERIES", autoSeriesConfidence
             )
         }
 
@@ -342,7 +343,7 @@ internal object RoomSeriesSync {
 
         LibraryRepository.mirrorLegacy(context)
         RoomCoverSync.enqueueAll(context)
-        result
+        dao.seriesWithBooks(canonicalSeriesId)?.let { result.copy(books = it.books.size) } ?: result
     }
 
     private suspend fun discoverAndPersistAlternates(
@@ -351,57 +352,71 @@ internal object RoomSeriesSync {
         canonical: CanonicalSeriesMatchInput,
         excludeSourceId: String
     ) {
-        val findings = SourceDiscoveryEngine(PluginPackageRuntime.registry)
-            .discoverSeries(canonical, excludeSourceId)
+        val findings = SourceDiscoveryEngine(PluginPackageRuntime.registry).discoverSeries(canonical, excludeSourceId)
+        val db = AudoibooDatabase.get(context)
+        val dao = db.libraryDao()
 
         findings.forEach { finding ->
             val decisions = SourceMetadataRepository.seriesMatchDecisions(context, finding.series)
             val acceptedReview = SeriesDecisionPolicy.isUserAccepted(canonicalSeriesId, decisions)
-
             if (finding.disposition == MatchDisposition.REVIEW && !acceptedReview) {
                 if (SeriesDecisionPolicy.shouldQueueReview(canonicalSeriesId, decisions)) {
                     SourceMetadataRepository.recordSeriesMatchDecision(
-                        context = context,
-                        canonicalSeriesId = canonicalSeriesId,
-                        series = finding.series,
-                        decision = "REVIEW_PENDING",
-                        relationship = "SAME_SERIES",
-                        confidence = finding.confidence
+                        context, canonicalSeriesId, finding.series, "REVIEW_PENDING", "SAME_SERIES", finding.confidence
                     )
                 }
                 return@forEach
             }
-
             if (finding.disposition != MatchDisposition.AUTO_ACCEPT && !acceptedReview) return@forEach
             if (!SeriesDecisionPolicy.allowsAutomaticLink(canonicalSeriesId, decisions)) return@forEach
 
-            val canonicalBooks = canonical.books
-            val usedIds = linkedSetOf<String>()
-            val links = finding.books.mapNotNull { sourceBook ->
-                val match = SourceIdentityMatcher.bestBookMatch(
-                    incoming = sourceBook,
-                    candidates = canonicalBooks.filterNot { it.id in usedIds }
-                )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
-                    ?: return@mapNotNull null
-                usedIds += match.value.id
-                CanonicalSourceBookLink(match.value.id, sourceBook, match.confidence)
+            val links = db.withTransaction {
+                val snapshot = dao.seriesWithBooks(canonicalSeriesId) ?: return@withTransaction emptyList()
+                val canonicalBooks = snapshot.books.sortedBy { it.sortIndex }.toMutableList()
+                val usedIds = linkedSetOf<String>()
+                var nextSortIndex = (canonicalBooks.maxOfOrNull { it.sortIndex } ?: -1) + 1
+                val now = System.currentTimeMillis()
+                val sourceLinks = mutableListOf<CanonicalSourceBookLink>()
+
+                SeriesBookMembershipPolicy.filter(finding.series, finding.books).forEach { sourceBook ->
+                    val match = SourceIdentityMatcher.bestBookMatch(
+                        incoming = sourceBook,
+                        candidates = canonicalBooks.filterNot { it.id in usedIds }.map(::canonicalBookInput)
+                    )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                    val existing = match?.value?.id?.let { id -> canonicalBooks.firstOrNull { it.id == id } }
+                    val entity = if (existing != null) {
+                        usedIds += existing.id
+                        val replaceCatalogUrl = existing.url.startsWith("catalog://", ignoreCase = true)
+                        existing.copy(
+                            url = if (replaceCatalogUrl) sourceBook.url else existing.url,
+                            author = sourceAuthor(sourceBook) ?: existing.author,
+                            coverUrl = sourceBook.coverUrl ?: existing.coverUrl,
+                            updatedAt = now
+                        )
+                    } else {
+                        val numberIndex = sourceBook.seriesNumber?.takeIf { it >= 1.0 }?.toInt()?.minus(1)?.coerceAtLeast(0)
+                        val newId = "$canonicalSeriesId::${sourceBook.url}"
+                        usedIds += newId
+                        BookEntity(
+                            id = newId, seriesId = canonicalSeriesId, title = sourceBook.title, url = sourceBook.url,
+                            author = sourceAuthor(sourceBook), coverUrl = sourceBook.coverUrl, status = "NEW", archiveUrl = null,
+                            sortIndex = numberIndex ?: nextSortIndex++, updatedAt = now
+                        )
+                    }
+                    dao.upsertBooks(listOf(entity))
+                    canonicalBooks.removeAll { it.id == entity.id }
+                    canonicalBooks += entity
+                    sourceLinks += CanonicalSourceBookLink(entity.id, sourceBook, match?.confidence ?: 1f)
+                }
+                sourceLinks
             }
+
             SourceMetadataRepository.recordSeriesSnapshot(
-                context = context,
-                canonicalSeriesId = canonicalSeriesId,
-                series = finding.series,
-                books = links,
-                relationship = "SAME_SERIES",
-                confidence = finding.confidence,
-                userVerified = acceptedReview
+                context, canonicalSeriesId, finding.series, links, "SAME_SERIES", finding.confidence, acceptedReview
             )
             SourceMetadataRepository.recordSeriesMatchDecision(
-                context = context,
-                canonicalSeriesId = canonicalSeriesId,
-                series = finding.series,
-                decision = if (acceptedReview) "USER_ACCEPTED" else "AUTO_ACCEPTED",
-                relationship = "SAME_SERIES",
-                confidence = finding.confidence
+                context, canonicalSeriesId, finding.series,
+                if (acceptedReview) "USER_ACCEPTED" else "AUTO_ACCEPTED", "SAME_SERIES", finding.confidence
             )
         }
     }

@@ -23,6 +23,8 @@ import org.audoiboo.tracker.SeriesWithBooks
 object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
     private const val ID = "catalog-library"
     private const val TAG = "AudoibooSeries"
+    private const val DISCOVERY_PREFS = "source_discovery"
+    private const val DISCOVERY_LAST_SUCCESS_PREFIX = "last_success:"
 
     @Volatile
     private var appContext: Context? = null
@@ -34,7 +36,7 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
     override val descriptor = SourceDescriptor(
         id = ID,
         name = "Catalog library",
-        version = 3,
+        version = 4,
         hosts = setOf("catalog.local"),
         capabilities = setOf(SourceCapability.SERIES_LOOKUP)
     )
@@ -104,12 +106,25 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
         Log.i(TAG, "catalog discovery START series=${item.series.name} canonicalBooks=${baseBooks.size} providers=$discoverable")
 
         val canonical = canonicalInput(item)
-        val allFindings = runCatching {
+        val discoveryResult = runCatching {
             SourceDiscoveryEngine(PluginPackageRuntime.registry)
                 .discoverSeries(canonical, excludeSourceId = descriptor.id)
         }.onFailure { error ->
             Log.e(TAG, "catalog discovery FAILED series=${item.series.name}: ${error.javaClass.simpleName}: ${error.message}", error)
-        }.getOrDefault(emptyList())
+        }
+        val allFindings = discoveryResult.getOrDefault(emptyList())
+
+        // RoomSeriesSync normally runs alternate discovery after a provider refresh. Catalog refresh
+        // already performs the full federated pass here because it also promotes the returned audio
+        // URLs into Room. Mark the shared throttle only after a successful pass so RoomSeriesSync
+        // does not immediately repeat the same network work a second time.
+        if (discoveryResult.isSuccess) {
+            context.getSharedPreferences(DISCOVERY_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putLong("$DISCOVERY_LAST_SUCCESS_PREFIX${item.series.id}", System.currentTimeMillis())
+                .apply()
+            Log.i(TAG, "catalog discovery MARK_SUCCESS series=${item.series.name} id=${item.series.id}; duplicate Room discovery suppressed")
+        }
 
         allFindings.forEach { finding ->
             Log.i(
@@ -218,8 +233,9 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
         }
 
         if (roomUpdates.isNotEmpty()) {
+            val originalIds = item.books.map { it.id }.toSet()
             dao.upsertBooks(roomUpdates)
-            Log.i(TAG, "catalog Room UPSERT series=${item.series.name} updates=${roomUpdates.size} hydrated=${roomUpdates.count { it.id in item.books.map(BookEntity::id).toSet() }} promoted=${promoted.size}")
+            Log.i(TAG, "catalog Room UPSERT series=${item.series.name} updates=${roomUpdates.size} hydrated=${roomUpdates.count { it.id in originalIds }} promoted=${promoted.size}")
         } else {
             Log.w(TAG, "catalog Room UPSERT series=${item.series.name}: updates=0 despite accepted findings=${findings.size}")
         }

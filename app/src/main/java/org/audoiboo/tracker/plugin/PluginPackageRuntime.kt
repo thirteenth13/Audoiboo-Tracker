@@ -94,7 +94,22 @@ object PluginPackageRuntime {
 
     private fun rescanAndActivate(manager: SourcePluginManager, store: PluginPackageStore, runtime: DeclarativePluginRuntime): PluginStoreScanResult {
         val result = store.scanInstalled()
-        result.registrations.filter { store.isEnabled(it.packageId) }.forEach { activateRegistration(manager, it, runtime) }
+        result.registrations.forEach { registration ->
+            val id = registration.packageId
+            val discoverable = registration.descriptor?.capabilities?.let { capabilities ->
+                SourceCapability.SERIES_SEARCH in capabilities || SourceCapability.SERIES_DISCOVERY in capabilities
+            } == true
+            val shouldActivate = store.isEnabled(id) || (discoverable && !store.isDisabled(id))
+            if (!shouldActivate) return@forEach
+
+            // Older installs can predate the durable enabled marker. Once a validated package gains
+            // SERIES_SEARCH / SERIES_DISCOVERY, treat it as active unless the user explicitly disabled
+            // it. Persist the marker so every capable installed provider participates in federation.
+            if (!store.isEnabled(id) && !store.enable(id)) return@forEach
+            if (!activateRegistration(manager, registration, runtime)) {
+                store.disable(id)
+            }
+        }
         return result.copy(registrations = manager.registrations().filter { it.origin == PluginOrigin.PACKAGE }).also { lastScanRef = it }
     }
 

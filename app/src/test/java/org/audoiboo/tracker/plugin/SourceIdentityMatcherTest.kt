@@ -34,6 +34,39 @@ class SourceIdentityMatcherTest {
     }
 
     @Test
+    fun exactSeriesWithStrongVolumeOverlapOverridesNoisyProviderAuthor() {
+        val incoming = SourceSeries(
+            sourceId = "audioboo",
+            url = "https://audioboo.example/stellar",
+            title = "Стеллар",
+            authors = listOf(SourceAuthor("Исполнитель сайта"))
+        )
+        val books = listOf(
+            sourceBook("audioboo", "Стеллар. Инкарнатор", "Исполнитель сайта").copy(seriesNumber = 1.0),
+            sourceBook("audioboo", "Стеллар. Трибут", "Исполнитель сайта").copy(seriesNumber = 2.0),
+            sourceBook("audioboo", "Стеллар. Архонт", "Исполнитель сайта").copy(seriesNumber = 3.0)
+        )
+        val candidate = CanonicalSeriesMatchInput(
+            id = "catalog-stellar",
+            title = "Стеллар",
+            authors = listOf("Роман Прокофьев"),
+            books = listOf(
+                CanonicalBookMatchInput("1", "Инкарнатор", listOf("Роман Прокофьев"), 1.0),
+                CanonicalBookMatchInput("2", "Трибут", listOf("Роман Прокофьев"), 2.0),
+                CanonicalBookMatchInput("3", "Архонт", listOf("Роман Прокофьев"), 3.0)
+            )
+        )
+
+        val match = SourceIdentityMatcher.bestSeriesMatch(incoming, books, listOf(candidate))!!
+
+        assertEquals(MatchDisposition.AUTO_ACCEPT, match.disposition)
+        assertTrue(match.confidence >= 0.95f)
+        assertTrue("conflicting authors" in match.evidence)
+        assertTrue(match.evidence.any { it.startsWith("author details incoming=") })
+        assertTrue(match.evidence.any { it.contains("strong book overlap overrides author conflict") })
+    }
+
+    @Test
     fun sameSeriesTitleWithoutSupportingEvidenceNeedsReview() {
         val incoming = SourceSeries("other", url = "https://other.example/s", title = "Хроники")
         val candidate = CanonicalSeriesMatchInput("canonical", "Хроники")

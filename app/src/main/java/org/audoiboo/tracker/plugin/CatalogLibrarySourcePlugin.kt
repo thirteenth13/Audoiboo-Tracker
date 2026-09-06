@@ -76,11 +76,11 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
         val promoted = mutableListOf<SourceBook>()
         var syntheticIndex = 0
 
-        findings.forEach { finding ->
-            SeriesBookMembershipPolicy.filter(finding.series, finding.books).forEach { remote ->
+        findings.forEach findingLoop@ { finding ->
+            SeriesBookMembershipPolicy.filter(finding.series, finding.books).forEach remoteLoop@ { remote ->
                 val existing = SourceIdentityMatcher.bestBookMatch(remote, candidates)
                     ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
-                if (existing != null) return@forEach
+                if (existing != null) return@remoteLoop
 
                 val promotedBook = remote.copy(
                     sourceId = descriptor.id,

@@ -15,7 +15,11 @@ object PluginPackageRuntime {
 
     val store: PluginPackageStore? get() = storeRef
     val lastScan: PluginStoreScanResult? get() = lastScanRef
-    val registry: SourcePluginRegistry get() = BuiltInSourcePluginManager.instance.activeRegistry()
+    val registry: SourcePluginRegistry
+        get() {
+            val active = BuiltInSourcePluginManager.instance.activeRegistry().plugins
+            return SourcePluginRegistry(active + CatalogLibrarySourcePlugin)
+        }
     val registrations: List<SourcePluginRegistration> get() = BuiltInSourcePluginManager.instance.registrations()
 
     /** Returns the active installed package directory, including compatibility patches when needed. */

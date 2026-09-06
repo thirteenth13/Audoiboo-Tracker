@@ -1,5 +1,6 @@
 package org.audoiboo.tracker.plugin
 
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -29,6 +30,10 @@ class SourceDiscoveryEngine(
     private val registry: SourcePluginRegistry,
     private val maxCandidatesPerSource: Int = 5
 ) {
+    companion object {
+        private const val TAG = "AudoibooSeries"
+    }
+
     init {
         require(maxCandidatesPerSource in 1..20)
     }
@@ -63,8 +68,6 @@ class SourceDiscoveryEngine(
                     .take(2)
 
                 buildList {
-                    // Most site search boxes are simple text search, so put author and title into
-                    // the actual query string instead of relying only on knownAuthors metadata.
                     bookAuthors.forEach { author -> add(baseQuery.copy(title = "$author $title")) }
                     add(baseQuery.copy(title = title))
                 }
@@ -79,21 +82,34 @@ class SourceDiscoveryEngine(
             .distinctBy { SourceIdentityMatcher.normalizeTitle(it.title) }
             .filter { SourceIdentityMatcher.normalizeTitle(it.title) != normalizedSeriesTitle || it.title == canonical.title }
 
+        val providers = registry.plugins
+            .filterNot { it.descriptor.id == excludeSourceId }
+            .filter { plugin ->
+                SourceCapability.SERIES_SEARCH in plugin.descriptor.capabilities ||
+                    SourceCapability.SERIES_DISCOVERY in plugin.descriptor.capabilities
+            }
+
+        Log.i(
+            TAG,
+            "discovery START canonical='${canonical.title}' id=${canonical.id} books=${canonical.books.size} authors=${authors.joinToString()} queries=${searchQueries.size} exclude=$excludeSourceId providers=${providers.joinToString { it.descriptor.id }}"
+        )
+
         val findings = supervisorScope {
-            registry.plugins
-                .filterNot { it.descriptor.id == excludeSourceId }
-                .filter { plugin ->
-                    SourceCapability.SERIES_SEARCH in plugin.descriptor.capabilities ||
-                        SourceCapability.SERIES_DISCOVERY in plugin.descriptor.capabilities
-                }
+            providers
                 .map { plugin -> async { discoverSource(plugin, canonical, searchQueries) } }
                 .awaitAll()
                 .flatten()
         }
 
-        return findings
+        val result = findings
             .distinctBy { it.sourceId to SourceKeys.normalizeUrl(it.series.url) }
             .sortedWith(compareByDescending<SeriesDiscoveryFinding> { it.confidence }.thenBy { it.sourceId })
+
+        Log.i(
+            TAG,
+            "discovery END canonical='${canonical.title}' findings=${result.size} bySource=${result.groupingBy { it.sourceId }.eachCount()}"
+        )
+        return result
     }
 
     private suspend fun discoverSource(
@@ -101,11 +117,21 @@ class SourceDiscoveryEngine(
         canonical: CanonicalSeriesMatchInput,
         searchQueries: List<SeriesSearchQuery>
     ): List<SeriesDiscoveryFinding> {
-        // Book-by-book lookup needs a wider pool than generic series discovery. Keep it bounded, but
-        // large enough that several known volumes can each contribute a hit.
+        val id = plugin.descriptor.id
         val rawCandidateLimit = (canonical.books.size.coerceAtLeast(maxCandidatesPerSource) * 3)
             .coerceIn(maxCandidatesPerSource * 3, 60)
         val candidates = mutableListOf<SeriesCandidate>()
+        var directHitCount = 0
+        var searchHitCount = 0
+        var searchErrors = 0
+        var searchQueriesWithHits = 0
+        var hydrateErrors = 0
+        var loadErrors = 0
+
+        Log.i(
+            TAG,
+            "provider START id=$id caps=${plugin.descriptor.capabilities.joinToString()} candidateLimit=$rawCandidateLimit queries=${searchQueries.size}"
+        )
 
         val directDiscovery = plugin as? SeriesDiscoveryProvider
         if (SourceCapability.SERIES_DISCOVERY in plugin.descriptor.capabilities && directDiscovery != null) {
@@ -113,47 +139,77 @@ class SourceDiscoveryEngine(
                 directDiscovery.discoverSeries(canonical)
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
+                Log.e(TAG, "provider $id DISCOVERY error=${t.javaClass.simpleName}:${t.message}")
                 emptyList()
             }
+            directHitCount = hits.size
+            Log.i(TAG, "provider $id DISCOVERY hits=${hits.size}")
             hits.take(3).forEach { addCandidate(candidates, it, rawCandidateLimit) }
+        } else if (SourceCapability.SERIES_DISCOVERY in plugin.descriptor.capabilities) {
+            Log.w(TAG, "provider $id declares SERIES_DISCOVERY but is not SeriesDiscoveryProvider")
         }
 
         val search = plugin as? SeriesSearchProvider
         if (SourceCapability.SERIES_SEARCH in plugin.descriptor.capabilities && search != null) {
-            searchQueries.forEach queryLoop@ { query ->
+            searchQueries.forEachIndexed queryLoop@ { index, query ->
                 if (candidates.size >= rawCandidateLimit) return@queryLoop
                 val hits = try {
                     search.searchSeries(query)
                 } catch (t: Throwable) {
                     if (t is CancellationException) throw t
+                    searchErrors++
+                    Log.e(TAG, "provider $id SEARCH q=${index + 1}/${searchQueries.size} '${query.title.take(100)}' error=${t.javaClass.simpleName}:${t.message}")
                     return@queryLoop
                 }
-                // For a targeted book query the best result is normally first, but keep two in case
-                // the site ranks a text/ebook page before the audiobook page.
+                searchHitCount += hits.size
+                if (hits.isNotEmpty()) {
+                    searchQueriesWithHits++
+                    Log.i(
+                        TAG,
+                        "provider $id SEARCH q=${index + 1}/${searchQueries.size} '${query.title.take(100)}' hits=${hits.size} first=${hits.firstOrNull()?.series?.url}"
+                    )
+                }
                 hits.take(2).forEach { addCandidate(candidates, it, rawCandidateLimit) }
             }
+        } else if (SourceCapability.SERIES_SEARCH in plugin.descriptor.capabilities) {
+            Log.w(TAG, "provider $id declares SERIES_SEARCH but is not SeriesSearchProvider")
         }
 
+        Log.i(
+            TAG,
+            "provider $id CANDIDATES unique=${candidates.size} directHits=$directHitCount searchHits=$searchHitCount queriesWithHits=$searchQueriesWithHits searchErrors=$searchErrors"
+        )
+
         val findings = mutableListOf<SeriesDiscoveryFinding>()
-        candidates.forEach candidateLoop@ { candidate ->
-            if (candidate.series.sourceId != plugin.descriptor.id) return@candidateLoop
+        candidates.forEachIndexed candidateLoop@ { candidateIndex, candidate ->
+            if (candidate.series.sourceId != id) {
+                Log.w(TAG, "provider $id candidate ${candidateIndex + 1}: wrong sourceId=${candidate.series.sourceId} url=${candidate.series.url}")
+                return@candidateLoop
+            }
             val provider = plugin as? SeriesProvider
             val hydrated = if (provider != null) {
                 try {
                     provider.resolveSeries(candidate.series.url) ?: candidate.series
                 } catch (t: Throwable) {
                     if (t is CancellationException) throw t
+                    hydrateErrors++
+                    Log.e(TAG, "provider $id candidate ${candidateIndex + 1} RESOLVE error=${t.javaClass.simpleName}:${t.message} url=${candidate.series.url}")
                     candidate.series
                 }
             } else candidate.series
-            if (hydrated.sourceId != plugin.descriptor.id) return@candidateLoop
+            if (hydrated.sourceId != id) {
+                Log.w(TAG, "provider $id candidate ${candidateIndex + 1}: hydrated wrong sourceId=${hydrated.sourceId}")
+                return@candidateLoop
+            }
 
             val books = if (provider != null) {
                 try {
                     provider.loadSeriesBooks(hydrated)
-                        .filter { it.sourceId == plugin.descriptor.id }
+                        .filter { it.sourceId == id }
                 } catch (t: Throwable) {
                     if (t is CancellationException) throw t
+                    loadErrors++
+                    Log.e(TAG, "provider $id candidate ${candidateIndex + 1} LOAD_BOOKS error=${t.javaClass.simpleName}:${t.message} url=${hydrated.url}")
                     emptyList()
                 }
             } else emptyList()
@@ -167,11 +223,8 @@ class SourceDiscoveryEngine(
             val overlapMatch = matchByCanonicalBooks(books, canonical)
             val accepted = when {
                 overlapMatch != null -> {
-                    // Prefer direct canonical-book evidence over provider taxonomy. This is the key
-                    // path when, for example, a site calls a subset "Игра Кота" while the catalog
-                    // groups those books under a wider cycle.
                     SeriesDiscoveryFinding(
-                        sourceId = plugin.descriptor.id,
+                        sourceId = id,
                         series = hydrated,
                         books = books,
                         confidence = overlapMatch.first,
@@ -181,7 +234,7 @@ class SourceDiscoveryEngine(
                 }
                 seriesMatch != null && seriesMatch.disposition != MatchDisposition.REJECT -> {
                     SeriesDiscoveryFinding(
-                        sourceId = plugin.descriptor.id,
+                        sourceId = id,
                         series = hydrated,
                         books = books,
                         confidence = seriesMatch.confidence,
@@ -192,12 +245,25 @@ class SourceDiscoveryEngine(
                 else -> null
             }
 
+            val decision = accepted?.let { "${it.disposition}/${"%.3f".format(it.confidence)}" }
+                ?: seriesMatch?.let { "REJECT/${it.disposition}/${"%.3f".format(it.confidence)}" }
+                ?: "REJECT/no-match"
+            Log.i(
+                TAG,
+                "provider $id candidate ${candidateIndex + 1}/${candidates.size} title='${hydrated.title}' books=${books.size} decision=$decision overlap=${overlapMatch?.second?.joinToString(" | ").orEmpty()} seriesEvidence=${seriesMatch?.evidence?.joinToString(" | ").orEmpty()} url=${hydrated.url}"
+            )
+
             if (accepted != null) findings += accepted
         }
 
-        return findings
+        val result = findings
             .sortedByDescending { it.confidence }
             .take(maxCandidatesPerSource)
+        Log.i(
+            TAG,
+            "provider END id=$id findings=${result.size} hydrateErrors=$hydrateErrors loadErrors=$loadErrors candidates=${candidates.size}"
+        )
+        return result
     }
 
     /**

@@ -19,6 +19,10 @@ data class SeriesDiscoveryFinding(
  * Searches enabled SERIES_SEARCH providers and also runs bounded SERIES_DISCOVERY providers for
  * sources that cannot expose a normal text search. Independent sources run concurrently, while
  * work inside one source stays sequential to avoid flooding a site. Individual failures are isolated.
+ *
+ * Some sites do not have a useful series search, but their normal search can find an author. For
+ * those sources we also search by known author names, then hydrate the returned book pages and let
+ * the normal series matcher decide whether the linked series belongs to the canonical entry.
  */
 class SourceDiscoveryEngine(
     private val registry: SourcePluginRegistry,
@@ -38,7 +42,17 @@ class SourceDiscoveryEngine(
             knownBooks = canonical.books.map { KnownBook(it.title, it.number, it.authors) }
         )
         val searchQueries = buildList {
+            // Prefer the exact series title first.
             add(baseQuery)
+
+            // Author fallback: on several audiobook sites this is more reliable than series search.
+            canonical.authors
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .take(3)
+                .forEach { author -> add(baseQuery.copy(title = author)) }
+
+            // Known volume titles are the final bounded fallback.
             canonical.books
                 .sortedBy { it.number ?: Double.MAX_VALUE }
                 .take(4)
@@ -69,6 +83,9 @@ class SourceDiscoveryEngine(
         canonical: CanonicalSeriesMatchInput,
         searchQueries: List<SeriesSearchQuery>
     ): List<SeriesDiscoveryFinding> {
+        // Keep a wider raw pool than the final result cap so one noisy query cannot prevent the
+        // author fallback from being considered. Limit each query to two fresh hits for fairness.
+        val rawCandidateLimit = (maxCandidatesPerSource * 2).coerceAtMost(20)
         val candidates = mutableListOf<SeriesCandidate>()
 
         val directDiscovery = plugin as? SeriesDiscoveryProvider
@@ -79,25 +96,25 @@ class SourceDiscoveryEngine(
                 if (t is CancellationException) throw t
                 emptyList()
             }
-            hits.forEach { addCandidate(candidates, it) }
+            hits.take(2).forEach { addCandidate(candidates, it, rawCandidateLimit) }
         }
 
         val search = plugin as? SeriesSearchProvider
         if (SourceCapability.SERIES_SEARCH in plugin.descriptor.capabilities && search != null) {
             searchQueries.forEach queryLoop@ { query ->
-                if (candidates.size >= maxCandidatesPerSource) return@queryLoop
+                if (candidates.size >= rawCandidateLimit) return@queryLoop
                 val hits = try {
                     search.searchSeries(query)
                 } catch (t: Throwable) {
                     if (t is CancellationException) throw t
                     return@queryLoop
                 }
-                hits.forEach { addCandidate(candidates, it) }
+                hits.take(2).forEach { addCandidate(candidates, it, rawCandidateLimit) }
             }
         }
 
         val findings = mutableListOf<SeriesDiscoveryFinding>()
-        candidates.take(maxCandidatesPerSource).forEach candidateLoop@ { candidate ->
+        candidates.forEach candidateLoop@ { candidate ->
             if (candidate.series.sourceId != plugin.descriptor.id) return@candidateLoop
             val provider = plugin as? SeriesProvider
             val hydrated = if (provider != null) {
@@ -137,10 +154,16 @@ class SourceDiscoveryEngine(
             }
         }
         return findings
+            .sortedByDescending { it.confidence }
+            .take(maxCandidatesPerSource)
     }
 
-    private fun addCandidate(target: MutableList<SeriesCandidate>, candidate: SeriesCandidate) {
-        if (target.size >= maxCandidatesPerSource) return
+    private fun addCandidate(
+        target: MutableList<SeriesCandidate>,
+        candidate: SeriesCandidate,
+        limit: Int = maxCandidatesPerSource
+    ) {
+        if (target.size >= limit) return
         val normalized = SourceKeys.normalizeUrl(candidate.series.url)
         if (target.none { SourceKeys.normalizeUrl(it.series.url) == normalized }) target += candidate
     }

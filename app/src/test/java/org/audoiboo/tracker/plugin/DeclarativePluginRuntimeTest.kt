@@ -131,9 +131,10 @@ class DeclarativePluginRuntimeTest {
         val sandbox = PluginSandbox(PluginHttpTransport { request, _ ->
             requested += request.url
             val body = when (request.url) {
-                "https://pda.izib.uk/authors?l=%D0%A0" -> "<a href='/author1'>Other Author</a>"
-                "https://pda.izib.uk/authors?l=%D0%9F" -> "<a href='/author2176'>Роман Прокофьев</a>"
-                "https://pda.izib.uk/author2176" -> """
+                "https://izib.uk/authors?l=%D0%A0" -> "<a href='/author1'>Other Author</a>"
+                "https://izib.uk/authors?l=%D0%A0&p=2" -> "<a href='/author1'>Other Author</a>"
+                "https://izib.uk/authors?l=%D0%9F" -> "<a href='/author2176'>Роман Прокофьев</a>"
+                "https://izib.uk/author2176" -> """
                     <a href='/serie8524'>Звездная Кровь</a>
                     <a href='/serie9999'>Стеллар</a>
                 """.trimIndent()
@@ -154,9 +155,9 @@ class DeclarativePluginRuntimeTest {
         )
 
         assertEquals(1, results.size)
-        assertEquals("https://pda.izib.uk/serie8524", results.single().series.url)
+        assertEquals("https://izib.uk/serie8524", results.single().series.url)
         assertEquals("Звездная Кровь", results.single().series.title)
-        assertEquals(3, requested.size)
+        assertEquals(4, requested.size)
     }
 
     @Test
@@ -183,8 +184,8 @@ class DeclarativePluginRuntimeTest {
         )
 
         assertTrue(results.isEmpty())
-        assertEquals(2, requested.size)
-        assertTrue(requested.all { it.startsWith("https://pda.izib.uk/authors?l=") })
+        assertEquals(6, requested.size)
+        assertTrue(requested.all { it.startsWith("https://izib.uk/authors?l=") })
     }
 
     @Test

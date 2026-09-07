@@ -4,19 +4,19 @@
     {
       "id": "baza-knig",
       "name": "Baza-Knig",
-      "version": 13,
+      "version": 14,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/baza-knig-13.abplugin",
-      "sha256": "4b3773850db29b51ccd33d779909ed27a878da566a5183bf355cc8cbaf875200",
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/baza-knig-14.abplugin",
+      "sha256": "67f9ddb188245ccbd1d9c4a2bd8b00b617661c8064e516dbc3eb513c3a99155b",
       "description": "Серії, пошук серій, книги та декларативний WebView mediaCapture для Baza-Knig; v9 переносить логіку пошуку аудіотреків у плагін і використовує послідовну активацію треків для багатофайлових книг."
     },
     {
       "id": "knigavuhe",
       "name": "Knigavuhe",
-      "version": 11,
+      "version": 12,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-11.abplugin",
-      "sha256": "73df56712656a46a7c75a17a3d83f44c9228d9789b2cfa14e12f05f05c7d992e",
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/knigavuhe-12.abplugin",
+      "sha256": "5ae983cc4e2b8415c466fe2f054905b405890f14e6e316c827ad47b8c840ceb5",
       "description": "Цикли, пошук серій, книги та декларативний WebView mediaCapture Knigavuhe; v7 виправляє followLink для /series/ і /serie/ та нормалізує назву книги без префікса автора."
     },
     {
@@ -31,10 +31,10 @@
     {
       "id": "lis10book",
       "name": "Lis10book",
-      "version": 7,
+      "version": 8,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/lis10book-7.abplugin",
-      "sha256": "1001544d0bf8c05d69f6b9eb8cccf906b6d22bffa19a3fb334af41c4ec70d2dc",
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/lis10book-8.abplugin",
+      "sha256": "a90346e197ee9d722fddc244bcf3b295fc12ce34cd251c3f169ef25935c4b428",
       "description": "Книги, цикли, пошук серій та декларативний WebView mediaCapture Lis10book; v4 переносить DOM/network/performance збір аудіотреків у плагін."
     },
     {

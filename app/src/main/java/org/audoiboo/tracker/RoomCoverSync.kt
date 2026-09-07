@@ -1,6 +1,7 @@
 package org.audoiboo.tracker
 
 import android.content.Context
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -8,10 +9,22 @@ internal object RoomCoverSync {
     private const val INDEX_PREFS = "cover_index"
 
     suspend fun enqueueAll(context: Context) = withContext(Dispatchers.IO) {
-        // Metadata providers are intentionally low-volume. Process only a small pending batch on
-        // each normal library sync, then rebuild the cover index from the enriched Room snapshot.
-        BookMetadataEnrichment.enrichPending(context, limit = 8)
-        val library = LibraryRepository.snapshot(context)
+        // Cover/metadata enrichment is auxiliary work. A provider refresh may already have
+        // discovered and persisted valid source matches, so enrichment failures must not turn the
+        // whole series refresh into a false "Не вдалося оновити серію" result.
+        try {
+            BookMetadataEnrichment.enrichPending(context, limit = 8)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+        }
+
+        val library = try {
+            LibraryRepository.snapshot(context)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            return@withContext
+        }
+
         val editor = context.getSharedPreferences(INDEX_PREFS, Context.MODE_PRIVATE).edit().clear()
         library.forEach { group ->
             val series = normalize(group.series.name)
@@ -20,11 +33,19 @@ internal object RoomCoverSync {
                 val title = normalize(book.title)
                 editor.putString("$series|$title", url)
                 editor.putString("title|$title", url)
-                CoverCache.enqueue(context, url)
+                try {
+                    CoverCache.enqueue(context, url)
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                }
             }
         }
         editor.apply()
-        CoverCache.prune(context)
+        try {
+            CoverCache.prune(context)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+        }
     }
 
     fun lookup(context: Context, series: String?, title: String): String? {

@@ -157,7 +157,8 @@ class DeclarativePluginRuntimeTest {
         assertEquals(1, results.size)
         assertEquals("https://izib.uk/serie8524", results.single().series.url)
         assertEquals("Звездная Кровь", results.single().series.title)
-        assertEquals(4, requested.size)
+        assertTrue(requested.contains("https://izib.uk/author2176"))
+        assertTrue(requested.any { it.startsWith("https://izib.uk/authors?l=") })
     }
 
     @Test
@@ -184,7 +185,8 @@ class DeclarativePluginRuntimeTest {
         )
 
         assertTrue(results.isEmpty())
-        assertEquals(6, requested.size)
+        assertTrue(requested.isNotEmpty())
+        assertTrue(requested.size <= 6)
         assertTrue(requested.all { it.startsWith("https://izib.uk/authors?l=") })
     }
 

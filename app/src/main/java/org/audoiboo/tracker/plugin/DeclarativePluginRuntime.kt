@@ -373,7 +373,13 @@ class DeclarativePluginRuntime(
             val bookUrl = canonicalPluginBookUrl(manifest.id, resolveUrl(link, href)) ?: return@forEach
             val rawTitle = link.text().trim().trimStart('★', '☆').trim().takeIf { it.isNotBlank() } ?: return@forEach
             val title = stripAuthorSuffix(rawTitle, author)
-            val lightweight = SourceBook(manifest.id, bookUrl, title, authors = listOf(SourceAuthor(author)), seriesTitle = canonical.title)
+            val lightweight = SourceBook(
+                sourceId = manifest.id,
+                url = bookUrl,
+                title = title,
+                authors = listOf(SourceAuthor(author)),
+                seriesTitle = canonical.title
+            )
             val match = SourceIdentityMatcher.bestBookMatch(lightweight, canonical.books)
                 ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT } ?: return@forEach
             output += SourceBookRef(url = bookUrl, title = title, number = match.value.number)

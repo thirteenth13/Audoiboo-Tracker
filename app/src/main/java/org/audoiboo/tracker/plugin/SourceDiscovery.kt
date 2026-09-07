@@ -193,6 +193,34 @@ class SourceDiscoveryEngine(
                 warn("provider $id candidate ${candidateIndex + 1}: wrong sourceId=${candidate.series.sourceId} url=${candidate.series.url}")
                 return@candidateLoop
             }
+
+            val directBooks = candidate.series.books.mapNotNull { ref ->
+                val title = ref.title?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                SourceBook(
+                    sourceId = id,
+                    remoteId = ref.remoteId,
+                    url = ref.url,
+                    title = title,
+                    authors = candidate.series.authors,
+                    seriesTitle = canonical.title,
+                    seriesNumber = ref.number
+                )
+            }
+            val directOverlap = matchByCanonicalBooks(directBooks, canonical)
+            if (directOverlap != null) {
+                val accepted = SeriesDiscoveryFinding(
+                    sourceId = id,
+                    series = candidate.series,
+                    books = directBooks,
+                    confidence = directOverlap.first,
+                    disposition = MatchDisposition.AUTO_ACCEPT,
+                    evidence = directOverlap.second + "direct discovery refs accepted without series hydration"
+                )
+                info("provider $id candidate ${candidateIndex + 1}/${candidates.size} DIRECT_ACCEPT title='${candidate.series.title}' books=${directBooks.size} decision=${accepted.disposition}/${"%.3f".format(accepted.confidence)} url=${candidate.series.url}")
+                findings += accepted
+                return@candidateLoop
+            }
+
             val provider = plugin as? SeriesProvider
             val hydrated = if (provider != null) try {
                 provider.resolveSeries(candidate.series.url) ?: candidate.series

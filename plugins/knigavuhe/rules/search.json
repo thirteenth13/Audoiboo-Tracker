@@ -1,9 +1,9 @@
 {
   "operation": "seriesSearch",
   "searchUrl": "https://knigavuhe.org/search/?q={query}",
-  "maxResults": 12,
+  "maxResults": 50,
   "items": {
-    "item": "a[href*='/series/'], a[href*='/serie/']",
+    "item": "a[href*='/book/'], a[href*='/serie/'], a[href*='/series/']",
     "title": "@text",
     "link": "@href"
   }

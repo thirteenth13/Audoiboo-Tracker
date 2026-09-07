@@ -131,9 +131,8 @@ class DeclarativeSourcePlugin(
 
     override suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
         if (SourceCapability.SERIES_DISCOVERY !in manifest.capabilities) return emptyList()
-        if (manifest.id != "izib") return emptyList()
         return guarded {
-            runtime.discoverIzibSeries(manifest, canonical).map { candidate ->
+            runtime.discoverCanonicalSeries(manifest, canonical).map { candidate ->
                 candidate.copy(series = sanitizeSeries(candidate.series))
             }
         }

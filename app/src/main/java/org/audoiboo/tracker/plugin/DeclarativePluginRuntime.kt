@@ -215,29 +215,41 @@ class DeclarativePluginRuntime(
         if (expectedSeries.isBlank()) return emptyList()
         val session = sandbox.open(manifest)
 
-        // Author directories are effectively surname-oriented even when labels are rendered as
-        // "Name Surname". Try the last token first and paginate the selected letter directory.
-        val initials = authorTokens(author).asReversed().mapNotNull { it.firstOrNull() }.distinct()
+        val initials = authorTokens(author).mapNotNull { it.firstOrNull() }.distinct()
+        val rootDocument = session.httpGet("https://izib.uk/authors")
+            .takeIf { it.statusCode in 200..299 }
+            ?.let { Jsoup.parse(it.body, it.finalUrl) }
+        var remainingPages = maxAuthorPages.coerceIn(1, 24)
         var authorUrl: String? = null
+
         authorLoop@ for (initial in initials) {
+            if (remainingPages <= 0) break
             val encoded = URLEncoder.encode(initial.uppercaseChar().toString(), StandardCharsets.UTF_8.name())
-            for (page in 1..maxAuthorPages.coerceIn(1, 24)) {
-                val url = buildString {
-                    append("https://izib.uk/authors?l=")
-                    append(encoded)
-                    if (page > 1) append("&p=$page")
-                }
+            val firstPage = letterDirectoryUrl(
+                rootDocument = rootDocument,
+                initial = initial,
+                linkSelector = "a[href*='/authors']",
+                fallback = "https://izib.uk/authors?l=$encoded"
+            )
+            var page = 1
+            while (remainingPages > 0) {
+                val url = if (page == 1) firstPage else appendQueryParameter(firstPage, "p", page)
                 val response = session.httpGet(url)
-                if (response.statusCode !in 200..299) continue
+                remainingPages--
+                if (response.statusCode !in 200..299) {
+                    page++
+                    continue
+                }
                 val document = Jsoup.parse(response.body, response.finalUrl)
                 authorUrl = document.select("a[href*='/author']")
-                    .firstOrNull { sameAuthor(it.text(), author) }
+                    .firstOrNull { authorLinkMatches(it, author) }
                     ?.let { resolveUrl(it, it.attr("href")) }
                 if (authorUrl != null) break@authorLoop
-                // Stop once pagination no longer exposes a next page for this letter.
-                if (page > 1 && document.select("a[href*='&p=${page + 1}'], a[href*='?p=${page + 1}']").isEmpty()) break
+                if (document.select("a[href*='p=${page + 1}']").isEmpty()) break
+                page++
             }
         }
+
         val resolvedAuthorUrl = authorUrl ?: return emptyList()
         val authorResponse = session.httpGet(resolvedAuthorUrl)
         if (authorResponse.statusCode !in 200..299) return emptyList()
@@ -262,7 +274,7 @@ class DeclarativePluginRuntime(
         val refs = mutableListOf<SourceBookRef>()
         collectCanonicalBookRefs(authorDocument, "a[href*='/art']", manifest, canonical, author, refs)
         for (page in 2..4) {
-            val pageResponse = session.httpGet("$resolvedAuthorUrl${if ('?' in resolvedAuthorUrl) '&' else '?'}p=$page")
+            val pageResponse = session.httpGet(appendQueryParameter(resolvedAuthorUrl, "p", page))
             if (pageResponse.statusCode !in 200..299) continue
             collectCanonicalBookRefs(Jsoup.parse(pageResponse.body, pageResponse.finalUrl), "a[href*='/art']", manifest, canonical, author, refs)
             if (refs.distinctBy { SourceKeys.normalizeUrl(it.url) }.size >= canonical.books.size) break
@@ -276,29 +288,44 @@ class DeclarativePluginRuntime(
         val author = canonical.authors.firstOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
         val session = sandbox.open(manifest)
         val initials = authorTokens(author).asReversed().mapNotNull { it.firstOrNull() }.distinct()
+        val rootDocument = session.httpGet("https://baza-knig.info/authors")
+            .takeIf { it.statusCode in 200..299 }
+            ?.let { Jsoup.parse(it.body, it.finalUrl) }
         var authorUrl: String? = null
+        var remainingPages = 8
+
         authorLoop@ for (initial in initials) {
+            if (remainingPages <= 0) break
             val encoded = URLEncoder.encode(initial.uppercaseChar().toString(), StandardCharsets.UTF_8.name())
-            for (page in 1..8) {
-                val url = buildString {
-                    append("https://baza-knig.info/authors/let-")
-                    append(encoded)
-                    if (page > 1) append("?page=$page")
-                }
+            val firstPage = letterDirectoryUrl(
+                rootDocument = rootDocument,
+                initial = initial,
+                linkSelector = "a[href*='/authors/let-']",
+                fallback = "https://baza-knig.info/authors/let-$encoded"
+            )
+            var page = 1
+            while (remainingPages > 0) {
+                val url = if (page == 1) firstPage else appendQueryParameter(firstPage, "page", page)
                 val response = session.httpGet(url)
-                if (response.statusCode !in 200..299) continue
+                remainingPages--
+                if (response.statusCode !in 200..299) {
+                    page++
+                    continue
+                }
                 val document = Jsoup.parse(response.body, response.finalUrl)
                 authorUrl = document.select("a[href*='/avtor-']")
-                    .firstOrNull { sameAuthor(it.text(), author) }
+                    .firstOrNull { authorLinkMatches(it, author) }
                     ?.let { resolveUrl(it, it.attr("href")) }
                 if (authorUrl != null) break@authorLoop
-                if (page > 1 && document.select("a[href*='page=${page + 1}']").isEmpty()) break
+                if (document.select("a[href*='page=${page + 1}']").isEmpty()) break
+                page++
             }
         }
+
         val resolvedAuthorUrl = authorUrl ?: return emptyList()
         val refs = mutableListOf<SourceBookRef>()
         for (page in 1..4) {
-            val pageUrl = if (page == 1) resolvedAuthorUrl else "$resolvedAuthorUrl${if ('?' in resolvedAuthorUrl) '&' else '?'}page=$page"
+            val pageUrl = if (page == 1) resolvedAuthorUrl else appendQueryParameter(resolvedAuthorUrl, "page", page)
             val response = session.httpGet(pageUrl)
             if (response.statusCode !in 200..299) continue
             collectCanonicalBookRefs(
@@ -404,6 +431,35 @@ class DeclarativePluginRuntime(
         val expected = authorTokens(right).toSet()
         if (candidate.isEmpty() || expected.isEmpty()) return false
         return expected.all(candidate::contains)
+    }
+
+    private fun authorLinkMatches(link: Element, author: String): Boolean {
+        if (sameAuthor(link.text(), author)) return true
+        val href = SourceIdentityMatcher.normalizeTitle(link.attr("href"))
+        val slugTokens = authorTokens(author)
+            .map(::slugifyRussian)
+            .filter { it.length >= 3 }
+        return slugTokens.isNotEmpty() && slugTokens.all(href::contains)
+    }
+
+    private fun letterDirectoryUrl(
+        rootDocument: Element?,
+        initial: Char,
+        linkSelector: String,
+        fallback: String
+    ): String {
+        val expected = SourceIdentityMatcher.normalizeTitle(initial.uppercaseChar().toString())
+        return rootDocument
+            ?.select(linkSelector)
+            ?.firstOrNull { SourceIdentityMatcher.normalizeTitle(it.text()) == expected }
+            ?.let { resolveUrl(it, it.attr("href")) }
+            ?.takeIf { it.isNotBlank() }
+            ?: fallback
+    }
+
+    private fun appendQueryParameter(url: String, name: String, value: Int): String {
+        val separator = if ('?' in url) '&' else '?'
+        return "$url$separator$name=$value"
     }
 
     private fun authorTokens(value: String): List<String> = SourceIdentityMatcher.normalizeAuthor(value)

@@ -229,33 +229,40 @@ class DeclarativePluginRuntime(
     }
 
     /**
-     * Izib has a stable authors directory and author pages even though no stable generic search URL
-     * was verified. Prefer a real /serie match, but when the catalog series name differs from the
-     * canonical umbrella series, synthesize a candidate from canonical book hits on the author page.
+     * Izib exposes a huge paginated author directory. Use its letter filter instead of scanning
+     * the first global pages, then synthesize a candidate from matching books when no exact series
+     * page exists for the canonical umbrella series.
      */
     fun discoverIzibSeries(
         manifest: PluginPackageManifest,
         canonical: CanonicalSeriesMatchInput,
-        maxAuthorPages: Int = 12
+        maxAuthorPages: Int = 6
     ): List<SeriesCandidate> {
         requireCapability(manifest, SourceCapability.SERIES_DISCOVERY)
         if (manifest.id != "izib") return emptyList()
         val author = canonical.authors.firstOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
-        val expectedAuthor = SourceIdentityMatcher.normalizeTitle(author)
         val expectedSeries = SourceIdentityMatcher.normalizeTitle(canonical.title)
-        if (expectedAuthor.isBlank() || expectedSeries.isBlank()) return emptyList()
+        if (expectedSeries.isBlank()) return emptyList()
         val session = sandbox.open(manifest)
 
+        val initials = authorTokens(author).mapNotNull { it.firstOrNull() }.distinct()
         var authorUrl: String? = null
-        for (page in 1..maxAuthorPages.coerceIn(1, 12)) {
-            val url = if (page == 1) "https://pda.izib.uk/authors" else "https://pda.izib.uk/authors?p=$page"
-            val response = session.httpGet(url)
-            if (response.statusCode !in 200..299) continue
-            val document = Jsoup.parse(response.body, response.finalUrl)
-            authorUrl = document.select("a[href*='/author']")
-                .firstOrNull { link -> sameAuthor(link.text(), author) }
-                ?.let { link -> resolveUrl(link, link.attr("href")) }
-            if (authorUrl != null) break
+        authorLoop@ for (initial in initials) {
+            val encoded = URLEncoder.encode(initial.uppercaseChar().toString(), StandardCharsets.UTF_8.name())
+            for (page in 1..maxAuthorPages.coerceIn(1, 6)) {
+                val url = buildString {
+                    append("https://izib.uk/authors?l=")
+                    append(encoded)
+                    if (page > 1) append("&p=$page")
+                }
+                val response = session.httpGet(url)
+                if (response.statusCode !in 200..299) continue
+                val document = Jsoup.parse(response.body, response.finalUrl)
+                authorUrl = document.select("a[href*='/author']")
+                    .firstOrNull { link -> sameAuthor(link.text(), author) }
+                    ?.let { link -> resolveUrl(link, link.attr("href")) }
+                if (authorUrl != null) break@authorLoop
+            }
         }
         val resolvedAuthorUrl = authorUrl ?: return emptyList()
         val authorResponse = session.httpGet(resolvedAuthorUrl)
@@ -305,6 +312,7 @@ class DeclarativePluginRuntime(
                 author = author,
                 output = refs
             )
+            if (refs.distinctBy { SourceKeys.normalizeUrl(it.url) }.size >= canonical.books.size) break
         }
         val synthetic = syntheticSeriesCandidate(manifest.id, canonical, author, resolvedAuthorUrl, refs)
         session.requireOutputSize(synthetic.size)
@@ -469,9 +477,12 @@ class DeclarativePluginRuntime(
     }
 
     private fun sameAuthor(left: String, right: String): Boolean {
-        val a = authorTokens(left)
-        val b = authorTokens(right)
-        return a.isNotEmpty() && b.isNotEmpty() && (a == b || a.toSet() == b.toSet())
+        val candidate = authorTokens(left).toSet()
+        val expected = authorTokens(right).toSet()
+        if (candidate.isEmpty() || expected.isEmpty()) return false
+        // Author directory links often include counts such as "34 книги" / "17 аудиокниг".
+        // Ignore those extra tokens while still requiring every token from the requested author.
+        return expected.all(candidate::contains)
     }
 
     private fun authorTokens(value: String): List<String> =

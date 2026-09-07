@@ -88,13 +88,11 @@ object JsonDeclarativeEntrypointDecoder : DeclarativeEntrypointDecoder {
                     supplement = supplement
                 )
             }
-            "seriesSearch" -> {
-                DeclarativeEntrypoint.SeriesSearch(
-                    searchUrl = root.getString("searchUrl"),
-                    items = root.getJSONObject("items").toRepeatedFields(),
-                    maxResults = root.optInt("maxResults", 10).coerceIn(1, 50)
-                )
-            }
+            "seriesSearch" -> DeclarativeEntrypoint.SeriesSearch(
+                searchUrl = root.getString("searchUrl"),
+                items = root.getJSONObject("items").toRepeatedFields(),
+                maxResults = root.optInt("maxResults", 10).coerceIn(1, 50)
+            )
             "bookLookup" -> {
                 val book = root.getJSONObject("book")
                 DeclarativeEntrypoint.BookLookup(
@@ -108,14 +106,11 @@ object JsonDeclarativeEntrypointDecoder : DeclarativeEntrypointDecoder {
                     titleRegex = book.optString("titleRegex").takeIf { it.isNotBlank() }
                 )
             }
-            "downloadResolution" -> {
-                val items = root.getJSONObject("items")
-                DeclarativeEntrypoint.DownloadResolution(
-                    items = items.toRepeatedFields(),
-                    type = root.optString("type", DownloadType.ARCHIVE.name).let(DownloadType::valueOf),
-                    fileName = root.optString("fileName").takeIf { it.isNotBlank() }
-                )
-            }
+            "downloadResolution" -> DeclarativeEntrypoint.DownloadResolution(
+                items = root.getJSONObject("items").toRepeatedFields(),
+                type = root.optString("type", DownloadType.ARCHIVE.name).let(DownloadType::valueOf),
+                fileName = root.optString("fileName").takeIf { it.isNotBlank() }
+            )
             else -> error("Unsupported declarative operation")
         }
     }
@@ -130,10 +125,6 @@ object JsonDeclarativeEntrypointDecoder : DeclarativeEntrypointDecoder {
     )
 }
 
-/**
- * Executes declarative selectors inside the host sandbox. The package supplies only data/rules:
- * no reflection, Dex/Jar loading, Android Context, files or direct networking are exposed.
- */
 class DeclarativePluginRuntime(
     private val sandbox: PluginSandbox,
     private val decoder: DeclarativeEntrypointDecoder = JsonDeclarativeEntrypointDecoder
@@ -148,8 +139,7 @@ class DeclarativePluginRuntime(
         var document = Jsoup.parse(response.body, response.finalUrl)
         spec.followLink?.let { selector ->
             val follow = extract(document, selector)?.takeIf { it.isNotBlank() } ?: return@let
-            val followUrl = resolveUrl(document, follow)
-            val followed = session.httpGet(followUrl)
+            val followed = session.httpGet(resolveUrl(document, follow))
             if (followed.statusCode in 200..299) {
                 response = followed
                 document = Jsoup.parse(followed.body, followed.finalUrl)
@@ -158,17 +148,12 @@ class DeclarativePluginRuntime(
         var title = extract(document, spec.title)?.takeIf { it.isNotBlank() } ?: return null
         title = applyRegex(title, spec.titleRegex)
         val books = buildList {
-            spec.books?.let { fields -> addAll(extractBookRefs(document, fields)) }
-            spec.supplement?.let { supplement ->
-                addAll(loadSupplementRefs(session, document, title, supplement))
-            }
+            spec.books?.let { addAll(extractBookRefs(document, it)) }
+            spec.supplement?.let { addAll(loadSupplementRefs(session, document, title, it)) }
         }.distinctBy { SourceKeys.normalizeUrl(it.url) }
         session.requireOutputSize(books.size)
         val authors = spec.books?.author?.let { selector ->
-            document.select(spec.books.item)
-                .mapNotNull { extract(it, selector)?.trim()?.takeIf(String::isNotEmpty) }
-                .distinct()
-                .map(::SourceAuthor)
+            document.select(spec.books.item).mapNotNull { extract(it, selector)?.trim()?.takeIf(String::isNotEmpty) }.distinct().map(::SourceAuthor)
         }.orEmpty()
         return SourceSeries(
             sourceId = manifest.id,
@@ -192,33 +177,23 @@ class DeclarativePluginRuntime(
         val response = session.httpGet(searchUrl)
         if (response.statusCode !in 200..299) return emptyList()
         val document = Jsoup.parse(response.body, response.finalUrl)
-        val results = document.select(spec.items.item)
-            .asSequence()
-            .mapNotNull { item ->
-                val link = extract(item, spec.items.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                val title = spec.items.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                val author = spec.items.author?.let { extract(item, it) }?.takeIf { it.isNotBlank() }
-                SeriesCandidate(
-                    series = SourceSeries(
-                        sourceId = manifest.id,
-                        remoteId = spec.items.remoteId?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
-                        url = resolveUrl(item, link),
-                        title = title,
-                        authors = author?.let { listOf(SourceAuthor(it)) }.orEmpty()
-                    )
-                )
-            }
-            .distinctBy { it.series.url }
-            .take(spec.maxResults)
-            .toList()
+        val results = document.select(spec.items.item).asSequence().mapNotNull { item ->
+            val link = extract(item, spec.items.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val title = spec.items.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val author = spec.items.author?.let { extract(item, it) }?.takeIf { it.isNotBlank() }
+            SeriesCandidate(SourceSeries(
+                sourceId = manifest.id,
+                remoteId = spec.items.remoteId?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
+                url = resolveUrl(item, link),
+                title = title,
+                authors = author?.let { listOf(SourceAuthor(it)) }.orEmpty()
+            ))
+        }.distinctBy { it.series.url }.take(spec.maxResults).toList()
         session.requireOutputSize(results.size)
         return results
     }
 
-    fun discoverCanonicalSeries(
-        manifest: PluginPackageManifest,
-        canonical: CanonicalSeriesMatchInput
-    ): List<SeriesCandidate> {
+    fun discoverCanonicalSeries(manifest: PluginPackageManifest, canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
         requireCapability(manifest, SourceCapability.SERIES_DISCOVERY)
         return when (manifest.id) {
             "baza-knig" -> discoverBazaSeries(manifest, canonical)
@@ -228,15 +203,10 @@ class DeclarativePluginRuntime(
         }
     }
 
-    /**
-     * Izib exposes a huge paginated author directory. Use its letter filter instead of scanning
-     * the first global pages, then synthesize a candidate from matching books when no exact series
-     * page exists for the canonical umbrella series.
-     */
     fun discoverIzibSeries(
         manifest: PluginPackageManifest,
         canonical: CanonicalSeriesMatchInput,
-        maxAuthorPages: Int = 6
+        maxAuthorPages: Int = 24
     ): List<SeriesCandidate> {
         requireCapability(manifest, SourceCapability.SERIES_DISCOVERY)
         if (manifest.id != "izib") return emptyList()
@@ -245,11 +215,13 @@ class DeclarativePluginRuntime(
         if (expectedSeries.isBlank()) return emptyList()
         val session = sandbox.open(manifest)
 
-        val initials = authorTokens(author).mapNotNull { it.firstOrNull() }.distinct()
+        // Author directories are effectively surname-oriented even when labels are rendered as
+        // "Name Surname". Try the last token first and paginate the selected letter directory.
+        val initials = authorTokens(author).asReversed().mapNotNull { it.firstOrNull() }.distinct()
         var authorUrl: String? = null
         authorLoop@ for (initial in initials) {
             val encoded = URLEncoder.encode(initial.uppercaseChar().toString(), StandardCharsets.UTF_8.name())
-            for (page in 1..maxAuthorPages.coerceIn(1, 6)) {
+            for (page in 1..maxAuthorPages.coerceIn(1, 24)) {
                 val url = buildString {
                     append("https://izib.uk/authors?l=")
                     append(encoded)
@@ -259,9 +231,11 @@ class DeclarativePluginRuntime(
                 if (response.statusCode !in 200..299) continue
                 val document = Jsoup.parse(response.body, response.finalUrl)
                 authorUrl = document.select("a[href*='/author']")
-                    .firstOrNull { link -> sameAuthor(link.text(), author) }
-                    ?.let { link -> resolveUrl(link, link.attr("href")) }
+                    .firstOrNull { sameAuthor(it.text(), author) }
+                    ?.let { resolveUrl(it, it.attr("href")) }
                 if (authorUrl != null) break@authorLoop
+                // Stop once pagination no longer exposes a next page for this letter.
+                if (page > 1 && document.select("a[href*='&p=${page + 1}'], a[href*='?p=${page + 1}']").isEmpty()) break
             }
         }
         val resolvedAuthorUrl = authorUrl ?: return emptyList()
@@ -269,49 +243,28 @@ class DeclarativePluginRuntime(
         if (authorResponse.statusCode !in 200..299) return emptyList()
         val authorDocument = Jsoup.parse(authorResponse.body, authorResponse.finalUrl)
 
-        val exactSeries = authorDocument.select("a[href*='/serie']")
-            .asSequence()
-            .mapNotNull { link ->
-                val title = link.text().trim().takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                if (SourceIdentityMatcher.normalizeTitle(title) != expectedSeries) return@mapNotNull null
-                val href = link.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                SeriesCandidate(
-                    SourceSeries(
-                        sourceId = manifest.id,
-                        url = resolveUrl(link, href),
-                        title = title,
-                        authors = listOf(SourceAuthor(author, resolvedAuthorUrl))
-                    )
-                )
-            }
-            .distinctBy { SourceKeys.normalizeUrl(it.series.url) }
-            .take(5)
-            .toList()
+        val exactSeries = authorDocument.select("a[href*='/serie']").asSequence().mapNotNull { link ->
+            val title = link.text().trim().takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            if (SourceIdentityMatcher.normalizeTitle(title) != expectedSeries) return@mapNotNull null
+            val href = link.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            SeriesCandidate(SourceSeries(
+                sourceId = manifest.id,
+                url = resolveUrl(link, href),
+                title = title,
+                authors = listOf(SourceAuthor(author, resolvedAuthorUrl))
+            ))
+        }.distinctBy { SourceKeys.normalizeUrl(it.series.url) }.take(5).toList()
         if (exactSeries.isNotEmpty()) {
             session.requireOutputSize(exactSeries.size)
             return exactSeries
         }
 
         val refs = mutableListOf<SourceBookRef>()
-        collectCanonicalBookRefs(
-            document = authorDocument,
-            selector = "a[href*='/art']",
-            manifest = manifest,
-            canonical = canonical,
-            author = author,
-            output = refs
-        )
+        collectCanonicalBookRefs(authorDocument, "a[href*='/art']", manifest, canonical, author, refs)
         for (page in 2..4) {
             val pageResponse = session.httpGet("$resolvedAuthorUrl${if ('?' in resolvedAuthorUrl) '&' else '?'}p=$page")
             if (pageResponse.statusCode !in 200..299) continue
-            collectCanonicalBookRefs(
-                document = Jsoup.parse(pageResponse.body, pageResponse.finalUrl),
-                selector = "a[href*='/art']",
-                manifest = manifest,
-                canonical = canonical,
-                author = author,
-                output = refs
-            )
+            collectCanonicalBookRefs(Jsoup.parse(pageResponse.body, pageResponse.finalUrl), "a[href*='/art']", manifest, canonical, author, refs)
             if (refs.distinctBy { SourceKeys.normalizeUrl(it.url) }.size >= canonical.books.size) break
         }
         val synthetic = syntheticSeriesCandidate(manifest.id, canonical, author, resolvedAuthorUrl, refs)
@@ -319,23 +272,28 @@ class DeclarativePluginRuntime(
         return synthetic
     }
 
-    private fun discoverBazaSeries(
-        manifest: PluginPackageManifest,
-        canonical: CanonicalSeriesMatchInput
-    ): List<SeriesCandidate> {
+    private fun discoverBazaSeries(manifest: PluginPackageManifest, canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
         val author = canonical.authors.firstOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
         val session = sandbox.open(manifest)
-        val initials = authorTokens(author).mapNotNull { it.firstOrNull() }.distinct()
+        val initials = authorTokens(author).asReversed().mapNotNull { it.firstOrNull() }.distinct()
         var authorUrl: String? = null
-        for (initial in initials) {
+        authorLoop@ for (initial in initials) {
             val encoded = URLEncoder.encode(initial.uppercaseChar().toString(), StandardCharsets.UTF_8.name())
-            val response = session.httpGet("https://baza-knig.info/authors/let-$encoded")
-            if (response.statusCode !in 200..299) continue
-            val document = Jsoup.parse(response.body, response.finalUrl)
-            authorUrl = document.select("a[href*='/avtor-']")
-                .firstOrNull { sameAuthor(it.text(), author) }
-                ?.let { resolveUrl(it, it.attr("href")) }
-            if (authorUrl != null) break
+            for (page in 1..8) {
+                val url = buildString {
+                    append("https://baza-knig.info/authors/let-")
+                    append(encoded)
+                    if (page > 1) append("?page=$page")
+                }
+                val response = session.httpGet(url)
+                if (response.statusCode !in 200..299) continue
+                val document = Jsoup.parse(response.body, response.finalUrl)
+                authorUrl = document.select("a[href*='/avtor-']")
+                    .firstOrNull { sameAuthor(it.text(), author) }
+                    ?.let { resolveUrl(it, it.attr("href")) }
+                if (authorUrl != null) break@authorLoop
+                if (page > 1 && document.select("a[href*='page=${page + 1}']").isEmpty()) break
+            }
         }
         val resolvedAuthorUrl = authorUrl ?: return emptyList()
         val refs = mutableListOf<SourceBookRef>()
@@ -344,12 +302,9 @@ class DeclarativePluginRuntime(
             val response = session.httpGet(pageUrl)
             if (response.statusCode !in 200..299) continue
             collectCanonicalBookRefs(
-                document = Jsoup.parse(response.body, response.finalUrl),
-                selector = "article.abook-item h2.abook-title a[href*='/audio-'], h2.abook-title a[href*='/audio-'], a[href*='/audio-']",
-                manifest = manifest,
-                canonical = canonical,
-                author = author,
-                output = refs
+                Jsoup.parse(response.body, response.finalUrl),
+                "article.abook-item h2.abook-title a[href*='/audio-'], h2.abook-title a[href*='/audio-'], a[href*='/audio-']",
+                manifest, canonical, author, refs
             )
             if (refs.distinctBy { SourceKeys.normalizeUrl(it.url) }.size >= canonical.books.size) break
         }
@@ -358,10 +313,7 @@ class DeclarativePluginRuntime(
         return result
     }
 
-    private fun discoverLis10BookSeries(
-        manifest: PluginPackageManifest,
-        canonical: CanonicalSeriesMatchInput
-    ): List<SeriesCandidate> {
+    private fun discoverLis10BookSeries(manifest: PluginPackageManifest, canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
         val author = canonical.authors.firstOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
         val session = sandbox.open(manifest)
         val slugCandidates = buildList {
@@ -369,7 +321,6 @@ class DeclarativePluginRuntime(
             val reversed = authorTokens(author).reversed().joinToString(" ")
             if (reversed.isNotBlank()) add(slugifyRussian(reversed))
         }.filter { it.isNotBlank() }.distinct()
-
         var authorUrl: String? = null
         for (slug in slugCandidates) {
             val url = "https://lis10book.com/avtor/$slug/"
@@ -382,7 +333,6 @@ class DeclarativePluginRuntime(
                 break
             }
         }
-
         if (authorUrl == null) {
             val directoryUrls = buildList {
                 add("https://lis10book.com/avtory/")
@@ -392,27 +342,17 @@ class DeclarativePluginRuntime(
                 val response = session.httpGet(url)
                 if (response.statusCode !in 200..299) continue
                 val document = Jsoup.parse(response.body, response.finalUrl)
-                authorUrl = document.select("a[href*='/avtor/']")
-                    .firstOrNull { sameAuthor(it.text(), author) }
-                    ?.let { resolveUrl(it, it.attr("href")) }
+                authorUrl = document.select("a[href*='/avtor/']").firstOrNull { sameAuthor(it.text(), author) }?.let { resolveUrl(it, it.attr("href")) }
                 if (authorUrl != null) break
             }
         }
-
         val resolvedAuthorUrl = authorUrl ?: return emptyList()
         val refs = mutableListOf<SourceBookRef>()
         for (page in 1..4) {
             val pageUrl = if (page == 1) resolvedAuthorUrl else resolvedAuthorUrl.trimEnd('/') + "/page/$page/"
             val response = session.httpGet(pageUrl)
             if (response.statusCode !in 200..299) continue
-            collectCanonicalBookRefs(
-                document = Jsoup.parse(response.body, response.finalUrl),
-                selector = "a[href*='/audio/']",
-                manifest = manifest,
-                canonical = canonical,
-                author = author,
-                output = refs
-            )
+            collectCanonicalBookRefs(Jsoup.parse(response.body, response.finalUrl), "a[href*='/audio/']", manifest, canonical, author, refs)
             if (refs.distinctBy { SourceKeys.normalizeUrl(it.url) }.size >= canonical.books.size) break
         }
         val result = syntheticSeriesCandidate(manifest.id, canonical, author, resolvedAuthorUrl, refs)
@@ -430,70 +370,42 @@ class DeclarativePluginRuntime(
     ) {
         document.select(selector).forEach { link ->
             val href = link.attr("href").takeIf { it.isNotBlank() } ?: return@forEach
-            val resolvedUrl = resolveUrl(link, href)
-            val bookUrl = canonicalPluginBookUrl(manifest.id, resolvedUrl) ?: return@forEach
+            val bookUrl = canonicalPluginBookUrl(manifest.id, resolveUrl(link, href)) ?: return@forEach
             val rawTitle = link.text().trim().trimStart('★', '☆').trim().takeIf { it.isNotBlank() } ?: return@forEach
             val title = stripAuthorSuffix(rawTitle, author)
-            val lightweight = SourceBook(
-                sourceId = manifest.id,
-                url = bookUrl,
-                title = title,
-                authors = listOf(SourceAuthor(author)),
-                seriesTitle = canonical.title
-            )
+            val lightweight = SourceBook(manifest.id, bookUrl, title, authors = listOf(SourceAuthor(author)), seriesTitle = canonical.title)
             val match = SourceIdentityMatcher.bestBookMatch(lightweight, canonical.books)
-                ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
-                ?: return@forEach
-            output += SourceBookRef(
-                url = bookUrl,
-                title = title,
-                number = match.value.number
-            )
+                ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT } ?: return@forEach
+            output += SourceBookRef(url = bookUrl, title = title, number = match.value.number)
         }
     }
 
-    private fun syntheticSeriesCandidate(
-        sourceId: String,
-        canonical: CanonicalSeriesMatchInput,
-        author: String,
-        authorUrl: String,
-        refs: List<SourceBookRef>
-    ): List<SeriesCandidate> {
-        val books = refs
-            .distinctBy { SourceKeys.normalizeUrl(it.url) }
+    private fun syntheticSeriesCandidate(sourceId: String, canonical: CanonicalSeriesMatchInput, author: String, authorUrl: String, refs: List<SourceBookRef>): List<SeriesCandidate> {
+        val books = refs.distinctBy { SourceKeys.normalizeUrl(it.url) }
             .sortedWith(compareBy<SourceBookRef> { it.number ?: Double.MAX_VALUE }.thenBy { it.title.orEmpty() })
         if (books.isEmpty()) return emptyList()
-        return listOf(
-            SeriesCandidate(
-                SourceSeries(
-                    sourceId = sourceId,
-                    url = books.first().url,
-                    title = canonical.title,
-                    authors = listOf(SourceAuthor(author, authorUrl)),
-                    books = books
-                )
-            )
-        )
+        return listOf(SeriesCandidate(SourceSeries(
+            sourceId = sourceId,
+            url = books.first().url,
+            title = canonical.title,
+            authors = listOf(SourceAuthor(author, authorUrl)),
+            books = books
+        )))
     }
 
     private fun sameAuthor(left: String, right: String): Boolean {
         val candidate = authorTokens(left).toSet()
         val expected = authorTokens(right).toSet()
         if (candidate.isEmpty() || expected.isEmpty()) return false
-        // Author directory links often include counts such as "34 книги" / "17 аудиокниг".
-        // Ignore those extra tokens while still requiring every token from the requested author.
         return expected.all(candidate::contains)
     }
 
-    private fun authorTokens(value: String): List<String> =
-        SourceIdentityMatcher.normalizeAuthor(value)
-            .split(Regex("[^\\p{L}\\p{N}]+"))
-            .filter { it.isNotBlank() }
+    private fun authorTokens(value: String): List<String> = SourceIdentityMatcher.normalizeAuthor(value)
+        .split(Regex("[^\\p{L}\\p{N}]+"))
+        .filter { it.isNotBlank() }
 
     private fun stripAuthorSuffix(title: String, author: String): String {
-        val variants = listOf(author, authorTokens(author).reversed().joinToString(" "))
-            .filter { it.isNotBlank() }
-            .distinct()
+        val variants = listOf(author, authorTokens(author).reversed().joinToString(" ")).filter { it.isNotBlank() }.distinct()
         var result = title.trim()
         variants.forEach { variant ->
             result = result.replace(Regex("\\s+${Regex.escape(variant)}$", RegexOption.IGNORE_CASE), "").trim()
@@ -503,11 +415,10 @@ class DeclarativePluginRuntime(
 
     private fun slugifyRussian(value: String): String {
         val map = mapOf(
-            'а' to "a", 'б' to "b", 'в' to "v", 'г' to "g", 'д' to "d", 'е' to "e", 'ё' to "e",
-            'ж' to "zh", 'з' to "z", 'и' to "i", 'й' to "y", 'к' to "k", 'л' to "l", 'м' to "m",
-            'н' to "n", 'о' to "o", 'п' to "p", 'р' to "r", 'с' to "s", 'т' to "t", 'у' to "u",
-            'ф' to "f", 'х' to "h", 'ц' to "c", 'ч' to "ch", 'ш' to "sh", 'щ' to "shh", 'ъ' to "",
-            'ы' to "y", 'ь' to "", 'э' to "e", 'ю' to "yu", 'я' to "ya"
+            'а' to "a", 'б' to "b", 'в' to "v", 'г' to "g", 'д' to "d", 'е' to "e", 'ё' to "e", 'ж' to "zh", 'з' to "z",
+            'и' to "i", 'й' to "y", 'к' to "k", 'л' to "l", 'м' to "m", 'н' to "n", 'о' to "o", 'п' to "p", 'р' to "r",
+            'с' to "s", 'т' to "t", 'у' to "u", 'ф' to "f", 'х' to "h", 'ц' to "c", 'ч' to "ch", 'ш' to "sh", 'щ' to "shh",
+            'ъ' to "", 'ы' to "y", 'ь' to "", 'э' to "e", 'ю' to "yu", 'я' to "ya"
         )
         val out = StringBuilder()
         value.lowercase().forEach { ch ->
@@ -535,10 +446,7 @@ class DeclarativePluginRuntime(
             remoteId = spec.remoteId?.let { extract(document, it) }?.takeIf { it.isNotBlank() },
             url = response.finalUrl,
             title = title,
-            authors = spec.author?.let { extract(document, it) }
-                ?.takeIf { it.isNotBlank() }
-                ?.let { listOf(SourceAuthor(it)) }
-                .orEmpty(),
+            authors = spec.author?.let { extract(document, it) }?.takeIf { it.isNotBlank() }?.let { listOf(SourceAuthor(it)) }.orEmpty(),
             seriesTitle = spec.seriesTitle?.let { extract(document, it) }?.takeIf { it.isNotBlank() },
             seriesNumber = spec.seriesNumber?.let { extract(document, it) }?.let(::parseNumber),
             coverUrl = spec.coverUrl?.let { extract(document, it) }?.takeIf { it.isNotBlank() }?.let { resolveUrl(document, it) },
@@ -554,26 +462,15 @@ class DeclarativePluginRuntime(
         val response = session.httpGet(url)
         if (response.statusCode !in 200..299) return emptyList()
         val document = Jsoup.parse(response.body, response.finalUrl)
-        val results = document.select(spec.items.item)
-            .mapNotNull { item ->
-                val raw = extract(item, spec.items.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                DownloadCandidate(
-                    type = spec.type,
-                    url = resolveUrl(item, raw),
-                    fileName = spec.fileName
-                )
-            }
-            .distinctBy { it.url }
+        val results = document.select(spec.items.item).mapNotNull { item ->
+            val raw = extract(item, spec.items.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            DownloadCandidate(spec.type, resolveUrl(item, raw), spec.fileName)
+        }.distinctBy { it.url }
         session.requireOutputSize(results.size)
         return results
     }
 
-    private fun loadSupplementRefs(
-        session: PluginSandboxSession,
-        seriesDocument: Element,
-        expectedTitle: String,
-        supplement: SeriesSupplement
-    ): List<SourceBookRef> {
+    private fun loadSupplementRefs(session: PluginSandboxSession, seriesDocument: Element, expectedTitle: String, supplement: SeriesSupplement): List<SourceBookRef> {
         val start = extract(seriesDocument, supplement.startLink)?.takeIf { it.isNotBlank() } ?: return emptyList()
         var nextUrl: String? = resolveUrl(seriesDocument, start)
         val expected = SourceIdentityMatcher.normalizeTitle(expectedTitle)
@@ -586,9 +483,7 @@ class DeclarativePluginRuntime(
             if (response.statusCode !in 200..299) return@repeat
             val document = Jsoup.parse(response.body, response.finalUrl)
             document.select(supplement.items.item).forEach { item ->
-                val itemSeries = extract(item, supplement.seriesTitle)
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let(SourceIdentityMatcher::normalizeTitle)
+                val itemSeries = extract(item, supplement.seriesTitle)?.takeIf { it.isNotBlank() }?.let(SourceIdentityMatcher::normalizeTitle)
                 if (itemSeries != expected) return@forEach
                 val link = extract(item, supplement.items.link)?.takeIf { it.isNotBlank() } ?: return@forEach
                 results += SourceBookRef(
@@ -598,25 +493,21 @@ class DeclarativePluginRuntime(
                     number = supplement.items.number?.let { extract(item, it) }?.let(::parseNumber)
                 )
             }
-            nextUrl = supplement.nextPage
-                ?.let { extract(document, it) }
-                ?.takeIf { it.isNotBlank() }
-                ?.let { resolveUrl(document, it) }
+            nextUrl = supplement.nextPage?.let { extract(document, it) }?.takeIf { it.isNotBlank() }?.let { resolveUrl(document, it) }
         }
         session.requireOutputSize(results.size)
         return results
     }
 
-    private fun extractBookRefs(document: Element, fields: RepeatedFields): List<SourceBookRef> =
-        document.select(fields.item).mapNotNull { item ->
-            val link = extract(item, fields.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            SourceBookRef(
-                remoteId = fields.remoteId?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
-                url = resolveUrl(item, link),
-                title = fields.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
-                number = fields.number?.let { extract(item, it) }?.let(::parseNumber)
-            )
-        }
+    private fun extractBookRefs(document: Element, fields: RepeatedFields): List<SourceBookRef> = document.select(fields.item).mapNotNull { item ->
+        val link = extract(item, fields.link)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        SourceBookRef(
+            remoteId = fields.remoteId?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
+            url = resolveUrl(item, link),
+            title = fields.title?.let { extract(item, it) }?.takeIf { it.isNotBlank() },
+            number = fields.number?.let { extract(item, it) }?.let(::parseNumber)
+        )
+    }
 
     private fun loadEntrypoint(manifest: PluginPackageManifest, packageDir: File, name: String): DeclarativeEntrypoint {
         val relative = manifest.entrypoints[name] ?: throw PluginSandboxViolation("Missing $name entrypoint")
@@ -654,8 +545,9 @@ class DeclarativePluginRuntime(
         return expression.substring(0, marker).trim() to expression.substring(marker + 1).trim()
     }
 
-    private fun resolveUrl(element: Element, raw: String): String =
-        element.baseUri().let { base -> runCatching { java.net.URI(base).resolve(raw).toString() }.getOrDefault(raw) }
+    private fun resolveUrl(element: Element, raw: String): String = element.baseUri().let { base ->
+        runCatching { java.net.URI(base).resolve(raw).toString() }.getOrDefault(raw)
+    }
 
     private fun applyRegex(value: String, pattern: String?): String {
         if (pattern.isNullOrBlank()) return value.trim()
@@ -663,6 +555,5 @@ class DeclarativePluginRuntime(
         return match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() }?.trim() ?: match.value.trim()
     }
 
-    private fun parseNumber(value: String): Double? =
-        Regex("-?[0-9]+(?:[.,][0-9]+)?").find(value)?.value?.replace(',', '.')?.toDoubleOrNull()
+    private fun parseNumber(value: String): Double? = Regex("-?[0-9]+(?:[.,][0-9]+)?").find(value)?.value?.replace(',', '.')?.toDoubleOrNull()
 }

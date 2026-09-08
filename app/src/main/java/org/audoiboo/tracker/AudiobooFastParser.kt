@@ -234,6 +234,15 @@ internal object AudiobooFastParser {
 
     private fun fetch(url: String) = Jsoup.connect(url)
         .userAgent(UA)
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+        .header("Accept-Language", "ru-RU,ru;q=0.9,uk-UA;q=0.8,uk;q=0.7,en-US;q=0.6,en;q=0.5")
+        .header("Cache-Control", "no-cache")
+        .header("Pragma", "no-cache")
+        .header("Upgrade-Insecure-Requests", "1")
+        .header("Sec-Fetch-Dest", "document")
+        .header("Sec-Fetch-Mode", "navigate")
+        .header("Sec-Fetch-Site", "same-origin")
+        .header("Sec-Fetch-User", "?1")
         .referrer(runCatching {
             val uri = URI(url)
             "${uri.scheme}://${uri.host}/"

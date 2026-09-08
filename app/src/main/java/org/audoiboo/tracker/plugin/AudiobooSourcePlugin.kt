@@ -49,17 +49,53 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
     }
 
     /**
-     * Audioboo exposes stable cycle URLs but no useful conventional text-search endpoint.
-     * Build the bounded cycle URL from the canonical title and let the normal discovery matcher
-     * validate the resolved title/books before it is accepted.
+     * Audioboo exposes stable cycle URLs but its cycle index can lag behind newly published books.
+     * Try the direct cycle first, then fall back to the stable author xfsearch page and return only
+     * books that the canonical matcher accepts. The discovery engine can consume these direct refs
+     * without hydrating the whole author listing again.
      */
     override suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
         val title = canonical.title.trim()
         if (title.isBlank()) return emptyList()
         val encoded = URLEncoder.encode(title, StandardCharsets.UTF_8.name()).replace("+", "%20")
         val candidateUrl = "https://audioboo.org/xfsearch/cikl/$encoded/"
-        val resolved = resolveSeries(candidateUrl) ?: return emptyList()
-        return listOf(SeriesCandidate(resolved))
+        resolveSeries(candidateUrl)?.let { return listOf(SeriesCandidate(it)) }
+
+        val author = canonical.authors.firstOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val encodedAuthor = URLEncoder.encode(author, StandardCharsets.UTF_8.name()).replace("+", "%20")
+        val authorUrl = "https://audioboo.org/xfsearch/avtora/$encodedAuthor/"
+        val refs = AudiobooFastParser.parseSeries(authorUrl).orEmpty().mapNotNull { book ->
+            val sourceBook = SourceBook(
+                sourceId = descriptor.id,
+                url = book.url,
+                title = book.title,
+                authors = book.author?.takeIf { it.isNotBlank() }?.let { listOf(SourceAuthor(it)) }
+                    ?: listOf(SourceAuthor(author)),
+                seriesTitle = book.seriesTitle,
+                coverUrl = book.coverUrl
+            )
+            val match = SourceIdentityMatcher.bestBookMatch(sourceBook, canonical.books)
+                ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                ?: return@mapNotNull null
+            SourceBookRef(
+                url = book.url,
+                title = book.title,
+                number = match.value.number
+            )
+        }.distinctBy { SourceKeys.normalizeUrl(it.url) }
+
+        if (refs.isEmpty()) return emptyList()
+        return listOf(
+            SeriesCandidate(
+                SourceSeries(
+                    sourceId = descriptor.id,
+                    url = authorUrl,
+                    title = canonical.title,
+                    authors = listOf(SourceAuthor(author, authorUrl)),
+                    books = refs
+                )
+            )
+        )
     }
 
     override suspend fun resolveDownloads(book: SourceBook): List<DownloadCandidate> {

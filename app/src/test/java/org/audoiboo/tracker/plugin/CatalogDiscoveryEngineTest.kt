@@ -37,6 +37,46 @@ class CatalogDiscoveryEngineTest {
     }
 
     @Test
+    fun collapsesDuplicateLogicalSeriesBooksWithDifferentRemoteIds() {
+        val author = CatalogAuthor("fantlab", "a1", "Роман Прокофьев")
+        val catalog = AuthorCatalog(
+            author,
+            listOf(
+                CatalogBook(
+                    providerId = "fantlab",
+                    remoteId = "work-1",
+                    title = "Игра Кота. Книга вторая",
+                    authors = listOf(author.name),
+                    seriesTitles = listOf("Сфера Миров"),
+                    seriesNumber = 2.0
+                ),
+                CatalogBook(
+                    providerId = "fantlab",
+                    remoteId = "work-2",
+                    title = "Игра Кота. Книга вторая",
+                    authors = listOf(author.name),
+                    seriesTitles = listOf("Сфера Миров"),
+                    coverUrl = "https://covers.example/book.jpg"
+                ),
+                CatalogBook(
+                    providerId = "fantlab",
+                    remoteId = "work-3",
+                    title = "Игра Кота. Книга третья",
+                    authors = listOf(author.name),
+                    seriesTitles = listOf("Сфера Миров"),
+                    seriesNumber = 3.0
+                )
+            )
+        )
+
+        val books = CatalogSeriesHeuristics.group(catalog).series.single().books
+
+        assertEquals(2, books.size)
+        assertEquals(1, books.count { SourceIdentityMatcher.normalizeTitle(it.title) == SourceIdentityMatcher.normalizeTitle("Игра Кота. Книга вторая") })
+        assertEquals("https://covers.example/book.jpg", books.first { it.title == "Игра Кота. Книга вторая" }.coverUrl)
+    }
+
+    @Test
     fun discoveryUsesCatalogProvidersAndIsolatesBrokenOnes() = runBlocking {
         val engine = CatalogDiscoveryEngine(
             SourcePluginRegistry(listOf(FakeCatalogPlugin("good"), FakeCatalogPlugin("broken", broken = true)))

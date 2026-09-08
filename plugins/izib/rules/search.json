@@ -1,0 +1,10 @@
+{
+  "operation": "seriesSearch",
+  "searchUrl": "https://izib.uk/search?q={query}",
+  "maxResults": 30,
+  "items": {
+    "item": "a[href*='/art'], a[href*='/serie']",
+    "title": "@text",
+    "link": "@href"
+  }
+}

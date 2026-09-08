@@ -37,6 +37,7 @@ object CatalogSeriesHeuristics {
         "^(.+?)[\\s:,._\\-–—]+#?([0-9]{1,3}(?:[.,][0-9]+)?)$",
         RegexOption.IGNORE_CASE
     )
+    private val ordinalToken = Regex("^#?[0-9]{1,3}$")
 
     fun infer(title: String): InferredSeries? {
         val cleaned = title.trim().replace(Regex("\\s+"), " ")
@@ -45,6 +46,36 @@ object CatalogSeriesHeuristics {
         if (base.length < 3 || base.all(Char::isDigit)) return null
         val number = match.groupValues[2].replace(',', '.').toDoubleOrNull() ?: return null
         return InferredSeries(base, number)
+    }
+
+    /**
+     * Returns a conservative logical identity for one book inside a known series. Catalog providers
+     * sometimes expose both a short work title ("Инкарнатор") and a bibliography-style title
+     * ("Прокофьев Роман - Стеллар 01. Инкарнатор"). Normal title equality cannot collapse those.
+     * If the normalized series title occurs near the front, strip everything through it and an
+     * optional leading volume number. Otherwise keep the ordinary normalized title unchanged.
+     */
+    fun logicalBookKey(title: String, seriesTitle: String): String {
+        val normalized = SourceIdentityMatcher.normalizeTitle(title)
+        val series = SourceIdentityMatcher.normalizeTitle(seriesTitle)
+        if (normalized.isBlank() || series.isBlank()) return normalized
+
+        val titleTokens = normalized.split(' ').filter(String::isNotBlank)
+        val seriesTokens = series.split(' ').filter(String::isNotBlank)
+        if (seriesTokens.isEmpty() || titleTokens.size <= seriesTokens.size) return normalized
+
+        val maxStart = minOf(8, titleTokens.size - seriesTokens.size)
+        val start = (0..maxStart).firstOrNull { index ->
+            titleTokens.subList(index, index + seriesTokens.size) == seriesTokens
+        } ?: return normalized
+
+        var tail = titleTokens.drop(start + seriesTokens.size)
+        if (tail.firstOrNull()?.matches(ordinalToken) == true) tail = tail.drop(1)
+        if (tail.firstOrNull() in setOf("книга", "кн", "том", "часть", "частина", "book", "volume", "vol")) {
+            tail = tail.drop(1)
+            if (tail.firstOrNull()?.matches(ordinalToken) == true) tail = tail.drop(1)
+        }
+        return tail.joinToString(" ").ifBlank { normalized }
     }
 
     fun group(catalog: AuthorCatalog): CatalogDiscoveryResult {
@@ -72,9 +103,10 @@ object CatalogSeriesHeuristics {
         }
 
         val series = grouped.map { (key, rawBooks) ->
-            val books = deduplicateLogicalBooks(rawBooks)
+            val displayTitle = displayTitles.getValue(key)
+            val books = deduplicateLogicalBooks(rawBooks, displayTitle)
             CatalogSeries(
-                title = displayTitles.getValue(key),
+                title = displayTitle,
                 authors = books.flatMap { it.authors }.distinct(),
                 books = books.sortedWith(
                     compareBy<CatalogBook> { it.seriesNumber ?: Double.MAX_VALUE }
@@ -95,16 +127,12 @@ object CatalogSeriesHeuristics {
         )
     }
 
-    /**
-     * Catalog APIs can expose the same logical work more than once (for example as a cycle child
-     * and again as a standalone/bibliography record) with different remote ids. Inside one series,
-     * a normalized title is the stable logical identity; prefer the richer record instead of
-     * showing duplicate cards in the local catalog library.
-     */
-    private fun deduplicateLogicalBooks(books: List<CatalogBook>): List<CatalogBook> =
-        books.groupBy { SourceIdentityMatcher.normalizeTitle(it.title).ifBlank { "remote:${it.remoteId}" } }
-            .values
-            .map { duplicates -> duplicates.maxWithOrNull(compareBy<CatalogBook> { catalogBookRichness(it) }.thenBy { it.remoteId })!! }
+    private fun deduplicateLogicalBooks(books: List<CatalogBook>, seriesTitle: String): List<CatalogBook> =
+        books.groupBy {
+            logicalBookKey(it.title, seriesTitle).ifBlank { "remote:${it.remoteId}" }
+        }.values.map { duplicates ->
+            duplicates.maxWithOrNull(compareBy<CatalogBook> { catalogBookRichness(it) }.thenBy { it.remoteId })!!
+        }
 
     private fun deduplicateStandaloneBooks(books: List<CatalogBook>): List<CatalogBook> =
         books.groupBy { book ->

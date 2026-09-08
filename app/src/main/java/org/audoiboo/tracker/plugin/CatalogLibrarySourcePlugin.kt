@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import org.audoiboo.tracker.AudoibooDatabase
 import org.audoiboo.tracker.BookEntity
+import org.audoiboo.tracker.LibraryDao
 import org.audoiboo.tracker.SeriesWithBooks
 
 /**
@@ -16,9 +17,7 @@ import org.audoiboo.tracker.SeriesWithBooks
  *
  * When an audio provider matches an existing catalog book, the Room row is promoted from its
  * metadata-only catalog URL to the real provider URL (and cover/author metadata are hydrated).
- * Genuinely missing remote volumes are inserted into the canonical series. This makes a refresh
- * visibly useful instead of reporting the unchanged catalog book count while only persisting
- * hidden alternate-source snapshots.
+ * Genuinely missing remote volumes are inserted into the canonical series.
  */
 object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
     private const val ID = "catalog-library"
@@ -36,7 +35,7 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
     override val descriptor = SourceDescriptor(
         id = ID,
         name = "Catalog library",
-        version = 4,
+        version = 5,
         hosts = setOf("catalog.local"),
         capabilities = setOf(SourceCapability.SERIES_LOOKUP)
     )
@@ -72,11 +71,18 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
         }
         val db = AudoibooDatabase.get(context)
         val dao = db.libraryDao()
-        val item = dao.library().firstOrNull { it.series.url == series.url }
-        if (item == null) {
+        val storedItem = dao.library().firstOrNull { it.series.url == series.url }
+        if (storedItem == null) {
             Log.e(TAG, "catalog load: Room series not found title=${series.title} url=${series.url}")
             return emptyList()
         }
+
+        // A refresh must also repair data written by older builds. Previously, a provider match
+        // could be inserted as a second Room row instead of replacing the catalog:// row. Those
+        // stale duplicates then became part of the next canonical input (for example 10 -> 16
+        // books) and poisoned book matching. Collapse logical duplicates before discovery, keep the
+        // stable original row id where possible, and merge the real provider URL/metadata into it.
+        val item = dedupeStoredBooks(dao, storedItem)
 
         val baseBooks = item.books.sortedBy { it.sortIndex }.map { book ->
             SourceBook(
@@ -104,6 +110,7 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
                 "${plugin.descriptor.id}[$caps]"
             }
         Log.i(TAG, "catalog discovery START series=${item.series.name} canonicalBooks=${baseBooks.size} providers=$discoverable")
+        SeriesDiagnosticLog.i("catalog discovery START series=${item.series.name} canonicalBooks=${baseBooks.size} providers=$discoverable")
 
         val canonical = canonicalInput(item)
         val discoveryResult = runCatching {
@@ -114,10 +121,6 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
         }
         val allFindings = discoveryResult.getOrDefault(emptyList())
 
-        // RoomSeriesSync normally runs alternate discovery after a provider refresh. Catalog refresh
-        // already performs the full federated pass here because it also promotes the returned audio
-        // URLs into Room. Mark the shared throttle only after a successful pass so RoomSeriesSync
-        // does not immediately repeat the same network work a second time.
         if (discoveryResult.isSuccess) {
             context.getSharedPreferences(DISCOVERY_PREFS, Context.MODE_PRIVATE)
                 .edit()
@@ -249,11 +252,51 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
         Log.i(TAG, "catalog discovery END series=${item.series.name} finalRoomBooks=${finalBooks.size} returned=${baseBooks.size + promoted.size}")
 
         return (baseBooks + promoted)
-            .distinctBy { book ->
-                val title = SourceIdentityMatcher.normalizeTitle(book.title)
-                val number = book.seriesNumber?.toString().orEmpty()
-                "$title|$number"
-            }
+            .distinctBy { book -> SourceIdentityMatcher.normalizeTitle(book.title) }
+    }
+
+    /**
+     * Repairs duplicate Room rows created by older refresh logic. Logical identity is the normalized
+     * title inside one canonical series. We keep a stable catalog row id when available (so tags and
+     * reading state remain attached), but merge a real provider URL and richer metadata from any
+     * duplicate into that row. The duplicate rows are deleted before the merged winners are upserted
+     * to avoid the unique books.url constraint.
+     */
+    private suspend fun dedupeStoredBooks(dao: LibraryDao, item: SeriesWithBooks): SeriesWithBooks {
+        if (item.books.size < 2) return item
+
+        val groups = item.books
+            .sortedBy { it.sortIndex }
+            .groupBy { SourceIdentityMatcher.normalizeTitle(it.title) }
+        if (groups.size == item.books.size) return item
+
+        val now = System.currentTimeMillis()
+        val winners = groups.values.map { group ->
+            val anchor = group.firstOrNull { supports(it.url) } ?: group.minBy { it.sortIndex }
+            val real = group.firstOrNull { !supports(it.url) }
+            val read = group.any { it.status == "READ" }
+            anchor.copy(
+                url = real?.url ?: anchor.url,
+                author = real?.author?.takeIf { it.isNotBlank() }
+                    ?: group.firstNotNullOfOrNull { it.author?.takeIf(String::isNotBlank) },
+                coverUrl = real?.coverUrl?.takeIf { it.isNotBlank() }
+                    ?: group.firstNotNullOfOrNull { it.coverUrl?.takeIf(String::isNotBlank) },
+                status = if (read) "READ" else anchor.status,
+                archiveUrl = group.firstNotNullOfOrNull { it.archiveUrl?.takeIf(String::isNotBlank) },
+                sortIndex = group.minOf { it.sortIndex },
+                updatedAt = now
+            )
+        }.sortedBy { it.sortIndex }
+            .mapIndexed { index, book -> book.copy(sortIndex = index, updatedAt = now) }
+
+        val removed = item.books.size - winners.size
+        dao.deleteMissingBooks(item.series.id, winners.map { it.id })
+        dao.upsertBooks(winners)
+        val message = "catalog Room DEDUPE series=${item.series.name} before=${item.books.size} after=${winners.size} removed=$removed"
+        Log.i(TAG, message)
+        SeriesDiagnosticLog.i(message)
+
+        return dao.seriesWithBooks(item.series.id) ?: item.copy(books = winners)
     }
 
     private suspend fun findSeries(url: String): SeriesWithBooks? {

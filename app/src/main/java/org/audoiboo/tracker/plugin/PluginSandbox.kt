@@ -89,8 +89,6 @@ class PluginSandboxSession internal constructor(
                 ?: throw PluginSandboxViolation("Redirect response has no Location header")
             currentUrl = runCatching { URI(response.finalUrl).resolve(location).toString() }
                 .getOrElse { throw PluginSandboxViolation("Invalid redirect URL") }
-            // Validate before the next transport call so an untrusted package can never cause
-            // the host HTTP client to contact an undeclared domain.
             requirePermittedUrl(currentUrl)
             redirects++
         }
@@ -106,19 +104,21 @@ class PluginSandboxSession internal constructor(
 
         runCatching {
             val doc = Jsoup.parse(response.body, response.finalUrl)
-            val path = runCatching { URI(response.finalUrl).path.orEmpty() }.getOrDefault("")
-            val query = runCatching { URI(response.finalUrl).query.orEmpty() }.getOrDefault("")
+            val uri = runCatching { URI(response.finalUrl) }.getOrNull()
+            val path = uri?.path.orEmpty()
+            val query = uri?.query.orEmpty()
 
             when (manifest.id) {
                 "izib" -> when {
                     path.contains("/authors", ignoreCase = true) -> {
                         val links = doc.select("a[href*='/author']")
                         val names = links.map { it.text().trim() }.filter { it.isNotBlank() }
-                        val prokof = links.filter {
-                            it.text().lowercase().replace('ё', 'е').contains("прокоф") ||
-                                it.attr("href").lowercase().contains("prokof")
-                        }.take(8).joinToString(" | ") {
-                            "${it.text().trim()}=>${it.absUrl("href").ifBlank { _ -> it.attr("href") }}"
+                        val prokof = links.filter { link ->
+                            link.text().lowercase().replace('ё', 'е').contains("прокоф") ||
+                                link.attr("href").lowercase().contains("prokof")
+                        }.take(8).joinToString(" | ") { link ->
+                            val href = link.absUrl("href").ifBlank { link.attr("href") }
+                            "${link.text().trim()}=>$href"
                         }.ifBlank { "-" }
                         diagnostic(
                             "PROBE izib AUTHORS path=$path query=$query authorLinks=${links.size} " +
@@ -140,11 +140,12 @@ class PluginSandboxSession internal constructor(
                     path.contains("/authors/let-", ignoreCase = true) -> {
                         val links = doc.select("a[href*='/avtor-']")
                         val names = links.map { it.text().trim() }.filter { it.isNotBlank() }
-                        val prokof = links.filter {
-                            it.text().lowercase().replace('ё', 'е').contains("прокоф") ||
-                                it.attr("href").lowercase().contains("prokof")
-                        }.take(8).joinToString(" | ") {
-                            "${it.text().trim()}=>${it.absUrl("href").ifBlank { _ -> it.attr("href") }}"
+                        val prokof = links.filter { link ->
+                            link.text().lowercase().replace('ё', 'е').contains("прокоф") ||
+                                link.attr("href").lowercase().contains("prokof")
+                        }.take(8).joinToString(" | ") { link ->
+                            val href = link.absUrl("href").ifBlank { link.attr("href") }
+                            "${link.text().trim()}=>$href"
                         }.ifBlank { "-" }
                         diagnostic(
                             "PROBE baza AUTHORS path=$path query=$query authorLinks=${links.size} " +
@@ -154,11 +155,12 @@ class PluginSandboxSession internal constructor(
                     query.contains("do=search", ignoreCase = true) || response.finalUrl.contains("do=search", ignoreCase = true) -> {
                         val cards = doc.select("article.abook-item")
                         val authorLinks = doc.select("a.author-title[href*='/avtor-'], a[href*='/avtor-']")
-                        val prokof = authorLinks.filter {
-                            it.text().lowercase().replace('ё', 'е').contains("прокоф") ||
-                                it.attr("href").lowercase().contains("prokof")
-                        }.take(8).joinToString(" | ") {
-                            "${it.text().trim()}=>${it.absUrl("href").ifBlank { _ -> it.attr("href") }}"
+                        val prokof = authorLinks.filter { link ->
+                            link.text().lowercase().replace('ё', 'е').contains("прокоф") ||
+                                link.attr("href").lowercase().contains("prokof")
+                        }.take(8).joinToString(" | ") { link ->
+                            val href = link.absUrl("href").ifBlank { link.attr("href") }
+                            "${link.text().trim()}=>$href"
                         }.ifBlank { "-" }
                         val titles = cards.mapNotNull { card ->
                             card.selectFirst("a.book-title, h2.abook-title a")?.text()?.trim()?.takeIf { it.isNotBlank() }

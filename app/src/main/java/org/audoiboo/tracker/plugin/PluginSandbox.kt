@@ -1,6 +1,7 @@
 package org.audoiboo.tracker.plugin
 
 import android.util.Log
+import org.jsoup.Jsoup
 import java.net.URI
 
 /** Limits enforced by the host for every external plugin invocation. */
@@ -77,7 +78,10 @@ class PluginSandboxSession internal constructor(
                 throw PluginSandboxViolation("Response exceeds sandbox byte limit")
             }
 
-            if (response.statusCode !in REDIRECT_CODES) return response
+            if (response.statusCode !in REDIRECT_CODES) {
+                probeProviderDom(response)
+                return response
+            }
             if (redirects >= limits.maxRedirectsPerRequest) {
                 throw PluginSandboxViolation("Redirect limit exceeded")
             }
@@ -94,6 +98,91 @@ class PluginSandboxSession internal constructor(
 
     fun requireOutputSize(size: Int) {
         if (size > limits.maxOutputItems) throw PluginSandboxViolation("Plugin output item limit exceeded")
+    }
+
+    private fun probeProviderDom(response: PluginHttpResponse) {
+        if (response.statusCode !in 200..299 || response.body.isBlank()) return
+        if (manifest.id !in setOf("izib", "baza-knig")) return
+
+        runCatching {
+            val doc = Jsoup.parse(response.body, response.finalUrl)
+            val path = runCatching { URI(response.finalUrl).path.orEmpty() }.getOrDefault("")
+            val query = runCatching { URI(response.finalUrl).query.orEmpty() }.getOrDefault("")
+
+            when (manifest.id) {
+                "izib" -> when {
+                    path.contains("/authors", ignoreCase = true) -> {
+                        val links = doc.select("a[href*='/author']")
+                        val names = links.map { it.text().trim() }.filter { it.isNotBlank() }
+                        val prokof = links.filter {
+                            it.text().lowercase().replace('ё', 'е').contains("прокоф") ||
+                                it.attr("href").lowercase().contains("prokof")
+                        }.take(8).joinToString(" | ") {
+                            "${it.text().trim()}=>${it.absUrl("href").ifBlank { _ -> it.attr("href") }}"
+                        }.ifBlank { "-" }
+                        diagnostic(
+                            "PROBE izib AUTHORS path=$path query=$query authorLinks=${links.size} " +
+                                "first='${names.firstOrNull() ?: "-"}' last='${names.lastOrNull() ?: "-"}' prokof=[$prokof]"
+                        )
+                    }
+                    path.contains("/author", ignoreCase = true) -> {
+                        val artLinks = doc.select("a[href*='/art']")
+                        val seriesLinks = doc.select("a[href*='/serie']")
+                        val titles = artLinks.map { it.text().trim() }.filter { it.isNotBlank() }.take(5)
+                        diagnostic(
+                            "PROBE izib AUTHOR_PAGE artLinks=${artLinks.size} seriesLinks=${seriesLinks.size} " +
+                                "sample=${titles.joinToString(" | ").ifBlank { "-" }}"
+                        )
+                    }
+                }
+
+                "baza-knig" -> when {
+                    path.contains("/authors/let-", ignoreCase = true) -> {
+                        val links = doc.select("a[href*='/avtor-']")
+                        val names = links.map { it.text().trim() }.filter { it.isNotBlank() }
+                        val prokof = links.filter {
+                            it.text().lowercase().replace('ё', 'е').contains("прокоф") ||
+                                it.attr("href").lowercase().contains("prokof")
+                        }.take(8).joinToString(" | ") {
+                            "${it.text().trim()}=>${it.absUrl("href").ifBlank { _ -> it.attr("href") }}"
+                        }.ifBlank { "-" }
+                        diagnostic(
+                            "PROBE baza AUTHORS path=$path query=$query authorLinks=${links.size} " +
+                                "first='${names.firstOrNull() ?: "-"}' last='${names.lastOrNull() ?: "-"}' prokof=[$prokof]"
+                        )
+                    }
+                    query.contains("do=search", ignoreCase = true) || response.finalUrl.contains("do=search", ignoreCase = true) -> {
+                        val cards = doc.select("article.abook-item")
+                        val authorLinks = doc.select("a.author-title[href*='/avtor-'], a[href*='/avtor-']")
+                        val prokof = authorLinks.filter {
+                            it.text().lowercase().replace('ё', 'е').contains("прокоф") ||
+                                it.attr("href").lowercase().contains("prokof")
+                        }.take(8).joinToString(" | ") {
+                            "${it.text().trim()}=>${it.absUrl("href").ifBlank { _ -> it.attr("href") }}"
+                        }.ifBlank { "-" }
+                        val titles = cards.mapNotNull { card ->
+                            card.selectFirst("a.book-title, h2.abook-title a")?.text()?.trim()?.takeIf { it.isNotBlank() }
+                        }.take(5)
+                        diagnostic(
+                            "PROBE baza SEARCH cards=${cards.size} authorLinks=${authorLinks.size} prokof=[$prokof] " +
+                                "sample=${titles.joinToString(" | ").ifBlank { "-" }}"
+                        )
+                    }
+                    path.contains("/avtor-", ignoreCase = true) -> {
+                        val cards = doc.select("article.abook-item")
+                        val audioLinks = doc.select("a[href*='/audio-']")
+                        diagnostic("PROBE baza AUTHOR_PAGE cards=${cards.size} audioLinks=${audioLinks.size}")
+                    }
+                }
+            }
+        }.onFailure { t ->
+            diagnostic("PROBE ${manifest.id} DOM FAILED ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    private fun diagnostic(message: String) {
+        Log.i("AudoibooSeries", message)
+        SeriesDiagnosticLog.i(message)
     }
 
     private fun requirePermittedUrl(url: String) {

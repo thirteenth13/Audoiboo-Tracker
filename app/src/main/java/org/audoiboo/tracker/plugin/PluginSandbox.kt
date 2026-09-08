@@ -1,5 +1,6 @@
 package org.audoiboo.tracker.plugin
 
+import android.util.Log
 import java.net.URI
 
 /** Limits enforced by the host for every external plugin invocation. */
@@ -59,6 +60,7 @@ class PluginSandboxSession internal constructor(
             requestCount++
 
             val response = transport.get(PluginHttpRequest(currentUrl, safeHeaders), limits.maxResponseBytes)
+            Log.d("AudoibooNet", "${manifest.id} GET $currentUrl -> ${response.statusCode}, ${response.body.length}b")
             requirePermittedUrl(response.finalUrl)
             if (response.body.toByteArray(Charsets.UTF_8).size.toLong() > limits.maxResponseBytes) {
                 throw PluginSandboxViolation("Response exceeds sandbox byte limit")

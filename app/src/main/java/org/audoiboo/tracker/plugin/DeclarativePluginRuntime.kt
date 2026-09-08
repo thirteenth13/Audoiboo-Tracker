@@ -442,12 +442,7 @@ class DeclarativePluginRuntime(
         return slugTokens.isNotEmpty() && slugTokens.all(href::contains)
     }
 
-    private fun letterDirectoryUrl(
-        rootDocument: Element?,
-        initial: Char,
-        linkSelector: String,
-        fallback: String
-    ): String {
+    private fun letterDirectoryUrl(rootDocument: Element?, initial: Char, linkSelector: String, fallback: String): String {
         val expected = SourceIdentityMatcher.normalizeTitle(initial.uppercaseChar().toString())
         return rootDocument
             ?.select(linkSelector)
@@ -462,9 +457,11 @@ class DeclarativePluginRuntime(
         return "$url$separator$name=$value"
     }
 
-    private fun authorTokens(value: String): List<String> = SourceIdentityMatcher.normalizeAuthor(value)
+    // Keep the author's original name order. normalizeAuthor() intentionally sorts tokens for
+    // identity comparison, which is wrong for directory initials and reverse-slug generation.
+    private fun authorTokens(value: String): List<String> = SourceIdentityMatcher.normalizeTitle(value)
         .split(Regex("[^\\p{L}\\p{N}]+"))
-        .filter { it.isNotBlank() }
+        .filter { it.isNotBlank() && it !in setOf("автор", "author") }
 
     private fun stripAuthorSuffix(title: String, author: String): String {
         val variants = listOf(author, authorTokens(author).reversed().joinToString(" ")).filter { it.isNotBlank() }.distinct()

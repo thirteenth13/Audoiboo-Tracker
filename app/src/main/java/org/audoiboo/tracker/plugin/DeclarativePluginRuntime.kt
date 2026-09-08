@@ -206,7 +206,7 @@ class DeclarativePluginRuntime(
     fun discoverIzibSeries(
         manifest: PluginPackageManifest,
         canonical: CanonicalSeriesMatchInput,
-        maxAuthorPages: Int = 12
+        maxAuthorPages: Int = 28
     ): List<SeriesCandidate> {
         requireCapability(manifest, SourceCapability.SERIES_DISCOVERY)
         if (manifest.id != "izib") return emptyList()
@@ -215,13 +215,14 @@ class DeclarativePluginRuntime(
         if (expectedSeries.isBlank()) return emptyList()
         val session = sandbox.open(manifest)
 
-        // Izib's letter directory is surname-oriented in practice. Keep one shared page budget so
-        // discovery cannot exhaust the sandbox before we reach the author page itself.
+        // Probe confirms that the directory is surname-oriented. A 28-page budget reaches authors
+        // such as Роман Прокофьев (П, page 27) while still leaving enough of the 32-request sandbox
+        // budget to inspect the author page and a few fallback pages.
         val initials = authorTokens(author).asReversed().mapNotNull { it.firstOrNull() }.distinct()
         val rootDocument = session.httpGet("https://izib.uk/authors")
             .takeIf { it.statusCode in 200..299 }
             ?.let { Jsoup.parse(it.body, it.finalUrl) }
-        var remainingPages = maxAuthorPages.coerceIn(1, 12)
+        var remainingPages = maxAuthorPages.coerceIn(1, 28)
         var authorUrl: String? = null
 
         authorLoop@ for (initial in initials) {
@@ -291,7 +292,7 @@ class DeclarativePluginRuntime(
             .takeIf { it.statusCode in 200..299 }
             ?.let { Jsoup.parse(it.body, it.finalUrl) }
         var authorUrl: String? = null
-        var remainingPages = 10
+        var remainingPages = 28
 
         authorLoop@ for (initial in initials) {
             if (remainingPages <= 0) break
@@ -303,9 +304,7 @@ class DeclarativePluginRuntime(
                 fallback = "https://baza-knig.info/authors/let-$encoded"
             )
             var page = 1
-            // The site has changed pagination markup more than once. Do not depend on detecting a
-            // next-page anchor: try the bounded pages directly and stop as soon as the author matches.
-            while (remainingPages > 0 && page <= 5) {
+            while (remainingPages > 0 && page <= 28) {
                 val url = if (page == 1) firstPage else appendQueryParameter(firstPage, "page", page)
                 val response = session.httpGet(url)
                 remainingPages--
@@ -322,13 +321,13 @@ class DeclarativePluginRuntime(
 
         val resolvedAuthorUrl = authorUrl ?: return emptyList()
         val refs = mutableListOf<SourceBookRef>()
-        for (page in 1..4) {
+        for (page in 1..3) {
             val pageUrl = if (page == 1) resolvedAuthorUrl else appendQueryParameter(resolvedAuthorUrl, "page", page)
             val response = session.httpGet(pageUrl)
             if (response.statusCode !in 200..299) continue
             collectCanonicalBookRefs(
                 Jsoup.parse(response.body, response.finalUrl),
-                "article.abook-item h2.abook-title a[href*='/audio-'], h2.abook-title a[href*='/audio-'], a[href*='/audio-']",
+                "article.abook-item a.book-title[href*='/audio-'], article.abook-item h2.abook-title a[href*='/audio-']",
                 manifest, canonical, author, refs
             )
             if (refs.distinctBy { SourceKeys.normalizeUrl(it.url) }.size >= canonical.books.size) break
@@ -342,8 +341,6 @@ class DeclarativePluginRuntime(
         val author = canonical.authors.firstOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
         val session = sandbox.open(manifest)
 
-        // Lis10Book uses readable series slugs. Prefer the canonical series URL before doing any
-        // author-directory work; this restores the fast path for pages such as /serie/sfera-mirov/.
         val directSeriesUrl = "https://lis10book.com/serie/${slugifyRussian(canonical.title)}/"
         val directResponse = session.httpGet(directSeriesUrl)
         if (directResponse.statusCode in 200..299) {
@@ -352,7 +349,7 @@ class DeclarativePluginRuntime(
             val headingMatches = heading.isNotBlank() &&
                 SourceIdentityMatcher.normalizeTitle(heading).contains(SourceIdentityMatcher.normalizeTitle(canonical.title))
             val refs = mutableListOf<SourceBookRef>()
-            collectCanonicalBookRefs(directDocument, "a[href*='/audio/']", manifest, canonical, author, refs)
+            collectLis10BookCards(directDocument, manifest, canonical, author, refs)
             val directBooks = refs.distinctBy { SourceKeys.normalizeUrl(it.url) }
             if (headingMatches && directBooks.isNotEmpty()) {
                 val result = listOf(SeriesCandidate(SourceSeries(
@@ -405,12 +402,38 @@ class DeclarativePluginRuntime(
             val pageUrl = if (page == 1) resolvedAuthorUrl else resolvedAuthorUrl.trimEnd('/') + "/page/$page/"
             val response = session.httpGet(pageUrl)
             if (response.statusCode !in 200..299) continue
-            collectCanonicalBookRefs(Jsoup.parse(response.body, response.finalUrl), "a[href*='/audio/']", manifest, canonical, author, refs)
+            collectLis10BookCards(Jsoup.parse(response.body, response.finalUrl), manifest, canonical, author, refs)
             if (refs.distinctBy { SourceKeys.normalizeUrl(it.url) }.size >= canonical.books.size) break
         }
         val result = syntheticSeriesCandidate(manifest.id, canonical, author, resolvedAuthorUrl, refs)
         session.requireOutputSize(result.size)
         return result
+    }
+
+    private fun collectLis10BookCards(
+        document: Element,
+        manifest: PluginPackageManifest,
+        canonical: CanonicalSeriesMatchInput,
+        author: String,
+        output: MutableList<SourceBookRef>
+    ) {
+        document.select("a.mcard[href*='/audio/']").forEach { card ->
+            val cardAuthor = card.selectFirst(".mcard-a")?.text()?.trim().orEmpty()
+            if (cardAuthor.isNotBlank() && !sameAuthor(cardAuthor, author)) return@forEach
+            val href = card.attr("href").takeIf { it.isNotBlank() } ?: return@forEach
+            val bookUrl = canonicalPluginBookUrl(manifest.id, resolveUrl(card, href)) ?: return@forEach
+            val title = card.selectFirst(".mcard-t")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: return@forEach
+            val lightweight = SourceBook(
+                sourceId = manifest.id,
+                url = bookUrl,
+                title = title,
+                authors = listOf(SourceAuthor(author)),
+                seriesTitle = canonical.title
+            )
+            val match = SourceIdentityMatcher.bestBookMatch(lightweight, canonical.books)
+                ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT } ?: return@forEach
+            output += SourceBookRef(url = bookUrl, title = title, number = match.value.number)
+        }
     }
 
     private fun collectCanonicalBookRefs(

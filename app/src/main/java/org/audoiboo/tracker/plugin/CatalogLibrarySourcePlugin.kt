@@ -35,7 +35,7 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
     override val descriptor = SourceDescriptor(
         id = ID,
         name = "Catalog library",
-        version = 5,
+        version = 6,
         hosts = setOf("catalog.local"),
         capabilities = setOf(SourceCapability.SERIES_LOOKUP)
     )
@@ -77,11 +77,6 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
             return emptyList()
         }
 
-        // A refresh must also repair data written by older builds. Previously, a provider match
-        // could be inserted as a second Room row instead of replacing the catalog:// row. Those
-        // stale duplicates then became part of the next canonical input (for example 10 -> 16
-        // books) and poisoned book matching. Collapse logical duplicates before discovery, keep the
-        // stable original row id where possible, and merge the real provider URL/metadata into it.
         val item = dedupeStoredBooks(dao, storedItem)
 
         val baseBooks = item.books.sortedBy { it.sortIndex }.map { book ->
@@ -252,22 +247,20 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
         Log.i(TAG, "catalog discovery END series=${item.series.name} finalRoomBooks=${finalBooks.size} returned=${baseBooks.size + promoted.size}")
 
         return (baseBooks + promoted)
-            .distinctBy { book -> SourceIdentityMatcher.normalizeTitle(book.title) }
+            .distinctBy { book -> CatalogSeriesHeuristics.logicalBookKey(book.title, item.series.name) }
     }
 
     /**
-     * Repairs duplicate Room rows created by older refresh logic. Logical identity is the normalized
-     * title inside one canonical series. We keep a stable catalog row id when available (so tags and
-     * reading state remain attached), but merge a real provider URL and richer metadata from any
-     * duplicate into that row. The duplicate rows are deleted before the merged winners are upserted
-     * to avoid the unique books.url constraint.
+     * Repairs duplicate Room rows created by older refresh logic. Besides exact title duplicates,
+     * it also recognizes bibliography-style aliases such as "Прокофьев Роман - Стеллар 01.
+     * Инкарнатор" and the short catalog title "Инкарнатор" as the same logical volume.
      */
     private suspend fun dedupeStoredBooks(dao: LibraryDao, item: SeriesWithBooks): SeriesWithBooks {
         if (item.books.size < 2) return item
 
         val groups = item.books
             .sortedBy { it.sortIndex }
-            .groupBy { SourceIdentityMatcher.normalizeTitle(it.title) }
+            .groupBy { book -> CatalogSeriesHeuristics.logicalBookKey(book.title, item.series.name) }
         if (groups.size == item.books.size) return item
 
         val now = System.currentTimeMillis()

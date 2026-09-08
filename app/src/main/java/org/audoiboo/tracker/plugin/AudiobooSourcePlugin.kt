@@ -97,7 +97,10 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
         }.distinctBy { SourceKeys.normalizeUrl(it.url) }
         diagnostic("provider audioboo DISCOVERY_AUTHOR matchedRefs=${refs.size}")
 
-        if (refs.isEmpty()) return emptyList()
+        if (refs.isEmpty()) {
+            probeSearchRoutes(author, canonical)
+            return emptyList()
+        }
         return listOf(
             SeriesCandidate(
                 SourceSeries(
@@ -109,6 +112,24 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
                 )
             )
         )
+    }
+
+    private fun probeSearchRoutes(author: String, canonical: CanonicalSeriesMatchInput) {
+        val firstBook = canonical.books.firstOrNull()?.title?.trim().orEmpty()
+        val probeQuery = listOf(author, firstBook).filter { it.isNotBlank() }.joinToString(" ").ifBlank { canonical.title }
+        val encoded = URLEncoder.encode(probeQuery, StandardCharsets.UTF_8.name())
+        val routes = listOf(
+            "index" to "https://audioboo.org/index.php?do=search&subaction=search&story=$encoded",
+            "root" to "https://audioboo.org/?do=search&subaction=search&story=$encoded"
+        )
+        routes.forEach { (name, url) ->
+            diagnostic("PROBE audioboo SEARCH_ROUTE route=$name url=$url")
+            val resolved = runCatching { resolveSeries(url) }.getOrNull()
+            diagnostic(
+                "PROBE_SUMMARY id=audioboo route=$name resolved=${resolved != null} " +
+                    "series='${resolved?.title ?: "-"}' url=${resolved?.url ?: "-"}"
+            )
+        }
     }
 
     override suspend fun resolveDownloads(book: SourceBook): List<DownloadCandidate> {

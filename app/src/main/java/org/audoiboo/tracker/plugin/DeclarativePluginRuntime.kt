@@ -206,7 +206,7 @@ class DeclarativePluginRuntime(
     fun discoverIzibSeries(
         manifest: PluginPackageManifest,
         canonical: CanonicalSeriesMatchInput,
-        maxAuthorPages: Int = 24
+        maxAuthorPages: Int = 12
     ): List<SeriesCandidate> {
         requireCapability(manifest, SourceCapability.SERIES_DISCOVERY)
         if (manifest.id != "izib") return emptyList()
@@ -215,11 +215,13 @@ class DeclarativePluginRuntime(
         if (expectedSeries.isBlank()) return emptyList()
         val session = sandbox.open(manifest)
 
-        val initials = authorTokens(author).mapNotNull { it.firstOrNull() }.distinct()
+        // Izib's letter directory is surname-oriented in practice. Keep one shared page budget so
+        // discovery cannot exhaust the sandbox before we reach the author page itself.
+        val initials = authorTokens(author).asReversed().mapNotNull { it.firstOrNull() }.distinct()
         val rootDocument = session.httpGet("https://izib.uk/authors")
             .takeIf { it.statusCode in 200..299 }
             ?.let { Jsoup.parse(it.body, it.finalUrl) }
-        var remainingPages = maxAuthorPages.coerceIn(1, 24)
+        var remainingPages = maxAuthorPages.coerceIn(1, 12)
         var authorUrl: String? = null
 
         authorLoop@ for (initial in initials) {
@@ -236,16 +238,13 @@ class DeclarativePluginRuntime(
                 val url = if (page == 1) firstPage else appendQueryParameter(firstPage, "p", page)
                 val response = session.httpGet(url)
                 remainingPages--
-                if (response.statusCode !in 200..299) {
-                    page++
-                    continue
+                if (response.statusCode in 200..299) {
+                    val document = Jsoup.parse(response.body, response.finalUrl)
+                    authorUrl = document.select("a[href*='/author']")
+                        .firstOrNull { authorLinkMatches(it, author) }
+                        ?.let { resolveUrl(it, it.attr("href")) }
+                    if (authorUrl != null) break@authorLoop
                 }
-                val document = Jsoup.parse(response.body, response.finalUrl)
-                authorUrl = document.select("a[href*='/author']")
-                    .firstOrNull { authorLinkMatches(it, author) }
-                    ?.let { resolveUrl(it, it.attr("href")) }
-                if (authorUrl != null) break@authorLoop
-                if (document.select("a[href*='p=${page + 1}']").isEmpty()) break
                 page++
             }
         }
@@ -292,7 +291,7 @@ class DeclarativePluginRuntime(
             .takeIf { it.statusCode in 200..299 }
             ?.let { Jsoup.parse(it.body, it.finalUrl) }
         var authorUrl: String? = null
-        var remainingPages = 8
+        var remainingPages = 10
 
         authorLoop@ for (initial in initials) {
             if (remainingPages <= 0) break
@@ -304,20 +303,19 @@ class DeclarativePluginRuntime(
                 fallback = "https://baza-knig.info/authors/let-$encoded"
             )
             var page = 1
-            while (remainingPages > 0) {
+            // The site has changed pagination markup more than once. Do not depend on detecting a
+            // next-page anchor: try the bounded pages directly and stop as soon as the author matches.
+            while (remainingPages > 0 && page <= 5) {
                 val url = if (page == 1) firstPage else appendQueryParameter(firstPage, "page", page)
                 val response = session.httpGet(url)
                 remainingPages--
-                if (response.statusCode !in 200..299) {
-                    page++
-                    continue
+                if (response.statusCode in 200..299) {
+                    val document = Jsoup.parse(response.body, response.finalUrl)
+                    authorUrl = document.select("a[href*='/avtor-']")
+                        .firstOrNull { authorLinkMatches(it, author) }
+                        ?.let { resolveUrl(it, it.attr("href")) }
+                    if (authorUrl != null) break@authorLoop
                 }
-                val document = Jsoup.parse(response.body, response.finalUrl)
-                authorUrl = document.select("a[href*='/avtor-']")
-                    .firstOrNull { authorLinkMatches(it, author) }
-                    ?.let { resolveUrl(it, it.attr("href")) }
-                if (authorUrl != null) break@authorLoop
-                if (document.select("a[href*='page=${page + 1}']").isEmpty()) break
                 page++
             }
         }
@@ -343,6 +341,32 @@ class DeclarativePluginRuntime(
     private fun discoverLis10BookSeries(manifest: PluginPackageManifest, canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
         val author = canonical.authors.firstOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
         val session = sandbox.open(manifest)
+
+        // Lis10Book uses readable series slugs. Prefer the canonical series URL before doing any
+        // author-directory work; this restores the fast path for pages such as /serie/sfera-mirov/.
+        val directSeriesUrl = "https://lis10book.com/serie/${slugifyRussian(canonical.title)}/"
+        val directResponse = session.httpGet(directSeriesUrl)
+        if (directResponse.statusCode in 200..299) {
+            val directDocument = Jsoup.parse(directResponse.body, directResponse.finalUrl)
+            val heading = directDocument.selectFirst("h1")?.text()?.trim().orEmpty()
+            val headingMatches = heading.isNotBlank() &&
+                SourceIdentityMatcher.normalizeTitle(heading).contains(SourceIdentityMatcher.normalizeTitle(canonical.title))
+            val refs = mutableListOf<SourceBookRef>()
+            collectCanonicalBookRefs(directDocument, "a[href*='/audio/']", manifest, canonical, author, refs)
+            val directBooks = refs.distinctBy { SourceKeys.normalizeUrl(it.url) }
+            if (headingMatches && directBooks.isNotEmpty()) {
+                val result = listOf(SeriesCandidate(SourceSeries(
+                    sourceId = manifest.id,
+                    url = directResponse.finalUrl,
+                    title = canonical.title,
+                    authors = listOf(SourceAuthor(author)),
+                    books = directBooks
+                )))
+                session.requireOutputSize(result.size)
+                return result
+            }
+        }
+
         val slugCandidates = buildList {
             add(slugifyRussian(author))
             val reversed = authorTokens(author).reversed().joinToString(" ")
@@ -355,7 +379,7 @@ class DeclarativePluginRuntime(
             if (response.statusCode !in 200..299) continue
             val document = Jsoup.parse(response.body, response.finalUrl)
             val heading = document.selectFirst("h1")?.text().orEmpty()
-            if (heading.isBlank() || sameAuthor(heading.substringBefore(" (").trim(), author) || document.select("a[href*='/audio/']").isNotEmpty()) {
+            if (sameAuthor(heading.substringBefore(" (").trim(), author)) {
                 authorUrl = response.finalUrl
                 break
             }
@@ -363,13 +387,15 @@ class DeclarativePluginRuntime(
         if (authorUrl == null) {
             val directoryUrls = buildList {
                 add("https://lis10book.com/avtory/")
-                for (page in 2..6) add("https://lis10book.com/avtory/page/$page/")
+                for (page in 2..10) add("https://lis10book.com/avtory/page/$page/")
             }
             for (url in directoryUrls) {
                 val response = session.httpGet(url)
                 if (response.statusCode !in 200..299) continue
                 val document = Jsoup.parse(response.body, response.finalUrl)
-                authorUrl = document.select("a[href*='/avtor/']").firstOrNull { sameAuthor(it.text(), author) }?.let { resolveUrl(it, it.attr("href")) }
+                authorUrl = document.select("a[href*='/avtor/']")
+                    .firstOrNull { authorLinkMatches(it, author) }
+                    ?.let { resolveUrl(it, it.attr("href")) }
                 if (authorUrl != null) break
             }
         }
@@ -457,8 +483,6 @@ class DeclarativePluginRuntime(
         return "$url$separator$name=$value"
     }
 
-    // Keep the author's original name order. normalizeAuthor() intentionally sorts tokens for
-    // identity comparison, which is wrong for directory initials and reverse-slug generation.
     private fun authorTokens(value: String): List<String> = SourceIdentityMatcher.normalizeTitle(value)
         .split(Regex("[^\\p{L}\\p{N}]+"))
         .filter { it.isNotBlank() && it !in setOf("автор", "author") }

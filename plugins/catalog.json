@@ -40,10 +40,10 @@
     {
       "id": "izib",
       "name": "Izib",
-      "version": 6,
+      "version": 7,
       "apiVersion": 1,
-      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/izib-6.abplugin",
-      "sha256": "6d2272faaa8fe094ed6a855291ee856bc2f50eda8b4e4b620cad1b13e9383e83",
+      "url": "https://raw.githubusercontent.com/thirteenth13/Audoiboo-Tracker/main/plugins/packages/izib-7.abplugin",
+      "sha256": "a6e779e1c42493d1e4c575c810c87cb0272773ba8519bdd766d91c81c781f484",
       "description": "Книги, серії, SERIES_DISCOVERY та декларативний WebView mediaCapture Izib/PDA; v4 переносить збір аудіотреків зі сторінок /art у плагін."
     }
   ]

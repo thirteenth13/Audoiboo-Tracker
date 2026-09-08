@@ -77,6 +77,28 @@ class CatalogDiscoveryEngineTest {
     }
 
     @Test
+    fun collapsesShortAndBibliographyStyleStellarTitles() {
+        val author = CatalogAuthor("fantlab", "a1", "Роман Прокофьев")
+        val catalog = AuthorCatalog(
+            author,
+            listOf(
+                CatalogBook("fantlab", "short-1", "Инкарнатор", listOf(author.name), listOf("Стеллар"), 1.0),
+                CatalogBook("fantlab", "full-1", "Прокофьев Роман - Стеллар 01. Инкарнатор", listOf("Прокофьев Роман"), listOf("Стеллар"), coverUrl = "https://covers.example/incarnator.jpg"),
+                CatalogBook("fantlab", "short-9", "Прометей", listOf(author.name), listOf("Стеллар"), 9.0),
+                CatalogBook("fantlab", "full-9", "Прокофьев Роман - Стеллар 09. Прометей", listOf("Прокофьев Роман"), listOf("Стеллар"))
+            )
+        )
+
+        val books = CatalogSeriesHeuristics.group(catalog).series.single().books
+
+        assertEquals(2, books.size)
+        assertEquals("инкарнатор", CatalogSeriesHeuristics.logicalBookKey("Прокофьев Роман - Стеллар 01. Инкарнатор", "Стеллар"))
+        assertEquals("прометей", CatalogSeriesHeuristics.logicalBookKey("Прокофьев Роман - Стеллар 09. Прометей", "Стеллар"))
+        assertEquals(1, books.count { CatalogSeriesHeuristics.logicalBookKey(it.title, "Стеллар") == "инкарнатор" })
+        assertEquals(1, books.count { CatalogSeriesHeuristics.logicalBookKey(it.title, "Стеллар") == "прометей" })
+    }
+
+    @Test
     fun discoveryUsesCatalogProvidersAndIsolatesBrokenOnes() = runBlocking {
         val engine = CatalogDiscoveryEngine(
             SourcePluginRegistry(listOf(FakeCatalogPlugin("good"), FakeCatalogPlugin("broken", broken = true)))

@@ -54,12 +54,6 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
         }
     }
 
-    /**
-     * Audioboo exposes stable cycle URLs but its cycle index can lag behind newly published books.
-     * Try the direct cycle first, then fall back to the stable author xfsearch page and return only
-     * books that the canonical matcher accepts. The discovery engine can consume these direct refs
-     * without hydrating the whole author listing again.
-     */
     override suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
         val title = canonical.title.trim()
         if (title.isBlank()) return emptyList()
@@ -114,7 +108,7 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
         )
     }
 
-    private fun probeSearchRoutes(author: String, canonical: CanonicalSeriesMatchInput) {
+    private suspend fun probeSearchRoutes(author: String, canonical: CanonicalSeriesMatchInput) {
         val firstBook = canonical.books.firstOrNull()?.title?.trim().orEmpty()
         val probeQuery = listOf(author, firstBook).filter { it.isNotBlank() }.joinToString(" ").ifBlank { canonical.title }
         val encoded = URLEncoder.encode(probeQuery, StandardCharsets.UTF_8.name())

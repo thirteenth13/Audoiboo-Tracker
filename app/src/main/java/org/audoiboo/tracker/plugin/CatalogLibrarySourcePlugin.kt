@@ -7,18 +7,7 @@ import org.audoiboo.tracker.BookEntity
 import org.audoiboo.tracker.LibraryDao
 import org.audoiboo.tracker.SeriesWithBooks
 
-/**
- * Adapter for catalog-only Room series (`catalog://...`).
- *
- * Catalog imports are canonical metadata, not an audio website, so the normal URL based refresh
- * used to stop before source discovery. This adapter exposes the stored catalog series as a
- * SERIES_LOOKUP source and, while hydrating it, asks every enabled discovery/search provider for
- * audio candidates.
- *
- * When an audio provider matches an existing catalog book, the Room row is promoted from its
- * metadata-only catalog URL to the real provider URL (and cover/author metadata are hydrated).
- * Genuinely missing remote volumes are inserted into the canonical series.
- */
+/** Adapter for catalog-only Room series (`catalog://...`). */
 object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
     private const val ID = "catalog-library"
     private const val TAG = "AudoibooSeries"
@@ -35,7 +24,7 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
     override val descriptor = SourceDescriptor(
         id = ID,
         name = "Catalog library",
-        version = 6,
+        version = 7,
         hosts = setOf("catalog.local"),
         capabilities = setOf(SourceCapability.SERIES_LOOKUP)
     )
@@ -44,18 +33,15 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
 
     override suspend fun resolveSeries(url: String): SourceSeries? {
         if (!supports(url)) return null
-        val item = findSeries(url)
-        if (item == null) {
+        val item = findSeries(url) ?: run {
             Log.w(TAG, "catalog resolve: MISS url=$url")
             return null
         }
-        Log.i(TAG, "catalog resolve: title=${item.series.name} id=${item.series.id} books=${item.books.size} url=$url")
         return SourceSeries(
             sourceId = descriptor.id,
             url = item.series.url,
             title = item.series.name,
-            authors = item.books
-                .mapNotNull { it.author }
+            authors = item.books.mapNotNull { it.author }
                 .flatMap(::splitAuthors)
                 .distinct()
                 .map(::SourceAuthor)
@@ -64,46 +50,20 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
 
     override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> {
         require(series.sourceId == descriptor.id) { "Series belongs to another source" }
-        val context = appContext
-        if (context == null) {
-            Log.e(TAG, "catalog load: no appContext title=${series.title}")
-            return emptyList()
-        }
-        val db = AudoibooDatabase.get(context)
-        val dao = db.libraryDao()
-        val storedItem = dao.library().firstOrNull { it.series.url == series.url }
-        if (storedItem == null) {
-            Log.e(TAG, "catalog load: Room series not found title=${series.title} url=${series.url}")
-            return emptyList()
-        }
+        val context = appContext ?: return emptyList()
+        val dao = AudoibooDatabase.get(context).libraryDao()
+        val storedItem = dao.library().firstOrNull { it.series.url == series.url } ?: return emptyList()
+        val item = repairStoredBooks(dao, storedItem)
 
-        val item = dedupeStoredBooks(dao, storedItem)
-
-        val baseBooks = item.books.sortedBy { it.sortIndex }.map { book ->
-            SourceBook(
-                sourceId = descriptor.id,
-                url = book.url,
-                title = book.title,
-                authors = book.author?.let(::splitAuthors).orEmpty().map(::SourceAuthor),
-                seriesTitle = item.series.name,
-                seriesNumber = (book.sortIndex + 1).toDouble(),
-                coverUrl = book.coverUrl
-            )
-        }
-
+        val baseBooks = item.books.sortedBy { it.sortIndex }.map { it.toSourceBook(item.series.name) }
         val discoverable = PluginPackageRuntime.registry.plugins
             .filter { plugin ->
                 plugin.descriptor.id != descriptor.id &&
                     (SourceCapability.SERIES_SEARCH in plugin.descriptor.capabilities ||
                         SourceCapability.SERIES_DISCOVERY in plugin.descriptor.capabilities)
             }
-            .joinToString(",") { plugin ->
-                val caps = buildList {
-                    if (SourceCapability.SERIES_SEARCH in plugin.descriptor.capabilities) add("SEARCH")
-                    if (SourceCapability.SERIES_DISCOVERY in plugin.descriptor.capabilities) add("DISCOVERY")
-                }.joinToString("+")
-                "${plugin.descriptor.id}[$caps]"
-            }
+            .joinToString(",") { plugin -> plugin.descriptor.id }
+
         Log.i(TAG, "catalog discovery START series=${item.series.name} canonicalBooks=${baseBooks.size} providers=$discoverable")
         SeriesDiagnosticLog.i("catalog discovery START series=${item.series.name} canonicalBooks=${baseBooks.size} providers=$discoverable")
 
@@ -121,181 +81,168 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
                 .edit()
                 .putLong("$DISCOVERY_LAST_SUCCESS_PREFIX${item.series.id}", System.currentTimeMillis())
                 .apply()
-            Log.i(TAG, "catalog discovery MARK_SUCCESS series=${item.series.name} id=${item.series.id}; duplicate Room discovery suppressed")
         }
 
-        allFindings.forEach { finding ->
-            Log.i(
-                TAG,
-                "catalog finding source=${finding.sourceId} disposition=${finding.disposition} confidence=${"%.3f".format(finding.confidence)} books=${finding.books.size} title=${finding.series.title} url=${finding.series.url} evidence=${finding.evidence.joinToString(" | ")}"
-            )
-        }
         val findings = allFindings.filter { it.disposition == MatchDisposition.AUTO_ACCEPT }
-        if (findings.isEmpty()) {
-            Log.w(TAG, "catalog discovery END series=${item.series.name}: acceptedFindings=0 rawFindings=${allFindings.size}; no Room changes")
-            return baseBooks
-        }
+        if (findings.isEmpty()) return baseBooks
 
-        val candidates = canonical.books.toMutableList()
         val booksById = item.books.associateBy { it.id }.toMutableMap()
-        val claimedExistingIds = linkedSetOf<String>()
-        val promoted = mutableListOf<SourceBook>()
-        val roomUpdates = mutableListOf<BookEntity>()
-        var syntheticIndex = 0
-        var nextSortIndex = (item.books.maxOfOrNull { it.sortIndex } ?: -1) + 1
+        val roomUpdates = linkedMapOf<String, BookEntity>()
         val now = System.currentTimeMillis()
 
-        findings.forEach findingLoop@ { finding ->
+        findings.forEach { finding ->
+            // A canonical book may be present on many providers. Only de-duplicate within one
+            // provider finding; never globally claim the book across providers.
+            val claimedInFinding = linkedSetOf<String>()
             val memberBooks = SeriesBookMembershipPolicy.filter(finding.series, finding.books)
             Log.i(TAG, "catalog source=${finding.sourceId}: providerBooks=${finding.books.size} membershipAccepted=${memberBooks.size}")
+
             memberBooks.forEach remoteLoop@ { remote ->
                 val rawMatch = SourceIdentityMatcher.bestBookMatch(
                     incoming = remote,
-                    candidates = candidates.filterNot { it.id in claimedExistingIds }
+                    candidates = canonical.books.filterNot { it.id in claimedInFinding }
                 )
-                val existingMatch = rawMatch?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
-
-                if (existingMatch != null) {
-                    val existing = booksById[existingMatch.value.id]
-                    if (existing != null) {
-                        claimedExistingIds += existing.id
-                        if (supports(existing.url)) {
-                            val hydrated = existing.copy(
-                                url = remote.url,
-                                author = sourceAuthor(remote) ?: existing.author,
-                                coverUrl = remote.coverUrl ?: existing.coverUrl,
-                                updatedAt = now
-                            )
-                            booksById[existing.id] = hydrated
-                            roomUpdates += hydrated
-                            Log.i(
-                                TAG,
-                                "catalog book HYDRATE source=${finding.sourceId} remote='${remote.title}' -> canonical='${existing.title}' confidence=${"%.3f".format(existingMatch.confidence)} oldUrl=${existing.url} newUrl=${remote.url} cover=${!remote.coverUrl.isNullOrBlank()}"
-                            )
-                        } else {
-                            Log.i(
-                                TAG,
-                                "catalog book KEEP_REAL source=${finding.sourceId} remote='${remote.title}' -> canonical='${existing.title}' confidence=${"%.3f".format(existingMatch.confidence)} existingUrl=${existing.url}"
-                            )
-                        }
-                    } else {
-                        Log.w(TAG, "catalog book MATCH_ID_MISSING source=${finding.sourceId} remote='${remote.title}' matchedId=${existingMatch.value.id}")
-                    }
+                val match = rawMatch?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                if (match == null) {
+                    val reason = rawMatch?.let { "${it.disposition}/${"%.3f".format(it.confidence)}" } ?: "NO_MATCH"
+                    Log.w(TAG, "catalog book SKIP_UNMATCHED source=${finding.sourceId} remote='${remote.title}' reason=$reason url=${remote.url}")
                     return@remoteLoop
                 }
 
-                if (rawMatch != null) {
-                    Log.w(
-                        TAG,
-                        "catalog book NOT_AUTO source=${finding.sourceId} remote='${remote.title}' best='${rawMatch.value.title}' disposition=${rawMatch.disposition} confidence=${"%.3f".format(rawMatch.confidence)} evidence=${rawMatch.evidence.joinToString(" | ")}"
+                val existing = booksById[match.value.id] ?: return@remoteLoop
+                claimedInFinding += existing.id
+
+                // Keep one logical Room row. Discovery snapshots/UI retain the other provider URLs.
+                // Hydrate a catalog-only row from the first good provider, but later providers must
+                // never create another BookEntity for the same canonical work.
+                if (supports(existing.url)) {
+                    val hydrated = existing.copy(
+                        url = remote.url,
+                        author = sourceAuthor(remote) ?: existing.author,
+                        coverUrl = remote.coverUrl ?: existing.coverUrl,
+                        updatedAt = now
                     )
+                    booksById[existing.id] = hydrated
+                    roomUpdates[existing.id] = hydrated
+                    Log.i(TAG, "catalog book HYDRATE source=${finding.sourceId} remote='${remote.title}' -> canonical='${existing.title}' confidence=${"%.3f".format(match.confidence)}")
                 } else {
-                    Log.w(TAG, "catalog book NO_MATCH source=${finding.sourceId} remote='${remote.title}' number=${remote.seriesNumber} url=${remote.url}")
+                    Log.i(TAG, "catalog book MERGE_SOURCE source=${finding.sourceId} remote='${remote.title}' -> canonical='${existing.title}' confidence=${"%.3f".format(match.confidence)}")
                 }
-
-                val promotedBook = remote.copy(
-                    sourceId = descriptor.id,
-                    seriesTitle = item.series.name
-                )
-                promoted += promotedBook
-
-                val numberIndex = remote.seriesNumber
-                    ?.takeIf { it >= 1.0 }
-                    ?.toInt()
-                    ?.minus(1)
-                    ?.coerceAtLeast(0)
-                val newId = "${item.series.id}::${remote.url}"
-                val newEntity = BookEntity(
-                    id = newId,
-                    seriesId = item.series.id,
-                    title = remote.title,
-                    url = remote.url,
-                    author = sourceAuthor(remote),
-                    coverUrl = remote.coverUrl,
-                    status = "NEW",
-                    archiveUrl = null,
-                    sortIndex = numberIndex ?: nextSortIndex++,
-                    updatedAt = now
-                )
-                booksById[newId] = newEntity
-                roomUpdates += newEntity
-                Log.i(TAG, "catalog book PROMOTE source=${finding.sourceId} title='${remote.title}' number=${remote.seriesNumber} sortIndex=${newEntity.sortIndex} url=${remote.url}")
-
-                candidates += CanonicalBookMatchInput(
-                    id = "promoted:${syntheticIndex++}",
-                    title = promotedBook.title,
-                    authors = promotedBook.authors.map { it.name },
-                    number = promotedBook.seriesNumber
-                )
             }
         }
 
-        if (roomUpdates.isNotEmpty()) {
-            val originalIds = item.books.map { it.id }.toSet()
-            dao.upsertBooks(roomUpdates)
-            Log.i(TAG, "catalog Room UPSERT series=${item.series.name} updates=${roomUpdates.size} hydrated=${roomUpdates.count { it.id in originalIds }} promoted=${promoted.size}")
-        } else {
-            Log.w(TAG, "catalog Room UPSERT series=${item.series.name}: updates=0 despite accepted findings=${findings.size}")
-        }
+        if (roomUpdates.isNotEmpty()) dao.upsertBooks(roomUpdates.values.toList())
 
         val finalBooks = dao.seriesWithBooks(item.series.id)?.books.orEmpty().sortedBy { it.sortIndex }
-        finalBooks.forEachIndexed { index, book ->
-            val source = PluginPackageRuntime.registry.forUrl(book.url, SourceCapability.BOOK_LOOKUP)?.descriptor?.id
-                ?: if (supports(book.url)) descriptor.id else "unknown"
-            Log.i(TAG, "catalog final ${index + 1}/${finalBooks.size} source=$source title='${book.title}' url=${book.url} cover=${!book.coverUrl.isNullOrBlank()}")
-        }
-        Log.i(TAG, "catalog discovery END series=${item.series.name} finalRoomBooks=${finalBooks.size} returned=${baseBooks.size + promoted.size}")
-
-        return (baseBooks + promoted)
-            .distinctBy { book -> CatalogSeriesHeuristics.logicalBookKey(book.title, item.series.name) }
+        Log.i(TAG, "catalog discovery END series=${item.series.name} finalRoomBooks=${finalBooks.size} promoted=0")
+        return finalBooks.map { it.toSourceBook(item.series.name) }
     }
 
     /**
-     * Repairs duplicate Room rows created by older refresh logic. Besides exact title duplicates,
-     * it also recognizes bibliography-style aliases such as "Прокофьев Роман - Стеллар 01.
-     * Инкарнатор" and the short catalog title "Инкарнатор" as the same logical volume.
+     * Repairs rows written by the older unsafe PROMOTE path. Synthetic promoted rows use an id of
+     * `<seriesId>::http...`. They are never canonical works: if they match a real catalog row we
+     * merge useful metadata into that row; otherwise we prune them. This removes both ordinary
+     * provider duplicates and false positives such as a same-title book by another author.
      */
-    private suspend fun dedupeStoredBooks(dao: LibraryDao, item: SeriesWithBooks): SeriesWithBooks {
+    private suspend fun repairStoredBooks(dao: LibraryDao, item: SeriesWithBooks): SeriesWithBooks {
         if (item.books.size < 2) return item
 
-        val groups = item.books
-            .sortedBy { it.sortIndex }
-            .groupBy { book -> CatalogSeriesHeuristics.logicalBookKey(book.title, item.series.name) }
-        if (groups.size == item.books.size) return item
-
+        val stable = item.books.filterNot { isSyntheticPromotion(it, item.series.id) }
+        val synthetic = item.books.filter { isSyntheticPromotion(it, item.series.id) }
         val now = System.currentTimeMillis()
-        val winners = groups.values.map { group ->
-            val anchor = group.firstOrNull { supports(it.url) } ?: group.minBy { it.sortIndex }
-            val real = group.firstOrNull { !supports(it.url) }
-            val read = group.any { it.status == "READ" }
-            anchor.copy(
-                url = real?.url ?: anchor.url,
-                author = real?.author?.takeIf { it.isNotBlank() }
-                    ?: group.firstNotNullOfOrNull { it.author?.takeIf(String::isNotBlank) },
-                coverUrl = real?.coverUrl?.takeIf { it.isNotBlank() }
-                    ?: group.firstNotNullOfOrNull { it.coverUrl?.takeIf(String::isNotBlank) },
-                status = if (read) "READ" else anchor.status,
-                archiveUrl = group.firstNotNullOfOrNull { it.archiveUrl?.takeIf(String::isNotBlank) },
-                sortIndex = group.minOf { it.sortIndex },
-                updatedAt = now
-            )
-        }.sortedBy { it.sortIndex }
+
+        val mergedStable = stable.associateBy { it.id }.toMutableMap()
+        synthetic.forEach { extra ->
+            val extraKey = CatalogSeriesHeuristics.logicalBookKey(extra.title, item.series.name)
+            val matches = stable.filter { anchor ->
+                CatalogSeriesHeuristics.logicalBookKey(anchor.title, item.series.name) == extraKey &&
+                    authorsCompatible(anchor.author, extra.author)
+            }
+            val anchor = matches.minByOrNull { it.sortIndex }
+            if (anchor != null) {
+                val current = mergedStable.getValue(anchor.id)
+                mergedStable[anchor.id] = current.copy(
+                    url = if (supports(current.url) && !supports(extra.url)) extra.url else current.url,
+                    author = current.author ?: extra.author,
+                    coverUrl = current.coverUrl ?: extra.coverUrl,
+                    status = if (current.status == "READ" || extra.status == "READ") "READ" else current.status,
+                    archiveUrl = current.archiveUrl ?: extra.archiveUrl,
+                    updatedAt = now
+                )
+                Log.i(TAG, "catalog Room MERGE_STALE series=${item.series.name} extra='${extra.title}' -> '${anchor.title}' author='${extra.author}'")
+            } else {
+                Log.w(TAG, "catalog Room PRUNE_STALE series=${item.series.name} title='${extra.title}' author='${extra.author}'")
+            }
+        }
+
+        // Collapse duplicate canonical rows conservatively: same logical title plus compatible
+        // author identity. This handles aliases like Лаэндэл / Алексей Лаэндэл /
+        // Алексей Андриенко (Лаэндэл), but does not merge a чужий author with the same title.
+        val buckets = mutableListOf<MutableList<BookEntity>>()
+        mergedStable.values.sortedBy { it.sortIndex }.forEach { book ->
+            val key = CatalogSeriesHeuristics.logicalBookKey(book.title, item.series.name)
+            val bucket = buckets.firstOrNull { group ->
+                val first = group.first()
+                CatalogSeriesHeuristics.logicalBookKey(first.title, item.series.name) == key &&
+                    authorsCompatible(first.author, book.author)
+            }
+            if (bucket == null) buckets += mutableListOf(book) else bucket += book
+        }
+
+        val winners = buckets.map { group -> mergeCanonicalGroup(group, now) }
+            .sortedBy { it.sortIndex }
             .mapIndexed { index, book -> book.copy(sortIndex = index, updatedAt = now) }
 
-        val removed = item.books.size - winners.size
+        if (winners.size == item.books.size && synthetic.isEmpty()) return item
+
         dao.deleteMissingBooks(item.series.id, winners.map { it.id })
         dao.upsertBooks(winners)
-        val message = "catalog Room DEDUPE series=${item.series.name} before=${item.books.size} after=${winners.size} removed=$removed"
+        val message = "catalog Room REPAIR series=${item.series.name} before=${item.books.size} after=${winners.size} removed=${item.books.size - winners.size} synthetic=${synthetic.size}"
         Log.i(TAG, message)
         SeriesDiagnosticLog.i(message)
-
         return dao.seriesWithBooks(item.series.id) ?: item.copy(books = winners)
     }
+
+    private fun mergeCanonicalGroup(group: List<BookEntity>, now: Long): BookEntity {
+        val anchor = group.firstOrNull { supports(it.url) } ?: group.minBy { it.sortIndex }
+        val richer = group.maxWithOrNull(
+            compareBy<BookEntity> { if (!it.coverUrl.isNullOrBlank()) 4 else 0 }
+                .thenBy { if (!it.author.isNullOrBlank()) 2 else 0 }
+                .thenBy { if (!supports(it.url)) 1 else 0 }
+        ) ?: anchor
+        return anchor.copy(
+            url = group.firstOrNull { !supports(it.url) }?.url ?: anchor.url,
+            author = richer.author ?: anchor.author,
+            coverUrl = richer.coverUrl ?: anchor.coverUrl,
+            status = if (group.any { it.status == "READ" }) "READ" else anchor.status,
+            archiveUrl = group.firstNotNullOfOrNull { it.archiveUrl },
+            sortIndex = group.minOf { it.sortIndex },
+            updatedAt = now
+        )
+    }
+
+    private fun authorsCompatible(left: String?, right: String?): Boolean {
+        if (left.isNullOrBlank() || right.isNullOrBlank()) return false
+        val a = SourceIdentityMatcher.normalizeAuthor(left)
+        val b = SourceIdentityMatcher.normalizeAuthor(right)
+        if (a.isBlank() || b.isBlank()) return false
+        if (a == b) return true
+
+        val genericGivenNames = setOf(
+            "алексей", "александр", "андрей", "дмитрий", "иван", "михаил", "николай",
+            "роман", "сергей", "владимир", "евгений", "максим", "артем", "антон"
+        )
+        val common = a.split(' ').toSet().intersect(b.split(' ').toSet())
+        return common.any { token -> token.length >= 4 && token !in genericGivenNames }
+    }
+
+    private fun isSyntheticPromotion(book: BookEntity, seriesId: String): Boolean =
+        book.id.startsWith("$seriesId::http://") || book.id.startsWith("$seriesId::https://")
 
     private suspend fun findSeries(url: String): SeriesWithBooks? {
         val context = appContext ?: return null
         return AudoibooDatabase.get(context).libraryDao().library()
-            .firstOrNull { it.series.url.equals(url, ignoreCase = false) }
+            .firstOrNull { it.series.url == url }
     }
 
     private fun canonicalInput(item: SeriesWithBooks) = CanonicalSeriesMatchInput(
@@ -312,11 +259,21 @@ object CatalogLibrarySourcePlugin : SourcePlugin, SeriesProvider {
         }
     )
 
+    private fun BookEntity.toSourceBook(seriesTitle: String) = SourceBook(
+        sourceId = descriptor.id,
+        url = url,
+        title = title,
+        authors = author?.let(::splitAuthors).orEmpty().map(::SourceAuthor),
+        seriesTitle = seriesTitle,
+        seriesNumber = (sortIndex + 1).toDouble(),
+        coverUrl = coverUrl
+    )
+
     private fun sourceAuthor(book: SourceBook): String? =
         book.authors.joinToString(", ") { it.name }.takeIf { it.isNotBlank() }
 
     private fun splitAuthors(value: String): List<String> = value
-        .split(',', ';', '&')
+        .split(',', ';', '&', '/')
         .map { it.trim() }
         .filter { it.isNotBlank() }
 }

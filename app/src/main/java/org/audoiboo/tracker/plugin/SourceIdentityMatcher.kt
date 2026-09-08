@@ -31,6 +31,11 @@ object SourceIdentityMatcher {
     const val REVIEW_THRESHOLD = 0.70f
     private const val SERIES_AUTO_MARGIN = 0.08f
     private const val BOOK_AUTO_MARGIN = 0.05f
+    private val commonGivenNames = setOf(
+        "алексей", "александр", "андрей", "дмитрий", "иван", "михаил", "николай",
+        "роман", "сергей", "владимир", "евгений", "максим", "артем", "антон",
+        "павел", "юрий", "виктор", "игорь", "олег", "денис", "кирилл"
+    )
 
     fun bestSeriesMatch(incoming: SourceSeries, incomingBooks: List<SourceBook>, candidates: List<CanonicalSeriesMatchInput>): IdentityMatch<CanonicalSeriesMatchInput>? {
         val ranked = candidates.map { scoreSeries(incoming, incomingBooks, it) }.sortedByDescending { it.confidence }
@@ -66,6 +71,19 @@ object SourceIdentityMatcher {
         .sorted()
         .joinToString(" ")
 
+    fun authorsCompatible(left: List<String>, right: List<String>): Boolean {
+        val a = left.map(::normalizeAuthor).filter { it.isNotBlank() }
+        val b = right.map(::normalizeAuthor).filter { it.isNotBlank() }
+        if (a.isEmpty() || b.isEmpty()) return false
+        return a.any { one -> b.any { two -> authorCompatible(one, two) } }
+    }
+
+    private fun authorCompatible(left: String, right: String): Boolean {
+        if (left == right) return true
+        val common = left.split(' ').toSet().intersect(right.split(' ').toSet())
+        return common.any { token -> token.length >= 4 && token !in commonGivenNames }
+    }
+
     private fun scoreSeries(incoming: SourceSeries, incomingBooks: List<SourceBook>, candidate: CanonicalSeriesMatchInput): IdentityMatch<CanonicalSeriesMatchInput> {
         val evidence = mutableListOf<String>()
         val incomingTitle = normalizeTitle(incoming.title)
@@ -78,10 +96,11 @@ object SourceIdentityMatcher {
             else -> 0.45f * titleSimilarity
         }
 
-        val incomingAuthors = (incoming.authors.map { it.name } + incomingBooks.flatMap { b -> b.authors.map { it.name } })
-            .map(::normalizeAuthor).filter { it.isNotBlank() }.toSet()
-        val candidateAuthors = candidate.authors.map(::normalizeAuthor).filter { it.isNotBlank() }.toSet()
-        val authorOverlap = incomingAuthors.isNotEmpty() && candidateAuthors.isNotEmpty() && incomingAuthors.intersect(candidateAuthors).isNotEmpty()
+        val incomingAuthorNames = incoming.authors.map { it.name } + incomingBooks.flatMap { b -> b.authors.map { it.name } }
+        val candidateAuthorNames = candidate.authors
+        val incomingAuthors = incomingAuthorNames.map(::normalizeAuthor).filter { it.isNotBlank() }.toSet()
+        val candidateAuthors = candidateAuthorNames.map(::normalizeAuthor).filter { it.isNotBlank() }.toSet()
+        val authorOverlap = incomingAuthors.isNotEmpty() && candidateAuthors.isNotEmpty() && authorsCompatible(incomingAuthorNames, candidateAuthorNames)
         if (incomingAuthors.isNotEmpty() && candidateAuthors.isNotEmpty()) {
             if (authorOverlap) {
                 score += 0.12f
@@ -176,10 +195,12 @@ object SourceIdentityMatcher {
             titleSimilarity >= 0.9f -> { evidence += "similar book title"; 0.78f * titleSimilarity }
             else -> 0.58f * titleSimilarity
         }
-        val incomingAuthors = incoming.authors.map { normalizeAuthor(it.name) }.filter { it.isNotBlank() }.toSet()
-        val candidateAuthors = candidate.authors.map(::normalizeAuthor).filter { it.isNotBlank() }.toSet()
+        val incomingAuthorNames = incoming.authors.map { it.name }
+        val candidateAuthorNames = candidate.authors
+        val incomingAuthors = incomingAuthorNames.map(::normalizeAuthor).filter { it.isNotBlank() }.toSet()
+        val candidateAuthors = candidateAuthorNames.map(::normalizeAuthor).filter { it.isNotBlank() }.toSet()
         if (incomingAuthors.isNotEmpty() && candidateAuthors.isNotEmpty()) {
-            if (incomingAuthors.intersect(candidateAuthors).isNotEmpty()) { score += 0.08f; evidence += "author overlap" }
+            if (authorsCompatible(incomingAuthorNames, candidateAuthorNames)) { score += 0.08f; evidence += "author overlap" }
             else { score -= 0.12f; evidence += "conflicting authors"; evidence += "author details incoming=${incomingAuthors.sorted()} canonical=${candidateAuthors.sorted()}" }
         }
         if (numberKnown) {

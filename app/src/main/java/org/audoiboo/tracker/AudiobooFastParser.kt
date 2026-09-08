@@ -1,5 +1,6 @@
 package org.audoiboo.tracker
 
+import android.util.Log
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -232,22 +233,34 @@ internal object AudiobooFastParser {
         .trim()
         .replace(Regex("\\s+"), " ")
 
-    private fun fetch(url: String) = Jsoup.connect(url)
-        .userAgent(UA)
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-        .header("Accept-Language", "ru-RU,ru;q=0.9,uk-UA;q=0.8,uk;q=0.7,en-US;q=0.6,en;q=0.5")
-        .header("Cache-Control", "no-cache")
-        .header("Pragma", "no-cache")
-        .header("Upgrade-Insecure-Requests", "1")
-        .header("Sec-Fetch-Dest", "document")
-        .header("Sec-Fetch-Mode", "navigate")
-        .header("Sec-Fetch-Site", "same-origin")
-        .header("Sec-Fetch-User", "?1")
-        .referrer(runCatching {
-            val uri = URI(url)
-            "${uri.scheme}://${uri.host}/"
-        }.getOrDefault("https://audioboo.org/"))
-        .timeout(12_000)
-        .followRedirects(true)
-        .get()
+    private fun fetch(url: String): Document = try {
+        val response = Jsoup.connect(url)
+            .userAgent(UA)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+            .header("Accept-Language", "ru-RU,ru;q=0.9,uk-UA;q=0.8,uk;q=0.7,en-US;q=0.6,en;q=0.5")
+            .header("Cache-Control", "no-cache")
+            .header("Pragma", "no-cache")
+            .header("Upgrade-Insecure-Requests", "1")
+            .header("Sec-Fetch-Dest", "document")
+            .header("Sec-Fetch-Mode", "navigate")
+            .header("Sec-Fetch-Site", "same-origin")
+            .header("Sec-Fetch-User", "?1")
+            .referrer(runCatching {
+                val uri = URI(url)
+                "${uri.scheme}://${uri.host}/"
+            }.getOrDefault("https://audioboo.org/"))
+            .timeout(12_000)
+            .followRedirects(true)
+            .execute()
+
+        val body = response.body()
+        Log.d(
+            "AudoibooNet",
+            "audioboo GET $url -> ${response.statusCode()}, ${body.length}b final=${response.url()}"
+        )
+        Jsoup.parse(body, response.url().toString())
+    } catch (t: Throwable) {
+        Log.e("AudoibooNet", "audioboo GET $url FAILED ${t.javaClass.simpleName}: ${t.message}")
+        throw t
+    }
 }

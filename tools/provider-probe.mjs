@@ -21,7 +21,7 @@ const givenInitial = tokens(author)[0]?.[0]?.toUpperCase() || '';
 const browser = await chromium.launch({ headless });
 const context = await browser.newContext({
   locale: 'ru-RU',
-  userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/127 Safari/537.36 AudoibooProviderProbe/1.0'
+  userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/127 Safari/537.36 AudoibooProviderProbe/1.1'
 });
 const page = await context.newPage();
 page.setDefaultTimeout(12000);
@@ -33,8 +33,8 @@ async function inspect(url, linkSelector, note) {
   const started = Date.now();
   try {
     const response = await page.goto(url, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(350);
-    const links = await page.locator(linkSelector).evaluateAll(nodes => nodes.slice(0, 300).map(a => ({
+    await page.waitForTimeout(250);
+    const links = await page.locator(linkSelector).evaluateAll(nodes => nodes.slice(0, 500).map(a => ({
       text: (a.textContent || '').trim(),
       href: a.href || a.getAttribute('href') || ''
     })));
@@ -44,43 +44,85 @@ async function inspect(url, linkSelector, note) {
   }
 }
 
+function authorHit(links) {
+  return links.find(x => sameAuthor(x.text, author) || (surname && x.href.toLowerCase().includes(slugify(surname))));
+}
+
+async function scanPagedDirectory({ makeUrl, selector, initial, maxPages, label }) {
+  const steps = [];
+  let previousFingerprint = '';
+  for (let p = 1; p <= maxPages; p++) {
+    const step = await inspect(makeUrl(p), selector, `${label} ${initial} page ${p}`);
+    const fullLinks = step.links;
+    const fingerprint = fullLinks.slice(0, 20).map(x => `${x.text}|${x.href}`).join('\n');
+    steps.push({ ...step, links: fullLinks.slice(0, 20) });
+    const hit = authorHit(fullLinks);
+    if (hit) return { steps, hit, page: p };
+    if (!step.ok || step.status === 404 || fullLinks.length === 0) break;
+    if (fingerprint && fingerprint === previousFingerprint) break;
+    previousFingerprint = fingerprint;
+  }
+  return { steps, hit: null, page: null };
+}
+
 async function probeBaza() {
-  const out = { steps: [], authorUrl: null, matchingBooks: [] };
+  const out = { steps: [], authorUrl: null, authorDirectoryPage: null, matchingBooks: [] };
   for (const initial of [surnameInitial, givenInitial].filter(Boolean)) {
-    for (let p = 1; p <= 5 && !out.authorUrl; p++) {
-      const url = `https://baza-knig.info/authors/let-${encodeURIComponent(initial)}${p > 1 ? `?page=${p}` : ''}`;
-      const step = await inspect(url, "a[href*='/avtor-']", `author directory ${initial} page ${p}`);
-      out.steps.push({ ...step, links: step.links.slice(0, 20) });
-      const hit = step.links.find(x => sameAuthor(x.text, author) || (surname && x.href.toLowerCase().includes(slugify(surname))));
-      if (hit) out.authorUrl = hit.href;
-      if (!step.ok) break;
+    const scanned = await scanPagedDirectory({
+      initial,
+      maxPages: 40,
+      selector: "a[href*='/avtor-']",
+      label: 'author directory',
+      makeUrl: p => `https://baza-knig.info/authors/let-${encodeURIComponent(initial)}${p > 1 ? `?page=${p}` : ''}`
+    });
+    out.steps.push(...scanned.steps);
+    if (scanned.hit) {
+      out.authorUrl = scanned.hit.href;
+      out.authorDirectoryPage = { initial, page: scanned.page };
+      break;
     }
   }
   if (out.authorUrl) {
-    const step = await inspect(out.authorUrl, "a[href*='/audio-']", 'author page');
-    out.steps.push({ ...step, links: step.links.slice(0, 40) });
-    out.matchingBooks = step.links.filter(x => /игра кота|астральн|сфера миров/i.test(x.text)).slice(0, 30);
+    for (let p = 1; p <= 6; p++) {
+      const url = `${out.authorUrl}${p > 1 ? `${out.authorUrl.includes('?') ? '&' : '?'}page=${p}` : ''}`;
+      const step = await inspect(url, "a[href*='/audio-']", `author page ${p}`);
+      out.steps.push({ ...step, links: step.links.slice(0, 60) });
+      out.matchingBooks.push(...step.links.filter(x => /игра кота|астральн|сфера миров/i.test(x.text)));
+      if (!step.ok || step.links.length === 0) break;
+    }
+    out.matchingBooks = [...new Map(out.matchingBooks.map(x => [x.href, x])).values()].slice(0, 50);
   }
   return out;
 }
 
 async function probeIzib() {
-  const out = { steps: [], authorUrl: null, seriesLinks: [], matchingBooks: [] };
-  for (const initial of [surnameInitial, givenInitial].filter(Boolean)) {
-    for (let p = 1; p <= 8 && !out.authorUrl; p++) {
-      const url = `https://izib.uk/authors?l=${encodeURIComponent(initial)}${p > 1 ? `&p=${p}` : ''}`;
-      const step = await inspect(url, "a[href*='/author']", `author directory ${initial} page ${p}`);
-      out.steps.push({ ...step, links: step.links.slice(0, 20) });
-      const hit = step.links.find(x => sameAuthor(x.text, author) || (surname && x.href.toLowerCase().includes(slugify(surname))));
-      if (hit) out.authorUrl = hit.href;
-      if (!step.ok) break;
+  const out = { steps: [], authorUrl: null, authorDirectoryPage: null, seriesLinks: [], matchingBooks: [] };
+  for (const initial of [givenInitial, surnameInitial].filter(Boolean)) {
+    const scanned = await scanPagedDirectory({
+      initial,
+      maxPages: 80,
+      selector: "a[href*='/author']",
+      label: 'author directory',
+      makeUrl: p => `https://izib.uk/authors?l=${encodeURIComponent(initial)}${p > 1 ? `&p=${p}` : ''}`
+    });
+    out.steps.push(...scanned.steps);
+    if (scanned.hit) {
+      out.authorUrl = scanned.hit.href;
+      out.authorDirectoryPage = { initial, page: scanned.page };
+      break;
     }
   }
   if (out.authorUrl) {
-    const step = await inspect(out.authorUrl, "a[href*='/serie'], a[href*='/art']", 'author page');
-    out.steps.push({ ...step, links: step.links.slice(0, 60) });
-    out.seriesLinks = step.links.filter(x => x.href.includes('/serie'));
-    out.matchingBooks = step.links.filter(x => x.href.includes('/art') && /игра кота|астральн|сфера миров/i.test(x.text)).slice(0, 30);
+    for (let p = 1; p <= 6; p++) {
+      const url = `${out.authorUrl}${p > 1 ? `${out.authorUrl.includes('?') ? '&' : '?'}p=${p}` : ''}`;
+      const step = await inspect(url, "a[href*='/serie'], a[href*='/art']", `author page ${p}`);
+      out.steps.push({ ...step, links: step.links.slice(0, 80) });
+      out.seriesLinks.push(...step.links.filter(x => x.href.includes('/serie')));
+      out.matchingBooks.push(...step.links.filter(x => x.href.includes('/art') && /игра кота|астральн|сфера миров/i.test(x.text)));
+      if (!step.ok || step.links.length === 0) break;
+    }
+    out.seriesLinks = [...new Map(out.seriesLinks.map(x => [x.href, x])).values()];
+    out.matchingBooks = [...new Map(out.matchingBooks.map(x => [x.href, x])).values()].slice(0, 50);
   }
   return out;
 }
@@ -89,20 +131,20 @@ async function probeLis() {
   const out = { steps: [], directSeriesUrl: null, authorUrl: null, matchingBooks: [] };
   const directUrl = `https://lis10book.com/serie/${slugify(series)}/`;
   const direct = await inspect(directUrl, "a[href*='/audio/']", 'direct series slug');
-  out.steps.push({ ...direct, links: direct.links.slice(0, 40) });
-  if (direct.ok && direct.status && direct.status < 400 && direct.links.length) {
+  out.steps.push({ ...direct, links: direct.links.slice(0, 60) });
+  if (direct.ok && direct.status && direct.status < 400 && direct.links.some(x => /сфера миров|игра кота|астральн/i.test(x.text))) {
     out.directSeriesUrl = direct.finalUrl;
-    out.matchingBooks = direct.links.slice(0, 30);
+    out.matchingBooks = direct.links.filter(x => /сфера миров|игра кота|астральн/i.test(x.text));
     return out;
   }
   const variants = [slugify(author), slugify(tokens(author).reverse().join(' '))];
   for (const slug of [...new Set(variants)]) {
     const url = `https://lis10book.com/avtor/${slug}/`;
     const step = await inspect(url, "a[href*='/audio/']", `author slug ${slug}`);
-    out.steps.push({ ...step, links: step.links.slice(0, 40) });
+    out.steps.push({ ...step, links: step.links.slice(0, 60) });
     if (step.ok && step.status && step.status < 400 && step.links.length) {
       out.authorUrl = step.finalUrl;
-      out.matchingBooks = step.links.filter(x => /игра кота|астральн|сфера миров/i.test(x.text)).slice(0, 30);
+      out.matchingBooks = step.links.filter(x => /игра кота|астральн|сфера миров/i.test(x.text)).slice(0, 50);
       break;
     }
   }
@@ -123,9 +165,14 @@ const md = ['# Audoiboo provider probe', '', `- Author: **${author}**`, `- Serie
 for (const [name, data] of Object.entries(report.providers)) {
   md.push(`## ${name}`);
   md.push(`- Author URL: ${data.authorUrl || 'not found'}`);
+  if (data.authorDirectoryPage) md.push(`- Author directory location: ${data.authorDirectoryPage.initial}, page ${data.authorDirectoryPage.page}`);
   if (data.directSeriesUrl) md.push(`- Direct series URL: ${data.directSeriesUrl}`);
   md.push(`- Matching books: ${(data.matchingBooks || []).length}`);
-  for (const item of (data.matchingBooks || []).slice(0, 15)) md.push(`  - ${item.text} — ${item.href}`);
+  for (const item of (data.matchingBooks || []).slice(0, 20)) md.push(`  - ${item.text} — ${item.href}`);
+  if ((data.seriesLinks || []).length) {
+    md.push(`- Series links: ${data.seriesLinks.length}`);
+    for (const item of data.seriesLinks.slice(0, 20)) md.push(`  - ${item.text} — ${item.href}`);
+  }
   md.push('');
   for (const step of data.steps || []) md.push(`- ${step.note}: status=${step.status ?? 'n/a'} final=${step.finalUrl || step.requestedUrl} links=${step.links?.length ?? 0} time=${step.elapsedMs}ms${step.error ? ` error=${step.error}` : ''}`);
   md.push('');

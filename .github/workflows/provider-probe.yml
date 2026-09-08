@@ -1,0 +1,55 @@
+name: Provider Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      author:
+        description: Author to probe
+        required: false
+        default: Роман Прокофьев
+      series:
+        description: Series to probe
+        required: false
+        default: Сфера Миров
+  push:
+    branches: ["main"]
+    paths:
+      - "tools/provider-probe.mjs"
+      - ".github/workflows/provider-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PROBE_AUTHOR: ${{ github.event.inputs.author || 'Роман Прокофьев' }}
+      PROBE_SERIES: ${{ github.event.inputs.series || 'Сфера Миров' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+      - name: Probe providers
+        run: node tools/provider-probe.mjs
+      - name: Add summary
+        if: always()
+        run: |
+          if [ -f provider-probe-output/report.md ]; then
+            cat provider-probe-output/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-probe-${{ github.run_number }}
+          path: provider-probe-output/
+          if-no-files-found: warn

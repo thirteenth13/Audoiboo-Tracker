@@ -117,7 +117,7 @@ class DeclarativePluginRuntimeTest {
     }
 
     @Test
-    fun discoversIzibSeriesThroughLetterAuthorDirectory() {
+    fun discoversIzibSeriesThroughSurnameLetterDirectory() {
         val manifest = PluginPackageManifest(
             id = "izib",
             name = "Izib",
@@ -131,12 +131,8 @@ class DeclarativePluginRuntimeTest {
         val sandbox = PluginSandbox(PluginHttpTransport { request, _ ->
             requested += request.url
             val body = when (request.url) {
-                "https://izib.uk/authors" -> """
-                    <a href='/authors?l=%D0%A0'>Р</a>
-                    <a href='/authors?l=%D0%9F'>П</a>
-                """.trimIndent()
-                "https://izib.uk/authors?l=%D0%A0" -> "<a href='/author1'>Other Author</a>"
-                "https://izib.uk/authors?l=%D0%9F" -> "<a href='/author2176'>Роман Прокофьев</a>"
+                "https://izib.uk/authors?l=%D0%9F" -> "<a href='/author1'>Other Author</a>"
+                "https://izib.uk/authors?l=%D0%9F&p=2" -> "<a href='/author2176'>Роман Прокофьев</a>"
                 "https://izib.uk/author2176" -> """
                     <a href='/serie8524'>Звездная Кровь</a>
                     <a href='/serie9999'>Стеллар</a>
@@ -160,9 +156,14 @@ class DeclarativePluginRuntimeTest {
         assertEquals(1, results.size)
         assertEquals("https://izib.uk/serie8524", results.single().series.url)
         assertEquals("Звездная Кровь", results.single().series.title)
-        assertTrue(requested.contains("https://izib.uk/authors"))
-        assertTrue(requested.contains("https://izib.uk/author2176"))
-        assertTrue(requested.any { it.startsWith("https://izib.uk/authors?l=") })
+        assertEquals(
+            listOf(
+                "https://izib.uk/authors?l=%D0%9F",
+                "https://izib.uk/authors?l=%D0%9F&p=2",
+                "https://izib.uk/author2176"
+            ),
+            requested
+        )
     }
 
     @Test
@@ -179,12 +180,7 @@ class DeclarativePluginRuntimeTest {
         val requested = mutableListOf<String>()
         val runtime = DeclarativePluginRuntime(PluginSandbox(PluginHttpTransport { request, _ ->
             requested += request.url
-            val body = if (request.url == "https://izib.uk/authors") {
-                "<a href='/authors?l=M'>M</a><a href='/authors?l=A'>A</a>"
-            } else {
-                "<a href='/author1'>Someone Else</a>"
-            }
-            PluginHttpResponse(200, request.url, body)
+            PluginHttpResponse(200, request.url, "<a href='/author1'>Someone Else</a>")
         }))
 
         val results = runtime.discoverIzibSeries(
@@ -194,10 +190,10 @@ class DeclarativePluginRuntimeTest {
         )
 
         assertTrue(results.isEmpty())
-        assertTrue(requested.isNotEmpty())
-        assertTrue(requested.size <= 4)
-        assertEquals("https://izib.uk/authors", requested.first())
-        assertTrue(requested.drop(1).all { it.startsWith("https://izib.uk/authors?l=") })
+        assertEquals(3, requested.size)
+        assertEquals("https://izib.uk/authors?l=M", requested[0])
+        assertEquals("https://izib.uk/authors?l=M&p=2", requested[1])
+        assertEquals("https://izib.uk/authors?l=M&p=3", requested[2])
     }
 
     @Test

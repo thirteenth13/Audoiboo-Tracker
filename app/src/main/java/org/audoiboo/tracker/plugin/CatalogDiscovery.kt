@@ -71,7 +71,8 @@ object CatalogSeriesHeuristics {
             } else book
         }
 
-        val series = grouped.map { (key, books) ->
+        val series = grouped.map { (key, rawBooks) ->
+            val books = deduplicateLogicalBooks(rawBooks)
             CatalogSeries(
                 title = displayTitles.getValue(key),
                 authors = books.flatMap { it.authors }.distinct(),
@@ -87,12 +88,38 @@ object CatalogSeriesHeuristics {
             providerId = catalog.author.providerId,
             author = catalog.author,
             series = series,
-            standaloneBooks = standalone.sortedWith(
+            standaloneBooks = deduplicateStandaloneBooks(standalone).sortedWith(
                 compareBy<CatalogBook> { it.firstPublishYear ?: Int.MAX_VALUE }
                     .thenBy { SourceIdentityMatcher.normalizeTitle(it.title) }
             )
         )
     }
+
+    /**
+     * Catalog APIs can expose the same logical work more than once (for example as a cycle child
+     * and again as a standalone/bibliography record) with different remote ids. Inside one series,
+     * a normalized title is the stable logical identity; prefer the richer record instead of
+     * showing duplicate cards in the local catalog library.
+     */
+    private fun deduplicateLogicalBooks(books: List<CatalogBook>): List<CatalogBook> =
+        books.groupBy { SourceIdentityMatcher.normalizeTitle(it.title).ifBlank { "remote:${it.remoteId}" } }
+            .values
+            .map { duplicates -> duplicates.maxWithOrNull(compareBy<CatalogBook> { catalogBookRichness(it) }.thenBy { it.remoteId })!! }
+
+    private fun deduplicateStandaloneBooks(books: List<CatalogBook>): List<CatalogBook> =
+        books.groupBy { book ->
+            val title = SourceIdentityMatcher.normalizeTitle(book.title).ifBlank { "remote:${book.remoteId}" }
+            val authors = book.authors.map(SourceIdentityMatcher::normalizeAuthor).filter(String::isNotBlank).sorted().joinToString("|")
+            "$title|$authors"
+        }.values.map { duplicates ->
+            duplicates.maxWithOrNull(compareBy<CatalogBook> { catalogBookRichness(it) }.thenBy { it.remoteId })!!
+        }
+
+    private fun catalogBookRichness(book: CatalogBook): Int =
+        (if (!book.coverUrl.isNullOrBlank()) 8 else 0) +
+            (if (book.seriesNumber != null) 4 else 0) +
+            (if (book.firstPublishYear != null) 2 else 0) +
+            (if (book.authors.isNotEmpty()) 1 else 0)
 }
 
 /** Searches all enabled bibliographic providers and returns normalized author/series catalogs. */

@@ -31,20 +31,111 @@ class DeclarativePluginRuntime(private val sandbox:PluginSandbox,private val dec
  fun searchSeries(manifest:PluginPackageManifest,packageDir:File,query:SeriesSearchQuery):List<SeriesCandidate>{requireCapability(manifest,SourceCapability.SERIES_SEARCH);val spec=loadEntrypoint(manifest,packageDir,"seriesSearch") as? DeclarativeEntrypoint.SeriesSearch?:throw PluginSandboxViolation("seriesSearch entrypoint has wrong operation");val encoded=URLEncoder.encode(query.title.trim(),StandardCharsets.UTF_8.name());val searchUrl=spec.searchUrl.replace("{query}",encoded);if(searchUrl==spec.searchUrl)throw PluginSandboxViolation("seriesSearch searchUrl must contain {query}");val session=sandbox.open(manifest);val response=session.httpGet(searchUrl);if(response.statusCode !in 200..299)return emptyList();val document=Jsoup.parse(response.body,response.finalUrl);val results=document.select(spec.items.item).asSequence().mapNotNull{item->val link=extract(item,spec.items.link)?.takeIf{it.isNotBlank()}?:return@mapNotNull null;val title=spec.items.title?.let{extract(item,it)}?.takeIf{it.isNotBlank()}?:return@mapNotNull null;val author=spec.items.author?.let{extract(item,it)}?.takeIf{it.isNotBlank()};SeriesCandidate(SourceSeries(sourceId=manifest.id,remoteId=spec.items.remoteId?.let{extract(item,it)}?.takeIf{it.isNotBlank()},url=resolveUrl(item,link),title=title,authors=author?.let{listOf(SourceAuthor(it))}.orEmpty()))}.distinctBy{it.series.url}.take(spec.maxResults).toList();session.requireOutputSize(results.size);return results}
  fun discoverCanonicalSeries(manifest:PluginPackageManifest,canonical:CanonicalSeriesMatchInput):List<SeriesCandidate>{requireCapability(manifest,SourceCapability.SERIES_DISCOVERY);return when(manifest.id){"baza-knig"->discoverBazaSeries(manifest,canonical);"lis10book"->discoverLis10BookSeries(manifest,canonical);"izib"->discoverIzibSeries(manifest,canonical);else->emptyList()}}
 
- fun discoverIzibSeries(manifest:PluginPackageManifest,canonical:CanonicalSeriesMatchInput,maxAuthorPages:Int=28):List<SeriesCandidate>{requireCapability(manifest,SourceCapability.SERIES_DISCOVERY);if(manifest.id!="izib")return emptyList();val author=canonical.authors.firstOrNull()?.trim()?.takeIf{it.isNotBlank()}?:return emptyList();val expectedSeries=SourceIdentityMatcher.normalizeTitle(canonical.title);val session=sandbox.open(manifest);val initial=authorTokens(author).lastOrNull()?.firstOrNull()?:return emptyList();val encoded=URLEncoder.encode(initial.uppercaseChar().toString(),StandardCharsets.UTF_8.name());var authorUrl:String?=null;for(page in 1..maxAuthorPages.coerceIn(1,28)){val url="https://izib.uk/authors?l=$encoded"+(if(page==1)"" else "&p=$page");val response=session.httpGet(url);if(response.statusCode !in 200..299)continue;val document=Jsoup.parse(response.body,response.finalUrl);authorUrl=document.select("a[href*='/author']").firstOrNull{sameAuthor(it.text(),author)}?.let{resolveUrl(it,it.attr("href"))};if(authorUrl!=null)break};val resolvedAuthorUrl=authorUrl?:return emptyList();val authorResponse=session.httpGet(resolvedAuthorUrl);if(authorResponse.statusCode !in 200..299)return emptyList();val authorDocument=Jsoup.parse(authorResponse.body,authorResponse.finalUrl);val exactSeries=authorDocument.select("a[href*='/serie']").asSequence().mapNotNull{link->val title=link.text().trim().takeIf{it.isNotBlank()}?:return@mapNotNull null;if(SourceIdentityMatcher.normalizeTitle(title)!=expectedSeries)return@mapNotNull null;val href=link.attr("href").takeIf{it.isNotBlank()}?:return@mapNotNull null;SeriesCandidate(SourceSeries(sourceId=manifest.id,url=resolveUrl(link,href),title=title,authors=listOf(SourceAuthor(author,resolvedAuthorUrl))))}.distinctBy{SourceKeys.normalizeUrl(it.series.url)}.take(5).toList();if(exactSeries.isNotEmpty()){session.requireOutputSize(exactSeries.size);return exactSeries};val refs=mutableListOf<SourceBookRef>();collectCanonicalBookRefs(authorDocument,"a[href*='/art']",manifest,canonical,author,refs);val result=syntheticSeriesCandidate(manifest.id,canonical,author,resolvedAuthorUrl,refs);session.requireOutputSize(result.size);return result}
+ fun discoverIzibSeries(manifest:PluginPackageManifest,canonical:CanonicalSeriesMatchInput,maxAuthorPages:Int=28):List<SeriesCandidate>{
+  requireCapability(manifest,SourceCapability.SERIES_DISCOVERY);if(manifest.id!="izib")return emptyList()
+  val author=canonical.authors.firstOrNull()?.trim()?.takeIf{it.isNotBlank()}?:return emptyList()
+  val expectedSeries=SourceIdentityMatcher.normalizeTitle(canonical.title)
+  val session=sandbox.open(manifest)
+  val initial=authorTokens(author).lastOrNull()?.firstOrNull()?:return emptyList()
+  val encoded=URLEncoder.encode(initial.uppercaseChar().toString(),StandardCharsets.UTF_8.name())
+  val pageLimit=maxAuthorPages.coerceIn(1,28)
+  fun pageUrl(page:Int)="https://izib.uk/authors?l=$encoded"+(if(page==1)"" else "&p=$page")
+  val firstResponse=session.httpGet(pageUrl(1));if(firstResponse.statusCode !in 200..299)return emptyList()
+  val firstDocument=Jsoup.parse(firstResponse.body,firstResponse.finalUrl)
+  var authorUrl=exactAuthorUrl(firstDocument,author)
+  if(authorUrl==null&&pageLimit>1){
+   val advertisedMax=firstDocument.select("a[href]").mapNotNull{Regex("[?&]p=(\\d+)").find(it.attr("href"))?.groupValues?.getOrNull(1)?.toIntOrNull()}.maxOrNull()?.coerceAtMost(pageLimit)?:1
+   if(advertisedMax>1){
+    var low=2;var high=advertisedMax;val target=authorSortKey(author);val visited=mutableSetOf(1);var probes=0
+    while(authorUrl==null&&low<=high&&probes++<8){
+     val page=(low+high)/2;if(!visited.add(page))break
+     val response=session.httpGet(pageUrl(page));if(response.statusCode !in 200..299){low=page+1;continue}
+     val doc=Jsoup.parse(response.body,response.finalUrl);authorUrl=exactAuthorUrl(doc,author);if(authorUrl!=null)break
+     val keys=doc.select("a[href*='/author']").map{authorSortKey(it.text())}.filter{it.isNotBlank()}
+     val first=keys.minOrNull();val last=keys.maxOrNull()
+     when{first==null||last==null->low=page+1;target<first->high=page-1;target>last->low=page+1;else->{listOf(page-1,page+1).filter{it in 2..advertisedMax&&!visited.contains(it)}.forEach{neighbor->if(authorUrl==null){visited+=neighbor;val nearby=session.httpGet(pageUrl(neighbor));if(nearby.statusCode in 200..299)authorUrl=exactAuthorUrl(Jsoup.parse(nearby.body,nearby.finalUrl),author)}};break}}
+    }
+   }else{
+    for(page in 2..pageLimit){val response=session.httpGet(pageUrl(page));if(response.statusCode !in 200..299)continue;authorUrl=exactAuthorUrl(Jsoup.parse(response.body,response.finalUrl),author);if(authorUrl!=null)break}
+   }
+  }
+  val resolvedAuthorUrl=authorUrl?:return emptyList();val authorResponse=session.httpGet(resolvedAuthorUrl);if(authorResponse.statusCode !in 200..299)return emptyList();val authorDocument=Jsoup.parse(authorResponse.body,authorResponse.finalUrl)
+  val exactSeries=authorDocument.select("a[href*='/serie']").asSequence().mapNotNull{link->val title=link.text().trim().takeIf{it.isNotBlank()}?:return@mapNotNull null;if(SourceIdentityMatcher.normalizeTitle(title)!=expectedSeries)return@mapNotNull null;val href=link.attr("href").takeIf{it.isNotBlank()}?:return@mapNotNull null;SeriesCandidate(SourceSeries(sourceId=manifest.id,url=resolveUrl(link,href),title=title,authors=listOf(SourceAuthor(author,resolvedAuthorUrl))))}.distinctBy{SourceKeys.normalizeUrl(it.series.url)}.take(5).toList();if(exactSeries.isNotEmpty()){session.requireOutputSize(exactSeries.size);return exactSeries}
+  val refs=mutableListOf<SourceBookRef>();collectCanonicalBookRefs(authorDocument,"a[href*='/art']",manifest,canonical,author,refs);val result=syntheticSeriesCandidate(manifest.id,canonical,author,resolvedAuthorUrl,refs);session.requireOutputSize(result.size);return result
+ }
 
- private fun discoverBazaSeries(manifest:PluginPackageManifest,canonical:CanonicalSeriesMatchInput):List<SeriesCandidate>{val author=canonical.authors.firstOrNull()?.trim()?.takeIf{it.isNotBlank()}?:return emptyList();val session=sandbox.open(manifest);val tokens=authorTokens(author);val surname=tokens.lastOrNull()?:return emptyList();val given=tokens.firstOrNull().orEmpty();val slugCandidates=listOf("${slugifyRussian(surname)}-${slugifyRussian(given)}","${slugifyRussian(given)}-${slugifyRussian(surname)}").distinct();val refs=mutableListOf<SourceBookRef>();var resolvedAuthorUrl:String?=null
-  // First use Baza's own search result cards. They expose both book and author links, so this costs one request and avoids exhausting the sandbox on the author directory.
-  val query=URLEncoder.encode(author,StandardCharsets.UTF_8.name());val search=session.httpGet("https://baza-knig.info/index.php?do=search&subaction=search&story=$query");if(search.statusCode in 200..299){val doc=Jsoup.parse(search.body,search.finalUrl);doc.select("article.abook-item").forEach{card->val authorLink=card.selectFirst("a.author-title[href*='/avtor-'], a[href*='/avtor-']")?:return@forEach;if(!sameAuthor(authorLink.text(),author))return@forEach;resolvedAuthorUrl=resolveUrl(authorLink,authorLink.attr("href"));val bookLink=card.selectFirst("a.book-title[href*='/audio-'], h2.abook-title a[href*='/audio-']")?:return@forEach;collectCanonicalBookRefs(card,"a.book-title[href*='/audio-'], h2.abook-title a[href*='/audio-']",manifest,canonical,author,refs)}}
-  // If search is noisy, probe only a few evenly spaced directory pages and require an exact visible full-name match; never match surname-only hrefs.
-  if(resolvedAuthorUrl==null){val initial=surname.first();val encoded=URLEncoder.encode(initial.uppercaseChar().toString(),StandardCharsets.UTF_8.name());for(page in listOf(1,8,16,24,28)){val url="https://baza-knig.info/authors/let-$encoded"+(if(page==1)"" else "?page=$page");val response=session.httpGet(url);if(response.statusCode !in 200..299)continue;val doc=Jsoup.parse(response.body,response.finalUrl);resolvedAuthorUrl=doc.select("a[href*='/avtor-']").firstOrNull{sameAuthor(it.text(),author)}?.let{resolveUrl(it,it.attr("href"))};if(resolvedAuthorUrl!=null)break}}
-  val authorUrl=resolvedAuthorUrl?:return emptyList();for(page in 1..3){val pageUrl=if(page==1)authorUrl else appendQueryParameter(authorUrl,"page",page);val response=session.httpGet(pageUrl);if(response.statusCode !in 200..299)continue;collectCanonicalBookRefs(Jsoup.parse(response.body,response.finalUrl),"article.abook-item a.book-title[href*='/audio-'], article.abook-item h2.abook-title a[href*='/audio-']",manifest,canonical,author,refs)};val result=syntheticSeriesCandidate(manifest.id,canonical,author,authorUrl,refs);session.requireOutputSize(result.size);return result}
+ private fun discoverBazaSeries(manifest:PluginPackageManifest,canonical:CanonicalSeriesMatchInput):List<SeriesCandidate>{
+  val author=canonical.authors.firstOrNull()?.trim()?.takeIf{it.isNotBlank()}?:return emptyList()
+  val session=sandbox.open(manifest)
+  val tokens=authorTokens(author)
+  val surname=tokens.lastOrNull()?:return emptyList()
+  val refs=mutableListOf<SourceBookRef>()
+  var resolvedAuthorUrl:String?=null
+  val query=URLEncoder.encode(author,StandardCharsets.UTF_8.name())
+  val search=session.httpGet("https://baza-knig.info/index.php?do=search&subaction=search&story=$query")
+  if(search.statusCode in 200..299){
+   val doc=Jsoup.parse(search.body,search.finalUrl)
+   doc.select("article.abook-item").forEach{card->
+    val authorLink=card.selectFirst("a.author-title[href*='/avtor-'], a[href*='/avtor-']")?:return@forEach
+    if(!sameAuthor(authorLink.text(),author))return@forEach
+    resolvedAuthorUrl=resolveUrl(authorLink,authorLink.attr("href"))
+    collectCanonicalBookRefs(card,"a.book-title[href*='/audio-'], h2.abook-title a[href*='/audio-']",manifest,canonical,author,refs)
+   }
+  }
+  if(resolvedAuthorUrl==null){
+   val initial=surname.first()
+   val encoded=URLEncoder.encode(initial.uppercaseChar().toString(),StandardCharsets.UTF_8.name())
+   fun pageUrl(page:Int)="https://baza-knig.info/authors/let-$encoded"+(if(page==1)"" else "?page=$page")
+   val first=session.httpGet(pageUrl(1))
+   if(first.statusCode in 200..299){
+    val firstDoc=Jsoup.parse(first.body,first.finalUrl)
+    resolvedAuthorUrl=exactAuthorUrl(firstDoc,author,"a[href*='/avtor-']")
+    val maxPage=firstDoc.select("a[href]").mapNotNull{Regex("[?&](?:page|p)=(\\d+)").find(it.attr("href"))?.groupValues?.getOrNull(1)?.toIntOrNull()}.maxOrNull()?.coerceAtMost(28)?:1
+    if(resolvedAuthorUrl==null&&maxPage>1){
+     var low=2
+     var high=maxPage
+     val target=authorSortKey(author)
+     var probes=0
+     while(resolvedAuthorUrl==null&&low<=high&&probes++<8){
+      val page=(low+high)/2
+      val response=session.httpGet(pageUrl(page))
+      if(response.statusCode !in 200..299){low=page+1;continue}
+      val doc=Jsoup.parse(response.body,response.finalUrl)
+      resolvedAuthorUrl=exactAuthorUrl(doc,author,"a[href*='/avtor-']")
+      if(resolvedAuthorUrl!=null)break
+      val keys=doc.select("a[href*='/avtor-']").map{authorSortKey(it.text())}.filter{it.isNotBlank()}
+      val firstKey=keys.minOrNull()
+      val lastKey=keys.maxOrNull()
+      when{
+       firstKey==null||lastKey==null->low=page+1
+       target<firstKey->high=page-1
+       target>lastKey->low=page+1
+       else->break
+      }
+     }
+    }
+   }
+  }
+  val authorUrl=resolvedAuthorUrl?:return emptyList()
+  for(page in 1..3){
+   val pageUrl=if(page==1)authorUrl else appendQueryParameter(authorUrl,"page",page)
+   val response=session.httpGet(pageUrl)
+   if(response.statusCode !in 200..299)continue
+   val doc=Jsoup.parse(response.body,response.finalUrl)
+   collectCanonicalBookRefs(doc,"article.abook-item a.book-title[href*='/audio-'], article.abook-item h2.abook-title a[href*='/audio-']",manifest,canonical,author,refs)
+  }
+  val result=syntheticSeriesCandidate(manifest.id,canonical,author,authorUrl,refs)
+  session.requireOutputSize(result.size)
+  return result
+ }
 
  private fun discoverLis10BookSeries(manifest:PluginPackageManifest,canonical:CanonicalSeriesMatchInput):List<SeriesCandidate>{val author=canonical.authors.firstOrNull()?.trim()?.takeIf{it.isNotBlank()}?:return emptyList();val session=sandbox.open(manifest);val directSeriesUrl="https://lis10book.com/serie/${slugifyRussian(canonical.title)}/";val directResponse=session.httpGet(directSeriesUrl);if(directResponse.statusCode in 200..299){val doc=Jsoup.parse(directResponse.body,directResponse.finalUrl);val refs=mutableListOf<SourceBookRef>();collectLis10BookCards(doc,manifest,canonical,author,refs);if(refs.isNotEmpty())return listOf(SeriesCandidate(SourceSeries(sourceId=manifest.id,url=directResponse.finalUrl,title=canonical.title,authors=listOf(SourceAuthor(author)),books=refs.distinctBy{SourceKeys.normalizeUrl(it.url)})))};return emptyList()}
  private fun collectLis10BookCards(document:Element,manifest:PluginPackageManifest,canonical:CanonicalSeriesMatchInput,author:String,output:MutableList<SourceBookRef>){document.select("a.mcard[href*='/audio/']").forEach{card->val cardAuthor=card.selectFirst(".mcard-a")?.text()?.trim().orEmpty();if(cardAuthor.isNotBlank()&&!sameAuthor(cardAuthor,author))return@forEach;val href=card.attr("href").takeIf{it.isNotBlank()}?:return@forEach;val bookUrl=canonicalPluginBookUrl(manifest.id,resolveUrl(card,href))?:return@forEach;val title=card.selectFirst(".mcard-t")?.text()?.trim()?.takeIf{it.isNotBlank()}?:return@forEach;val match=SourceIdentityMatcher.bestBookMatch(SourceBook(sourceId=manifest.id,url=bookUrl,title=title,authors=listOf(SourceAuthor(author)),seriesTitle=canonical.title),canonical.books)?.takeIf{it.disposition==MatchDisposition.AUTO_ACCEPT}?:return@forEach;output+=SourceBookRef(url=bookUrl,title=title,number=match.value.number)}}
  private fun collectCanonicalBookRefs(document:Element,selector:String,manifest:PluginPackageManifest,canonical:CanonicalSeriesMatchInput,author:String,output:MutableList<SourceBookRef>){document.select(selector).forEach{link->val href=link.attr("href").takeIf{it.isNotBlank()}?:return@forEach;val bookUrl=canonicalPluginBookUrl(manifest.id,resolveUrl(link,href))?:return@forEach;val rawTitle=link.text().trim().trimStart('★','☆').trim().takeIf{it.isNotBlank()}?:return@forEach;val title=stripAuthorSuffix(rawTitle,author);val match=SourceIdentityMatcher.bestBookMatch(SourceBook(sourceId=manifest.id,url=bookUrl,title=title,authors=listOf(SourceAuthor(author)),seriesTitle=canonical.title),canonical.books)?.takeIf{it.disposition==MatchDisposition.AUTO_ACCEPT}?:return@forEach;output+=SourceBookRef(url=bookUrl,title=title,number=match.value.number)}}
  private fun syntheticSeriesCandidate(sourceId:String,canonical:CanonicalSeriesMatchInput,author:String,authorUrl:String,refs:List<SourceBookRef>):List<SeriesCandidate>{val books=refs.distinctBy{SourceKeys.normalizeUrl(it.url)}.sortedWith(compareBy<SourceBookRef>{it.number?:Double.MAX_VALUE}.thenBy{it.title.orEmpty()});if(books.isEmpty())return emptyList();return listOf(SeriesCandidate(SourceSeries(sourceId=sourceId,url=books.first().url,title=canonical.title,authors=listOf(SourceAuthor(author,authorUrl)),books=books)))}
+ private fun exactAuthorUrl(document:Element,author:String,selector:String="a[href*='/author']")=document.select(selector).firstOrNull{sameAuthor(it.text(),author)}?.let{resolveUrl(it,it.attr("href"))}
  private fun sameAuthor(left:String,right:String):Boolean{val candidate=authorTokens(left).toSet();val expected=authorTokens(right).toSet();return candidate.isNotEmpty()&&expected.isNotEmpty()&&expected.all(candidate::contains)}
+ private fun authorSortKey(value:String):String{val tokens=authorTokens(value);if(tokens.isEmpty())return "";return (listOf(tokens.last())+tokens.dropLast(1)).joinToString(" ")}
  private fun appendQueryParameter(url:String,name:String,value:Int)=url+(if('?' in url)'&' else '?')+"$name=$value"
  private fun authorTokens(value:String)=SourceIdentityMatcher.normalizeTitle(value).split(Regex("[^\\p{L}\\p{N}]+")).filter{it.isNotBlank()&&it !in setOf("автор","author")}
  private fun stripAuthorSuffix(title:String,author:String):String{var result=title.trim();listOf(author,authorTokens(author).reversed().joinToString(" ")).filter{it.isNotBlank()}.distinct().forEach{result=result.replace(Regex("\\s+${Regex.escape(it)}$",RegexOption.IGNORE_CASE),"").trim()};return result}

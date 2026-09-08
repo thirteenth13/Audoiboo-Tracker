@@ -60,7 +60,9 @@ class PluginSandboxSession internal constructor(
             requestCount++
 
             val response = transport.get(PluginHttpRequest(currentUrl, safeHeaders), limits.maxResponseBytes)
-            Log.d("AudoibooNet", "${manifest.id} GET $currentUrl -> ${response.statusCode}, ${response.body.length}b")
+            val netMessage = "NET ${manifest.id} GET $currentUrl -> ${response.statusCode}, ${response.body.length}b final=${response.finalUrl}"
+            Log.d("AudoibooNet", netMessage)
+            Log.i("AudoibooSeries", netMessage)
             requirePermittedUrl(response.finalUrl)
             if (response.body.toByteArray(Charsets.UTF_8).size.toLong() > limits.maxResponseBytes) {
                 throw PluginSandboxViolation("Response exceeds sandbox byte limit")

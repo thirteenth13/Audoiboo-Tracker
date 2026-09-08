@@ -1,6 +1,7 @@
 package org.audoiboo.tracker
 
 import android.util.Log
+import org.audoiboo.tracker.plugin.SeriesDiagnosticLog
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -254,13 +255,16 @@ internal object AudiobooFastParser {
             .execute()
 
         val body = response.body()
-        Log.d(
-            "AudoibooNet",
-            "audioboo GET $url -> ${response.statusCode()}, ${body.length}b final=${response.url()}"
-        )
+        val netMessage = "NET audioboo GET $url -> ${response.statusCode()}, ${body.length}b final=${response.url()}"
+        Log.d("AudoibooNet", netMessage)
+        Log.i("AudoibooSeries", netMessage)
+        SeriesDiagnosticLog.i(netMessage)
         Jsoup.parse(body, response.url().toString())
     } catch (t: Throwable) {
-        Log.e("AudoibooNet", "audioboo GET $url FAILED ${t.javaClass.simpleName}: ${t.message}")
+        val netMessage = "NET audioboo GET $url FAILED"
+        Log.e("AudoibooNet", netMessage, t)
+        Log.e("AudoibooSeries", netMessage, t)
+        SeriesDiagnosticLog.e(netMessage, t)
         throw t
     }
 }

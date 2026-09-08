@@ -1,5 +1,6 @@
 package org.audoiboo.tracker.plugin
 
+import android.util.Log
 import org.audoiboo.tracker.AudiobooFastParser
 import java.net.URI
 import java.net.URLEncoder
@@ -59,12 +60,21 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
         if (title.isBlank()) return emptyList()
         val encoded = URLEncoder.encode(title, StandardCharsets.UTF_8.name()).replace("+", "%20")
         val candidateUrl = "https://audioboo.org/xfsearch/cikl/$encoded/"
-        resolveSeries(candidateUrl)?.let { return listOf(SeriesCandidate(it)) }
+        Log.i("AudoibooSeries", "provider audioboo DISCOVERY_DIRECT url=$candidateUrl")
+        val direct = resolveSeries(candidateUrl)
+        Log.i(
+            "AudoibooSeries",
+            "provider audioboo DISCOVERY_DIRECT result=${direct?.url ?: "null"} title=${direct?.title ?: "-"}"
+        )
+        if (direct != null) return listOf(SeriesCandidate(direct))
 
         val author = canonical.authors.firstOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
         val encodedAuthor = URLEncoder.encode(author, StandardCharsets.UTF_8.name()).replace("+", "%20")
         val authorUrl = "https://audioboo.org/xfsearch/avtora/$encodedAuthor/"
-        val refs = AudiobooFastParser.parseSeries(authorUrl).orEmpty().mapNotNull { book ->
+        Log.i("AudoibooSeries", "provider audioboo DISCOVERY_AUTHOR url=$authorUrl")
+        val parsedAuthorBooks = AudiobooFastParser.parseSeries(authorUrl).orEmpty()
+        Log.i("AudoibooSeries", "provider audioboo DISCOVERY_AUTHOR parsedBooks=${parsedAuthorBooks.size}")
+        val refs = parsedAuthorBooks.mapNotNull { book ->
             val sourceBook = SourceBook(
                 sourceId = descriptor.id,
                 url = book.url,
@@ -83,6 +93,7 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
                 number = match.value.number
             )
         }.distinctBy { SourceKeys.normalizeUrl(it.url) }
+        Log.i("AudoibooSeries", "provider audioboo DISCOVERY_AUTHOR matchedRefs=${refs.size}")
 
         if (refs.isEmpty()) return emptyList()
         return listOf(

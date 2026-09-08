@@ -137,6 +137,48 @@ class SourceIdentityMatcherTest {
         assertEquals(MatchDisposition.AUTO_ACCEPT, match.disposition)
     }
 
+    @Test
+    fun penNameAliasAutoLinksSameBook() {
+        val candidate = CanonicalBookMatchInput(
+            id = "palm-1",
+            title = "Длань системы. Книга 1",
+            authors = listOf("Алексей Андриенко (Лаэндэл)"),
+            number = 1.0
+        )
+        val variants = listOf("Лаэндэл", "Алексей Лаэндэл", "Алексей Андриенко")
+        variants.forEach { author ->
+            val incoming = sourceBook("provider", "Длань системы. Книга 1", author).copy(
+                seriesTitle = "Длань системы",
+                seriesNumber = 1.0
+            )
+            val match = SourceIdentityMatcher.bestBookMatch(incoming, listOf(candidate))!!
+            assertEquals("alias $author", MatchDisposition.AUTO_ACCEPT, match.disposition)
+            assertTrue("alias $author evidence=${match.evidence}", match.evidence.contains("author overlap"))
+        }
+    }
+
+    @Test
+    fun sameTitleDifferentAuthorDoesNotAutoLink() {
+        val incoming = sourceBook("provider", "Прометей", "Нина Световидова").copy(
+            seriesTitle = "Стеллар",
+            seriesNumber = 9.0
+        )
+        val candidate = CanonicalBookMatchInput(
+            id = "stellar-9",
+            title = "Прометей",
+            authors = listOf("Роман Прокофьев"),
+            number = 9.0
+        )
+        val match = SourceIdentityMatcher.bestBookMatch(incoming, listOf(candidate))!!
+        assertTrue(match.disposition != MatchDisposition.AUTO_ACCEPT)
+        assertTrue(match.evidence.contains("conflicting authors"))
+    }
+
+    @Test
+    fun sharedCommonGivenNameAloneIsNotAnAuthorAlias() {
+        assertTrue(!SourceIdentityMatcher.authorsCompatible(listOf("Алексей Андриенко"), listOf("Алексей Петров")))
+    }
+
     private fun sourceBook(sourceId: String, title: String, author: String) = SourceBook(
         sourceId = sourceId, url = "https://example.org/${title.hashCode()}", title = title, authors = listOf(SourceAuthor(author))
     )

@@ -11,7 +11,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
     override val descriptor = SourceDescriptor(
         id = "fantlab",
         name = "FantLab Catalog",
-        version = 6,
+        version = 7,
         hosts = setOf("api.fantlab.ru", "fantlab.ru", "www.fantlab.ru"),
         capabilities = setOf(SourceCapability.AUTHOR_CATALOG, SourceCapability.BOOK_SEARCH, SourceCapability.SERIES_DISCOVERY)
     )
@@ -179,9 +179,11 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
     }
 
     /**
-     * FantLab can place a cycle inside another cycle. A nested cycle is not a book in the parent:
-     * its leaf works belong to their own series. The first seriesTitles entry is the immediate series
-     * used by CatalogSeriesHeuristics.group(); remaining entries preserve the parent chain.
+     * FantLab exposes two hierarchy shapes. Older/synthetic responses may nest `children`, while the
+     * public author bibliography API normally returns one flat children list and describes ancestry
+     * with `work_root_saga` plus `deep`. In either form cycle nodes are metadata, not books.
+     * `seriesTitles.first()` is always the immediate cycle so CatalogSeriesHeuristics groups a
+     * subcycle separately from its parent.
      */
     private fun parseCycleChildren(
         author: CatalogAuthor,
@@ -189,7 +191,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
         hierarchy: List<String>,
         books: MutableMap<String, CatalogBook>
     ) {
-        var directBookIndex = 0
+        val directCounters = linkedMapOf<String, Int>()
         for (childIndex in 0 until children.length()) {
             val child = children.optJSONObject(childIndex) ?: continue
             val nestedChildren = child.optJSONArray("children")
@@ -199,18 +201,54 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
                 continue
             }
 
+            if (isCycleNode(child)) continue
             val title = firstNonBlank(child, "work_name", "work_name_orig") ?: continue
-            directBookIndex++
+            val childHierarchy = hierarchyFromRootSaga(child, hierarchy)
+            val immediateKey = SourceIdentityMatcher.normalizeTitle(childHierarchy.firstOrNull().orEmpty())
+            val directBookIndex = (directCounters[immediateKey] ?: 0) + 1
+            directCounters[immediateKey] = directBookIndex
             val inferredNumber = CatalogSeriesHeuristics.infer(title)?.number
             val book = parseWork(
                 author = author,
                 work = child,
-                seriesTitles = hierarchy,
+                seriesTitles = childHierarchy,
                 seriesNumber = inferredNumber ?: directBookIndex.toDouble()
             ) ?: continue
             books.putIfAbsent(book.remoteId, book)
         }
     }
+
+    private fun hierarchyFromRootSaga(child: JSONObject, fallback: List<String>): List<String> {
+        val roots = child.optJSONArray("work_root_saga") ?: return fallback
+        val sagaTitles = buildList {
+            for (index in 0 until roots.length()) {
+                val root = roots.optJSONObject(index) ?: continue
+                if (!isCycleLike(root)) continue
+                val title = firstNonBlank(root, "work_name", "work_name_orig") ?: continue
+                add(title)
+            }
+        }.distinctBy(SourceIdentityMatcher::normalizeTitle)
+        if (sagaTitles.isEmpty()) return fallback
+
+        val fallbackKeys = fallback.map(SourceIdentityMatcher::normalizeTitle).toSet()
+        val rootOrder = sagaTitles.asReversed()
+        return (rootOrder + fallback)
+            .filter(String::isNotBlank)
+            .distinctBy(SourceIdentityMatcher::normalizeTitle)
+            .let { resolved ->
+                // Some payloads list only the top cycle in work_root_saga. Preserve the known fallback.
+                if (resolved.none { SourceIdentityMatcher.normalizeTitle(it) in fallbackKeys }) resolved + fallback else resolved
+            }
+            .distinctBy(SourceIdentityMatcher::normalizeTitle)
+    }
+
+    private fun isCycleNode(json: JSONObject): Boolean =
+        isCycleLike(json) || json.optInt("position_is_node", 0) == 1
+
+    private fun isCycleLike(json: JSONObject): Boolean =
+        listOf("work_type", "work_type_name", "work_type_in")
+            .map { json.optString(it).trim() }
+            .any { value -> value.contains("цикл", ignoreCase = true) || value.contains("cycle", ignoreCase = true) }
 
     private fun parseStandalone(author: CatalogAuthor, blocks: JSONObject?, books: MutableMap<String, CatalogBook>) {
         if (blocks == null) return

@@ -15,11 +15,25 @@ data class ResolvedDownloadCandidate(
 class DownloadResolutionPlanner(
     private val registry: SourcePluginRegistry
 ) {
+    private companion object {
+        /**
+         * These providers normally expose a playlist rather than one standalone file. A single
+         * direct-file hit is therefore useful, but not strong enough to stop source fallback:
+         * stale DOM selectors and partially-loaded players have repeatedly produced exactly one
+         * track while another mapped source can resolve the complete book.
+         */
+        val PLAYLIST_PROVIDERS = setOf("baza-knig", "lis10book", "knigavuhe")
+    }
+
     /**
-     * Returns every downloadable part from the first source that can resolve the book.
-     * This is important for sites where one book is exposed as many MP3/M4A tracks.
+     * Returns every downloadable part from the first source that can resolve the book strongly.
+     * A one-track result from a known playlist provider is kept as a provisional fallback while
+     * the remaining mapped sources are checked. If none resolves better, the provisional result
+     * is returned so legitimate one-track books still work.
      */
     suspend fun resolveAll(sources: List<SourceBook>): List<ResolvedDownloadCandidate> {
+        var provisional: List<ResolvedDownloadCandidate> = emptyList()
+
         sources
             .distinctBy { it.sourceId to SourceKeys.normalizeUrl(it.url) }
             .forEach { book ->
@@ -36,7 +50,12 @@ class DownloadResolutionPlanner(
                         emptyList()
                     }
                     if (deviceCandidates.isNotEmpty()) {
-                        return deviceCandidates.map { ResolvedDownloadCandidate(book, it) }
+                        val resolved = deviceCandidates.map { ResolvedDownloadCandidate(book, it) }
+                        if (isWeakPlaylistResult(book, deviceCandidates)) {
+                            if (provisional.isEmpty()) provisional = resolved
+                        } else {
+                            return resolved
+                        }
                     }
                 }
 
@@ -65,11 +84,21 @@ class DownloadResolutionPlanner(
                     } else {
                         candidates.filter { it.type == DownloadType.DIRECT_FILE }
                     }
-                    return selected.map { ResolvedDownloadCandidate(book, it) }
+                    val resolved = selected.map { ResolvedDownloadCandidate(book, it) }
+                    if (isWeakPlaylistResult(book, selected)) {
+                        if (provisional.isEmpty()) provisional = resolved
+                    } else {
+                        return resolved
+                    }
                 }
             }
-        return emptyList()
+        return provisional
     }
+
+    private fun isWeakPlaylistResult(book: SourceBook, candidates: List<DownloadCandidate>): Boolean =
+        book.sourceId in PLAYLIST_PROVIDERS &&
+            candidates.size == 1 &&
+            candidates.single().type == DownloadType.DIRECT_FILE
 
     /** Backwards-compatible single-payload API for callers that genuinely need one candidate. */
     suspend fun resolve(sources: List<SourceBook>): ResolvedDownloadCandidate? =

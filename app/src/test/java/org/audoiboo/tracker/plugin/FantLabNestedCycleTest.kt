@@ -118,6 +118,60 @@ class FantLabNestedCycleTest {
         assertSeparated(author, json)
     }
 
+    @Test
+    fun compactRootSagaWithoutWorkTypeStillPreservesSubcycle() {
+        val author = CatalogAuthor("fantlab", "82803", "Роман Прокофьев")
+        val json = JSONObject(
+            """
+            {
+              "cycles_blocks": {
+                "1": {
+                  "list": [
+                    {
+                      "work_name": "Звёздная Кровь",
+                      "children": [
+                        {
+                          "work_id": 1,
+                          "work_name": "Звёздная Кровь",
+                          "work_type": "роман",
+                          "work_root_saga": [{"work_name": "Звёздная Кровь"}]
+                        },
+                        {
+                          "work_id": 101,
+                          "work_name": "Звёздная Кровь. Пламени Подобный",
+                          "work_type": "роман",
+                          "work_root_saga": [
+                            {"work_name": "Звёздная Кровь"},
+                            {"work_name": "Тысяча Братьев"}
+                          ]
+                        },
+                        {
+                          "work_id": 102,
+                          "work_name": "Звёздная Кровь. Лёд-Кузнец",
+                          "work_type": "роман",
+                          "work_root_saga": [
+                            {"work_name": "Звёздная Кровь"},
+                            {"work_name": "Тысяча Братьев"}
+                          ]
+                        },
+                        {
+                          "work_id": 11,
+                          "work_name": "Звёздная кровь-11. Колония Альфа",
+                          "work_type": "роман",
+                          "work_root_saga": [{"work_name": "Звёздная Кровь"}]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+            """.trimIndent()
+        )
+
+        assertSeparated(author, json)
+    }
+
     private fun assertSeparated(author: CatalogAuthor, json: JSONObject) {
         val catalog = AuthorCatalog(author, FantLabCatalogPlugin.parseCatalog(author, json))
         val grouped = CatalogSeriesHeuristics.group(catalog)

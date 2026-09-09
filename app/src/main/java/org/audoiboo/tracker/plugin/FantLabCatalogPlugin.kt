@@ -7,18 +7,86 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
 /** Russian-language bibliographic catalog backed by FantLab's public JSON API. */
-object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSearchProvider {
+object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSearchProvider, SeriesDiscoveryProvider {
     override val descriptor = SourceDescriptor(
         id = "fantlab",
         name = "FantLab Catalog",
-        version = 4,
+        version = 5,
         hosts = setOf("api.fantlab.ru", "fantlab.ru", "www.fantlab.ru"),
-        capabilities = setOf(SourceCapability.AUTHOR_CATALOG, SourceCapability.BOOK_SEARCH)
+        capabilities = setOf(SourceCapability.AUTHOR_CATALOG, SourceCapability.BOOK_SEARCH, SourceCapability.SERIES_DISCOVERY)
     )
 
     override fun supports(url: String): Boolean = runCatching {
         URI(url).host?.lowercase()?.trimEnd('.') in descriptor.hosts
     }.getOrDefault(false)
+
+    /**
+     * Lets ordinary provider-backed series participate in catalog federation too. SourceDiscovery
+     * already has the canonical title, authors and known books, so resolve the author's FantLab
+     * bibliography and expose matching catalog cycles as direct candidates. The normal identity
+     * matcher remains the authority: these candidates are only AUTO_ACCEPTed when their book set
+     * overlaps the canonical series strongly enough.
+     */
+    override suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
+        val authorQueries = (canonical.authors + canonical.books.flatMap { it.authors })
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinctBy(SourceIdentityMatcher::normalizeAuthor)
+            .take(3)
+        if (authorQueries.isEmpty()) return emptyList()
+
+        val candidates = linkedMapOf<String, SeriesCandidate>()
+        for (authorQuery in authorQueries) {
+            val authors = searchAuthors(authorQuery, 2)
+                .filter { it.confidence >= 0.78f }
+            for (author in authors) {
+                val grouped = CatalogSeriesHeuristics.group(loadAuthorCatalog(author, 300))
+                grouped.series.forEach { catalogSeries ->
+                    val sourceSeries = SourceSeries(
+                        sourceId = descriptor.id,
+                        remoteId = "${author.remoteId}:${SourceIdentityMatcher.normalizeTitle(catalogSeries.title)}",
+                        url = "https://fantlab.ru/autor${author.remoteId}#series-${encode(catalogSeries.title)}",
+                        title = catalogSeries.title,
+                        authors = catalogSeries.authors.ifEmpty { listOf(author.name) }
+                            .distinctBy(SourceIdentityMatcher::normalizeAuthor)
+                            .map(::SourceAuthor),
+                        books = catalogSeries.books.map { book ->
+                            SourceBookRef(
+                                remoteId = book.remoteId,
+                                url = "https://fantlab.ru/work${book.remoteId}",
+                                title = book.title,
+                                number = book.seriesNumber
+                            )
+                        }
+                    )
+                    val seriesMatch = SourceIdentityMatcher.bestSeriesMatch(
+                        incoming = sourceSeries,
+                        incomingBooks = sourceSeries.books.mapNotNull { ref ->
+                            val title = ref.title ?: return@mapNotNull null
+                            SourceBook(
+                                sourceId = descriptor.id,
+                                remoteId = ref.remoteId,
+                                url = ref.url,
+                                title = title,
+                                authors = sourceSeries.authors,
+                                seriesTitle = sourceSeries.title,
+                                seriesNumber = ref.number
+                            )
+                        },
+                        candidates = listOf(canonical)
+                    ) ?: return@forEach
+                    if (seriesMatch.disposition == MatchDisposition.REJECT) return@forEach
+                    val key = SourceIdentityMatcher.normalizeTitle(catalogSeries.title)
+                    val candidate = SeriesCandidate(sourceSeries, seriesMatch.confidence)
+                    val previous = candidates[key]
+                    if (previous == null || (candidate.sourceScore ?: 0f) > (previous.sourceScore ?: 0f)) {
+                        candidates[key] = candidate
+                    }
+                }
+            }
+        }
+        return candidates.values.sortedByDescending { it.sourceScore ?: 0f }.take(5)
+    }
 
     override suspend fun searchBooks(query: String, limit: Int): List<CatalogBookSearchHit> {
         val clean = query.trim()

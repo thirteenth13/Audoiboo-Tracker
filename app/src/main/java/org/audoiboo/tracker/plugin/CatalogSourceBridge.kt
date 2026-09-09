@@ -4,6 +4,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -127,17 +129,22 @@ class CatalogSourceBridge(
     private val registry: SourcePluginRegistry,
     private val catalogDiscovery: CatalogDiscoveryEngine = CatalogDiscoveryEngine(registry),
     private val sourceDiscovery: SourceDiscoveryEngine = SourceDiscoveryEngine(registry),
-    private val sourceResolveTimeoutMs: Long = 10_000L
+    private val sourceResolveTimeoutMs: Long = 20_000L,
+    private val maxConcurrentSeriesResolves: Int = 4
 ) {
     init {
         require(sourceResolveTimeoutMs in 1_000L..60_000L)
+        require(maxConcurrentSeriesResolves in 1..12)
     }
 
     suspend fun discoverByAuthor(authorQuery: String): List<CatalogSourceMatch> {
         val catalogs = catalogDiscovery.discoverByAuthor(authorQuery)
         val entries = CatalogSeriesDeduplicationPolicy.select(catalogs)
+        val semaphore = Semaphore(maxConcurrentSeriesResolves)
         return supervisorScope {
-            entries.map { entry -> async { resolveEntry(entry) } }.awaitAll()
+            entries.map { entry ->
+                async { semaphore.withPermit { resolveEntry(entry) } }
+            }.awaitAll()
         }
     }
 

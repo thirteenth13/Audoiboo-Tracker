@@ -29,6 +29,19 @@ class PluginRuntimeHealthTest {
     }
 
     @Test
+    fun eofTransportFailuresDoNotQuarantineInstalledPackage() = withTempDir { root ->
+        val health = PluginRuntimeHealth(root, failureThreshold = 3)
+
+        repeat(6) {
+            val state = health.recordFailure("knigavuhe", 12, "EOFException")
+            assertEquals(0, state.failures)
+            assertFalse(health.shouldQuarantine(state))
+        }
+
+        assertNull(health.read("knigavuhe", 12))
+    }
+
+    @Test
     fun successResetsFailureStreakForVersion() = withTempDir { root ->
         val health = PluginRuntimeHealth(root, failureThreshold = 3)
         health.recordFailure("source", 1, "boom")

@@ -26,6 +26,14 @@ internal object RoomCoverSync {
             if (t is CancellationException) throw t
         }
 
+        // Baza-Knig keeps the player playlist, tracks and cover in the same redirectto.cc/s01/<id>/
+        // directory. Recover missing covers from that media directory before generic metadata APIs.
+        try {
+            BazaCoverRecovery.repairMissing(context, limit = 12)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+        }
+
         // Cover/metadata enrichment is auxiliary work. A provider refresh may already have
         // discovered and persisted valid source matches, so enrichment failures must not turn the
         // whole series refresh into a false "Не вдалося оновити серію" result.

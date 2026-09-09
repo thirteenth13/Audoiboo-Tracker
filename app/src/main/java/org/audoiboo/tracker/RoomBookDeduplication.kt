@@ -2,6 +2,9 @@ package org.audoiboo.tracker
 
 import android.content.Context
 import androidx.room.withTransaction
+import org.audoiboo.tracker.plugin.CanonicalBookMatchInput
+import org.audoiboo.tracker.plugin.MatchDisposition
+import org.audoiboo.tracker.plugin.PluginPackageRuntime
 import org.audoiboo.tracker.plugin.SeriesDiagnosticLog
 import org.audoiboo.tracker.plugin.SourceAuthor
 import org.audoiboo.tracker.plugin.SourceBook
@@ -126,9 +129,77 @@ internal object RoomBookDeduplication {
 
     private suspend fun repair(context: Context, db: AudoibooDatabase, item: SeriesWithBooks) {
         val dao = db.libraryDao()
-        val result = RoomBookDeduplicationPolicy.deduplicate(item.series.name, item.books)
-        if (result.duplicateToWinner.isEmpty()) return
-        result.duplicateToWinner.forEach { (duplicateId, winnerId) ->
+        val base = RoomBookDeduplicationPolicy.deduplicate(item.series.name, item.books)
+
+        // Collect provider identities before rows are deleted. Once FantLab has been accepted for a
+        // series it becomes the bibliographic anchor: alternate providers may attach sources to its
+        // works, but they must not create unrelated books merely because a broad search page happened
+        // to contain the same title. The provider that owns the series URL is preserved for legitimate
+        // source-only extras (for example an audiobook-only volume 00).
+        val originalSources = item.books.associate { book ->
+            book.id to SourceMetadataRepository.sourcesForBook(context, book.id)
+        }
+        val idsByWinner = linkedMapOf<String, MutableSet<String>>()
+        base.books.forEach { idsByWinner.getOrPut(it.id) { linkedSetOf() } += it.id }
+        base.duplicateToWinner.forEach { (duplicateId, winnerId) ->
+            idsByWinner.getOrPut(winnerId) { linkedSetOf() } += duplicateId
+        }
+        val sourcesByWinner = idsByWinner.mapValues { (_, ids) -> ids.flatMap { originalSources[it].orEmpty() } }
+        val primarySourceId = PluginPackageRuntime.registry.forUrl(item.series.url)?.descriptor?.id
+        val fantlabAnchors = base.books.filter { book ->
+            sourcesByWinner[book.id].orEmpty().any { it.sourceId == "fantlab" }
+        }
+
+        val extraToWinner = linkedMapOf<String, String>()
+        val pruneIds = linkedSetOf<String>()
+        val finalBooks = base.books.associateBy { it.id }.toMutableMap()
+
+        if (fantlabAnchors.isNotEmpty()) {
+            base.books.filterNot { candidate -> fantlabAnchors.any { it.id == candidate.id } }.forEach { candidate ->
+                val match = SourceIdentityMatcher.bestBookMatch(
+                    incoming = SourceBook(
+                        sourceId = primarySourceId ?: "room",
+                        url = candidate.url,
+                        title = candidate.title,
+                        authors = candidate.author?.split(',', ';', '&').orEmpty()
+                            .map(String::trim).filter(String::isNotBlank).map(::SourceAuthor),
+                        seriesTitle = item.series.name,
+                        seriesNumber = (candidate.sortIndex + 1).toDouble(),
+                        coverUrl = candidate.coverUrl
+                    ),
+                    candidates = fantlabAnchors.map(::canonicalBookInput)
+                )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+
+                if (match != null) {
+                    val anchor = finalBooks[match.value.id] ?: return@forEach
+                    extraToWinner[candidate.id] = anchor.id
+                    finalBooks[anchor.id] = anchor.copy(
+                        coverUrl = anchor.coverUrl ?: candidate.coverUrl,
+                        archiveUrl = anchor.archiveUrl ?: candidate.archiveUrl,
+                        status = if (anchor.status == "READ" || candidate.status == "READ") "READ" else anchor.status,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    finalBooks.remove(candidate.id)
+                    return@forEach
+                }
+
+                val candidateSources = sourcesByWinner[candidate.id].orEmpty()
+                val belongsToPrimary = primarySourceId != null && candidateSources.any { it.sourceId == primarySourceId }
+                val isCatalogAnchor = candidateSources.any { it.sourceId == "fantlab" }
+                if (candidateSources.isNotEmpty() && !belongsToPrimary && !isCatalogAnchor) {
+                    pruneIds += candidate.id
+                    finalBooks.remove(candidate.id)
+                }
+            }
+        }
+
+        val duplicateToWinner = linkedMapOf<String, String>().apply {
+            putAll(base.duplicateToWinner)
+            putAll(extraToWinner)
+        }
+        if (duplicateToWinner.isEmpty() && pruneIds.isEmpty()) return
+
+        duplicateToWinner.forEach { (duplicateId, winnerId) ->
             SourceMetadataRepository.sourcesForBook(context, duplicateId).forEach { source ->
                 SourceBookReassignment.record(
                     context = context,
@@ -146,10 +217,22 @@ internal object RoomBookDeduplication {
                 )
             }
         }
+
+        val winners = finalBooks.values.sortedWith(compareBy<BookEntity> { it.sortIndex }.thenBy { it.title })
         db.withTransaction {
-            dao.upsertBooks(result.books)
-            dao.deleteMissingBooks(item.series.id, result.books.map { it.id })
+            dao.upsertBooks(winners)
+            dao.deleteMissingBooks(item.series.id, winners.map { it.id })
         }
-        SeriesDiagnosticLog.i("RoomSeriesSync DEDUPE series=${item.series.name} before=${item.books.size} after=${result.books.size} removed=${result.duplicateToWinner.size}")
+        SeriesDiagnosticLog.i(
+            "RoomSeriesSync DEDUPE series=${item.series.name} before=${item.books.size} after=${winners.size} " +
+                "merged=${duplicateToWinner.size} pruned=${pruneIds.size} fantlabAnchors=${fantlabAnchors.size} primary=$primarySourceId"
+        )
     }
+
+    private fun canonicalBookInput(book: BookEntity) = CanonicalBookMatchInput(
+        id = book.id,
+        title = book.title,
+        authors = book.author?.split(',', ';', '&').orEmpty().map(String::trim).filter(String::isNotBlank),
+        number = (book.sortIndex + 1).toDouble()
+    )
 }

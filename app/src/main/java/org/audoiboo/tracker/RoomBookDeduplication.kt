@@ -2,6 +2,7 @@ package org.audoiboo.tracker
 
 import android.content.Context
 import androidx.room.withTransaction
+import org.audoiboo.tracker.plugin.AuthorAliasResolver
 import org.audoiboo.tracker.plugin.CanonicalBookMatchInput
 import org.audoiboo.tracker.plugin.MatchDisposition
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
@@ -155,19 +156,33 @@ internal object RoomBookDeduplication {
         val finalBooks = base.books.associateBy { it.id }.toMutableMap()
 
         if (fantlabAnchors.isNotEmpty()) {
+            val aliasResolver = AuthorAliasResolver.forContext(context)
+            val expandedAnchorInputs = fantlabAnchors.map { anchor ->
+                val rawAuthors = anchor.author?.split(',', ';', '&').orEmpty()
+                    .map(String::trim).filter(String::isNotBlank)
+                CanonicalBookMatchInput(
+                    id = anchor.id,
+                    title = anchor.title,
+                    authors = aliasResolver.expandForMatching(rawAuthors),
+                    number = (anchor.sortIndex + 1).toDouble()
+                )
+            }
+
             base.books.filterNot { candidate -> fantlabAnchors.any { it.id == candidate.id } }.forEach { candidate ->
+                val candidateRawAuthors = candidate.author?.split(',', ';', '&').orEmpty()
+                    .map(String::trim).filter(String::isNotBlank)
+                val candidateExpandedAuthors = aliasResolver.expandForMatching(candidateRawAuthors)
                 val match = SourceIdentityMatcher.bestBookMatch(
                     incoming = SourceBook(
                         sourceId = primarySourceId ?: "room",
                         url = candidate.url,
                         title = candidate.title,
-                        authors = candidate.author?.split(',', ';', '&').orEmpty()
-                            .map(String::trim).filter(String::isNotBlank).map(::SourceAuthor),
+                        authors = candidateExpandedAuthors.map(::SourceAuthor),
                         seriesTitle = item.series.name,
                         seriesNumber = (candidate.sortIndex + 1).toDouble(),
                         coverUrl = candidate.coverUrl
                     ),
-                    candidates = fantlabAnchors.map(::canonicalBookInput)
+                    candidates = expandedAnchorInputs
                 )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
 
                 if (match != null) {

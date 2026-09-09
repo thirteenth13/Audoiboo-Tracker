@@ -11,7 +11,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
     override val descriptor = SourceDescriptor(
         id = "fantlab",
         name = "FantLab Catalog",
-        version = 5,
+        version = 6,
         hosts = setOf("api.fantlab.ru", "fantlab.ru", "www.fantlab.ru"),
         capabilities = setOf(SourceCapability.AUTHOR_CATALOG, SourceCapability.BOOK_SEARCH, SourceCapability.SERIES_DISCOVERY)
     )
@@ -20,13 +20,6 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
         URI(url).host?.lowercase()?.trimEnd('.') in descriptor.hosts
     }.getOrDefault(false)
 
-    /**
-     * Lets ordinary provider-backed series participate in catalog federation too. SourceDiscovery
-     * already has the canonical title, authors and known books, so resolve the author's FantLab
-     * bibliography and expose matching catalog cycles as direct candidates. The normal identity
-     * matcher remains the authority: these candidates are only AUTO_ACCEPTed when their book set
-     * overlaps the canonical series strongly enough.
-     */
     override suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
         val authorQueries = (canonical.authors + canonical.books.flatMap { it.authors })
             .map(String::trim)
@@ -37,8 +30,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
 
         val candidates = linkedMapOf<String, SeriesCandidate>()
         for (authorQuery in authorQueries) {
-            val authors = searchAuthors(authorQuery, 2)
-                .filter { it.confidence >= 0.78f }
+            val authors = searchAuthors(authorQuery, 2).filter { it.confidence >= 0.78f }
             for (author in authors) {
                 val grouped = CatalogSeriesHeuristics.group(loadAuthorCatalog(author, 300))
                 grouped.series.forEach { catalogSeries ->
@@ -48,15 +40,9 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
                         url = "https://fantlab.ru/autor${author.remoteId}#series-${encode(catalogSeries.title)}",
                         title = catalogSeries.title,
                         authors = catalogSeries.authors.ifEmpty { listOf(author.name) }
-                            .distinctBy(SourceIdentityMatcher::normalizeAuthor)
-                            .map(::SourceAuthor),
+                            .distinctBy(SourceIdentityMatcher::normalizeAuthor).map(::SourceAuthor),
                         books = catalogSeries.books.map { book ->
-                            SourceBookRef(
-                                remoteId = book.remoteId,
-                                url = "https://fantlab.ru/work${book.remoteId}",
-                                title = book.title,
-                                number = book.seriesNumber
-                            )
+                            SourceBookRef(book.remoteId, "https://fantlab.ru/work${book.remoteId}", book.title, book.seriesNumber)
                         }
                     )
                     val seriesMatch = SourceIdentityMatcher.bestSeriesMatch(
@@ -79,9 +65,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
                     val key = SourceIdentityMatcher.normalizeTitle(catalogSeries.title)
                     val candidate = SeriesCandidate(sourceSeries, seriesMatch.confidence)
                     val previous = candidates[key]
-                    if (previous == null || (candidate.sourceScore ?: 0f) > (previous.sourceScore ?: 0f)) {
-                        candidates[key] = candidate
-                    }
+                    if (previous == null || (candidate.sourceScore ?: 0f) > (previous.sourceScore ?: 0f)) candidates[key] = candidate
                 }
             }
         }
@@ -103,14 +87,10 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
                 val originalTitle = item.optString("name").trim()
                 val title = russianTitle.ifBlank { originalTitle }
                 val confidence = listOf(russianTitle, originalTitle, item.optString("fullname").trim())
-                    .filter(String::isNotBlank)
-                    .maxOfOrNull { catalogTitleConfidence(clean, it) } ?: 0f
+                    .filter(String::isNotBlank).maxOfOrNull { catalogTitleConfidence(clean, it) } ?: 0f
                 if (id <= 0 || title.isBlank() || confidence < 0.60f) continue
-                val authors = splitAuthors(
-                    item.optString("all_autor_rusname").ifBlank { item.optString("all_autor_name") }
-                ).ifEmpty {
-                    (1..5).mapNotNull { index -> item.optString("autor${index}_rusname").trim().takeIf(String::isNotBlank) }
-                }
+                val authors = splitAuthors(item.optString("all_autor_rusname").ifBlank { item.optString("all_autor_name") })
+                    .ifEmpty { (1..5).mapNotNull { index -> item.optString("autor${index}_rusname").trim().takeIf(String::isNotBlank) } }
                 val inferred = CatalogSeriesHeuristics.infer(title)
                 add(
                     CatalogBookSearchHit(
@@ -122,8 +102,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
                             seriesTitles = inferred?.let { listOf(it.title) }.orEmpty(),
                             seriesNumber = inferred?.number,
                             firstPublishYear = flexibleInt(item, "year")?.takeIf { it > 0 }
-                        ),
-                        confidence
+                        ), confidence
                     )
                 )
             }
@@ -143,13 +122,9 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
         require(author.providerId == descriptor.id) { "Author belongs to another catalog provider" }
         val authorId = author.remoteId.toIntOrNull() ?: return AuthorCatalog(author, emptyList())
         val safeLimit = limit.coerceIn(1, 500)
-
         val primary = loadAuthorJson("https://api.fantlab.ru/autor/$authorId?biblio_blocks=1&sort=year")
         val primaryBooks = primary?.let { parseCatalog(author, it) }.orEmpty()
         if (primaryBooks.isNotEmpty()) return AuthorCatalog(author, primaryBooks.take(safeLimit))
-
-        // FantLab's API is still pre-1.0 and has changed response shapes before. The documented
-        // /extended endpoint exposes the same biblio_blocks, so use it as a compatibility fallback.
         val extended = loadAuthorJson("https://api.fantlab.ru/autor/$authorId/extended?biblio_blocks=1&sort=year")
         return AuthorCatalog(author, extended?.let { parseCatalog(author, it) }.orEmpty().take(safeLimit))
     }
@@ -198,14 +173,42 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
                 val cycle = cycles.optJSONObject(cycleIndex) ?: continue
                 val seriesTitle = firstNonBlank(cycle, "work_name", "work_name_orig") ?: continue
                 val children = cycle.optJSONArray("children") ?: continue
-                for (bookIndex in 0 until children.length()) {
-                    val child = children.optJSONObject(bookIndex) ?: continue
-                    val title = firstNonBlank(child, "work_name", "work_name_orig") ?: continue
-                    val inferredNumber = CatalogSeriesHeuristics.infer(title)?.number
-                    val book = parseWork(author, child, seriesTitle, inferredNumber ?: (bookIndex + 1).toDouble()) ?: continue
-                    books.putIfAbsent(book.remoteId, book)
-                }
+                parseCycleChildren(author, children, listOf(seriesTitle), books)
             }
+        }
+    }
+
+    /**
+     * FantLab can place a cycle inside another cycle. A nested cycle is not a book in the parent:
+     * its leaf works belong to their own series. The first seriesTitles entry is the immediate series
+     * used by CatalogSeriesHeuristics.group(); remaining entries preserve the parent chain.
+     */
+    private fun parseCycleChildren(
+        author: CatalogAuthor,
+        children: JSONArray,
+        hierarchy: List<String>,
+        books: MutableMap<String, CatalogBook>
+    ) {
+        var directBookIndex = 0
+        for (childIndex in 0 until children.length()) {
+            val child = children.optJSONObject(childIndex) ?: continue
+            val nestedChildren = child.optJSONArray("children")
+            if (nestedChildren != null && nestedChildren.length() > 0) {
+                val nestedTitle = firstNonBlank(child, "work_name", "work_name_orig") ?: continue
+                parseCycleChildren(author, nestedChildren, listOf(nestedTitle) + hierarchy, books)
+                continue
+            }
+
+            val title = firstNonBlank(child, "work_name", "work_name_orig") ?: continue
+            directBookIndex++
+            val inferredNumber = CatalogSeriesHeuristics.infer(title)?.number
+            val book = parseWork(
+                author = author,
+                work = child,
+                seriesTitles = hierarchy,
+                seriesNumber = inferredNumber ?: directBookIndex.toDouble()
+            ) ?: continue
+            books.putIfAbsent(book.remoteId, book)
         }
     }
 
@@ -217,13 +220,13 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
             val works = block.optJSONArray("list") ?: continue
             for (i in 0 until works.length()) {
                 val work = works.optJSONObject(i) ?: continue
-                val book = parseWork(author, work, null, null) ?: continue
+                val book = parseWork(author, work, emptyList(), null) ?: continue
                 books.putIfAbsent(book.remoteId, book)
             }
         }
     }
 
-    private fun parseWork(author: CatalogAuthor, work: JSONObject, seriesTitle: String?, seriesNumber: Double?): CatalogBook? {
+    private fun parseWork(author: CatalogAuthor, work: JSONObject, seriesTitles: List<String>, seriesNumber: Double?): CatalogBook? {
         val id = flexibleInt(work, "work_id") ?: return null
         val title = firstNonBlank(work, "work_name", "work_name_orig") ?: return null
         if (id <= 0) return null
@@ -235,7 +238,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
             remoteId = id.toString(),
             title = title,
             authors = authors,
-            seriesTitles = seriesTitle?.let(::listOf).orEmpty(),
+            seriesTitles = seriesTitles,
             seriesNumber = seriesNumber,
             firstPublishYear = flexibleInt(work, "work_year")?.takeIf { it > 0 }
         )

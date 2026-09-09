@@ -9,6 +9,15 @@ internal object RoomCoverSync {
     private const val INDEX_PREFS = "cover_index"
 
     suspend fun enqueueAll(context: Context) = withContext(Dispatchers.IO) {
+        // A source refresh may have learned the same logical book from several providers using
+        // different title/author formatting. Repair those provider-backed Room aliases before the
+        // auxiliary cover pass so the UI immediately sees one canonical row with many sources.
+        try {
+            RoomBookDeduplication.repairAll(context)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+        }
+
         // Cover/metadata enrichment is auxiliary work. A provider refresh may already have
         // discovered and persisted valid source matches, so enrichment failures must not turn the
         // whole series refresh into a false "Не вдалося оновити серію" result.

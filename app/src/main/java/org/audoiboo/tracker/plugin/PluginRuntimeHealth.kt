@@ -108,7 +108,10 @@ class PluginRuntimeHealth(
             "unknown host",
             "network is unreachable",
             "unexpected end of stream",
-            "stream was reset"
+            "stream was reset",
+            "eofexception",
+            "end of input",
+            "premature eof"
         )
     }
 }

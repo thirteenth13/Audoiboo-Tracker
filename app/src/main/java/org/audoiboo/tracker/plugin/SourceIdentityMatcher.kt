@@ -199,8 +199,9 @@ object SourceIdentityMatcher {
         val candidateAuthorNames = candidate.authors
         val incomingAuthors = incomingAuthorNames.map(::normalizeAuthor).filter { it.isNotBlank() }.toSet()
         val candidateAuthors = candidateAuthorNames.map(::normalizeAuthor).filter { it.isNotBlank() }.toSet()
+        val authorOverlap = incomingAuthors.isNotEmpty() && candidateAuthors.isNotEmpty() && authorsCompatible(incomingAuthorNames, candidateAuthorNames)
         if (incomingAuthors.isNotEmpty() && candidateAuthors.isNotEmpty()) {
-            if (authorsCompatible(incomingAuthorNames, candidateAuthorNames)) { score += 0.08f; evidence += "author overlap" }
+            if (authorOverlap) { score += 0.08f; evidence += "author overlap" }
             else { score -= 0.12f; evidence += "conflicting authors"; evidence += "author details incoming=${incomingAuthors.sorted()} canonical=${candidateAuthors.sorted()}" }
         }
         if (numberKnown) {
@@ -209,8 +210,15 @@ object SourceIdentityMatcher {
                 evidence += "volume number agrees"
             } else {
                 evidence += "volume number conflicts"
-                if (incomingTitle != candidateTitle) score = min(score, REVIEW_THRESHOLD - 0.01f)
-                else score -= 0.08f
+                val semanticTitleExact = seriesTitle.isNotBlank() && cleanedIncoming.isNotBlank() && cleanedIncoming == cleanedCandidate
+                if (semanticTitleExact && authorOverlap) {
+                    score = max(score, AUTO_ACCEPT_THRESHOLD)
+                    evidence += "semantic title + author overrides provider volume numbering"
+                } else if (incomingTitle != candidateTitle) {
+                    score = min(score, REVIEW_THRESHOLD - 0.01f)
+                } else {
+                    score -= 0.08f
+                }
             }
         }
         val confidence = score.coerceIn(0f, 1f)

@@ -15,7 +15,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import org.audoiboo.tracker.plugin.SeriesDiagnosticLog
+import java.io.File
 
 class SeriesLogActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,11 +38,25 @@ private fun SeriesLogScreen(activity: ComponentActivity) {
         Toast.makeText(activity, "Лог скопійовано", Toast.LENGTH_SHORT).show()
     }
     fun share() {
-        activity.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "AudoibooSeries diagnostic log")
-            putExtra(Intent.EXTRA_TEXT, text)
-        }, "Поділитися логом"))
+        runCatching {
+            val dir = File(activity.cacheDir, "shared-logs").apply { mkdirs() }
+            dir.listFiles()?.forEach { file ->
+                if (file.isFile && file.name.startsWith("audoiboo-series-")) file.delete()
+            }
+            val file = File(dir, "audoiboo-series-${System.currentTimeMillis()}.txt")
+            file.writeText(text, Charsets.UTF_8)
+            val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.files", file)
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "AudoibooSeries diagnostic log")
+                putExtra(Intent.EXTRA_STREAM, uri)
+                clipData = ClipData.newRawUri("AudoibooSeries diagnostic log", uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            activity.startActivity(Intent.createChooser(send, "Поділитися логом"))
+        }.onFailure {
+            Toast.makeText(activity, "Не вдалося поділитися логом: ${it.message ?: "невідома помилка"}", Toast.LENGTH_LONG).show()
+        }
     }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Лог пошуку серій") }, navigationIcon = { TextButton(onClick = { activity.finish() }) { Text("←") } }) }) { padding ->

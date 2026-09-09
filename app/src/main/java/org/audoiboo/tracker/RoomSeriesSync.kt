@@ -5,6 +5,7 @@ import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.audoiboo.tracker.plugin.AuthorEnrichedIdentityMatcher
 import org.audoiboo.tracker.plugin.CanonicalBookMatchInput
 import org.audoiboo.tracker.plugin.CanonicalSeriesMatchInput
 import org.audoiboo.tracker.plugin.CanonicalSourceBookLink
@@ -223,7 +224,8 @@ internal object RoomSeriesSync {
                 val mapped = mappedBookIds[source]?.let(existingBookById::get)
                 val direct = existingBookByUrl[SourceKeys.normalizeUrl(source.url)]
                 val contentMatch = if (mapped == null && direct == null) {
-                    SourceIdentityMatcher.bestBookMatch(
+                    AuthorEnrichedIdentityMatcher.bestBookMatch(
+                        context = context,
                         incoming = source,
                         candidates = existingBooks.filterNot { it.id in usedCanonicalBookIds }.map(::canonicalBookInput)
                     )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
@@ -270,7 +272,8 @@ internal object RoomSeriesSync {
                 val currentCanonical = (existingBooks + additions).associateBy { it.id }.toMutableMap()
                 var carryIndex = (currentCanonical.values.maxOfOrNull { it.sortIndex } ?: -1) + 1
                 val carried = duplicate.books.mapNotNull { old ->
-                    val match = SourceIdentityMatcher.bestBookMatch(
+                    val match = AuthorEnrichedIdentityMatcher.bestBookMatch(
+                        context = context,
                         incoming = SourceBook(
                             sourceId = plugin.descriptor.id,
                             url = old.url,
@@ -379,7 +382,8 @@ internal object RoomSeriesSync {
                 val sourceLinks = mutableListOf<CanonicalSourceBookLink>()
 
                 SeriesBookMembershipPolicy.filter(finding.series, finding.books).forEach { sourceBook ->
-                    val match = SourceIdentityMatcher.bestBookMatch(
+                    val match = AuthorEnrichedIdentityMatcher.bestBookMatch(
+                        context = context,
                         incoming = sourceBook,
                         candidates = canonicalBooks.filterNot { it.id in usedIds }.map(::canonicalBookInput)
                     )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }

@@ -40,6 +40,9 @@ internal object RoomBookDeduplicationPolicy {
         return RoomBookDeduplicationResult(merged, duplicateToWinner)
     }
 
+    internal fun isExplicitPrimaryExtra(seriesTitle: String, title: String): Boolean =
+        explicitSeriesVolume(title, seriesTitle) == 0
+
     private fun sameLogicalBook(seriesTitle: String, left: BookEntity, right: BookEntity): Boolean {
         val leftTitle = SourceIdentityMatcher.normalizeTitle(left.title)
         val rightTitle = SourceIdentityMatcher.normalizeTitle(right.title)
@@ -131,58 +134,35 @@ internal object RoomBookDeduplication {
     private suspend fun repair(context: Context, db: AudoibooDatabase, item: SeriesWithBooks) {
         val dao = db.libraryDao()
         val base = RoomBookDeduplicationPolicy.deduplicate(item.series.name, item.books)
-
-        // Collect provider identities before rows are deleted. Once FantLab has been accepted for a
-        // series it becomes the bibliographic anchor: alternate providers may attach sources to its
-        // works, but they must not create unrelated books merely because a broad search page happened
-        // to contain the same title. The provider that owns the series URL is preserved for legitimate
-        // source-only extras (for example an audiobook-only volume 00).
-        val originalSources = item.books.associate { book ->
-            book.id to SourceMetadataRepository.sourcesForBook(context, book.id)
-        }
+        val originalSources = item.books.associate { book -> book.id to SourceMetadataRepository.sourcesForBook(context, book.id) }
         val idsByWinner = linkedMapOf<String, MutableSet<String>>()
         base.books.forEach { idsByWinner.getOrPut(it.id) { linkedSetOf() } += it.id }
-        base.duplicateToWinner.forEach { (duplicateId, winnerId) ->
-            idsByWinner.getOrPut(winnerId) { linkedSetOf() } += duplicateId
-        }
+        base.duplicateToWinner.forEach { (duplicateId, winnerId) -> idsByWinner.getOrPut(winnerId) { linkedSetOf() } += duplicateId }
         val sourcesByWinner = idsByWinner.mapValues { (_, ids) -> ids.flatMap { originalSources[it].orEmpty() } }
         val primarySourceId = PluginPackageRuntime.registry.forUrl(item.series.url)?.descriptor?.id
-        val fantlabAnchors = base.books.filter { book ->
-            sourcesByWinner[book.id].orEmpty().any { it.sourceId == "fantlab" }
-        }
+        val fantlabAnchors = base.books.filter { book -> sourcesByWinner[book.id].orEmpty().any { it.sourceId == "fantlab" } }
 
         val extraToWinner = linkedMapOf<String, String>()
         val pruneIds = linkedSetOf<String>()
         val finalBooks = base.books.associateBy { it.id }.toMutableMap()
+        var keptExtras = 0
 
         if (fantlabAnchors.isNotEmpty()) {
             val aliasResolver = AuthorAliasResolver.forContext(context)
             val expandedAnchorInputs = fantlabAnchors.map { anchor ->
-                val rawAuthors = anchor.author?.split(',', ';', '&').orEmpty()
-                    .map(String::trim).filter(String::isNotBlank)
-                CanonicalBookMatchInput(
-                    id = anchor.id,
-                    title = anchor.title,
-                    authors = aliasResolver.expandForMatching(rawAuthors),
-                    number = (anchor.sortIndex + 1).toDouble()
-                )
+                val rawAuthors = anchor.author?.split(',', ';', '&').orEmpty().map(String::trim).filter(String::isNotBlank)
+                CanonicalBookMatchInput(anchor.id, anchor.title, aliasResolver.expandForMatching(rawAuthors), (anchor.sortIndex + 1).toDouble())
             }
 
             base.books.filterNot { candidate -> fantlabAnchors.any { it.id == candidate.id } }.forEach { candidate ->
-                val candidateRawAuthors = candidate.author?.split(',', ';', '&').orEmpty()
-                    .map(String::trim).filter(String::isNotBlank)
+                val candidateRawAuthors = candidate.author?.split(',', ';', '&').orEmpty().map(String::trim).filter(String::isNotBlank)
                 val candidateExpandedAuthors = aliasResolver.expandForMatching(candidateRawAuthors)
                 val match = SourceIdentityMatcher.bestBookMatch(
                     incoming = SourceBook(
-                        sourceId = primarySourceId ?: "room",
-                        url = candidate.url,
-                        title = candidate.title,
-                        authors = candidateExpandedAuthors.map(::SourceAuthor),
-                        seriesTitle = item.series.name,
-                        seriesNumber = (candidate.sortIndex + 1).toDouble(),
-                        coverUrl = candidate.coverUrl
-                    ),
-                    candidates = expandedAnchorInputs
+                        sourceId = primarySourceId ?: "room", url = candidate.url, title = candidate.title,
+                        authors = candidateExpandedAuthors.map(::SourceAuthor), seriesTitle = item.series.name,
+                        seriesNumber = (candidate.sortIndex + 1).toDouble(), coverUrl = candidate.coverUrl
+                    ), candidates = expandedAnchorInputs
                 )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
 
                 if (match != null) {
@@ -200,54 +180,37 @@ internal object RoomBookDeduplication {
 
                 val candidateSources = sourcesByWinner[candidate.id].orEmpty()
                 val belongsToPrimary = primarySourceId != null && candidateSources.any { it.sourceId == primarySourceId }
-                val isCatalogAnchor = candidateSources.any { it.sourceId == "fantlab" }
-                if (candidateSources.isNotEmpty() && !belongsToPrimary && !isCatalogAnchor) {
+                val preserveExplicitExtra = belongsToPrimary && RoomBookDeduplicationPolicy.isExplicitPrimaryExtra(item.series.name, candidate.title)
+                if (preserveExplicitExtra) {
+                    keptExtras++
+                } else if (candidateSources.isNotEmpty()) {
                     pruneIds += candidate.id
                     finalBooks.remove(candidate.id)
                 }
             }
         }
 
-        val duplicateToWinner = linkedMapOf<String, String>().apply {
-            putAll(base.duplicateToWinner)
-            putAll(extraToWinner)
-        }
+        val duplicateToWinner = linkedMapOf<String, String>().apply { putAll(base.duplicateToWinner); putAll(extraToWinner) }
         if (duplicateToWinner.isEmpty() && pruneIds.isEmpty()) return
 
         duplicateToWinner.forEach { (duplicateId, winnerId) ->
             SourceMetadataRepository.sourcesForBook(context, duplicateId).forEach { source ->
                 SourceBookReassignment.record(
-                    context = context,
-                    canonicalBookId = winnerId,
-                    canonicalSeriesId = item.series.id,
+                    context = context, canonicalBookId = winnerId, canonicalSeriesId = item.series.id,
                     book = SourceBook(
-                        sourceId = source.sourceId,
-                        url = source.url,
-                        title = source.remoteTitle.orEmpty(),
-                        authors = source.remoteAuthor?.split(',', ';', '&').orEmpty().map(String::trim)
-                            .filter(String::isNotBlank).map(::SourceAuthor),
-                        seriesTitle = item.series.name,
-                        seriesNumber = source.remoteOrder
+                        sourceId = source.sourceId, url = source.url, title = source.remoteTitle.orEmpty(),
+                        authors = source.remoteAuthor?.split(',', ';', '&').orEmpty().map(String::trim).filter(String::isNotBlank).map(::SourceAuthor),
+                        seriesTitle = item.series.name, seriesNumber = source.remoteOrder
                     )
                 )
             }
         }
 
         val winners = finalBooks.values.sortedWith(compareBy<BookEntity> { it.sortIndex }.thenBy { it.title })
-        db.withTransaction {
-            dao.upsertBooks(winners)
-            dao.deleteMissingBooks(item.series.id, winners.map { it.id })
-        }
+        db.withTransaction { dao.upsertBooks(winners); dao.deleteMissingBooks(item.series.id, winners.map { it.id }) }
         SeriesDiagnosticLog.i(
             "RoomSeriesSync DEDUPE series=${item.series.name} before=${item.books.size} after=${winners.size} " +
-                "merged=${duplicateToWinner.size} pruned=${pruneIds.size} fantlabAnchors=${fantlabAnchors.size} primary=$primarySourceId"
+                "merged=${duplicateToWinner.size} pruned=${pruneIds.size} keptExtras=$keptExtras fantlabAnchors=${fantlabAnchors.size} primary=$primarySourceId"
         )
     }
-
-    private fun canonicalBookInput(book: BookEntity) = CanonicalBookMatchInput(
-        id = book.id,
-        title = book.title,
-        authors = book.author?.split(',', ';', '&').orEmpty().map(String::trim).filter(String::isNotBlank),
-        number = (book.sortIndex + 1).toDouble()
-    )
 }

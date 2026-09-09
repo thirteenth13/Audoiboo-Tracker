@@ -37,6 +37,21 @@ class SourceDiscoveryEngineTest {
     }
 
     @Test
+    fun hydratesPartialDirectDiscoveryInsteadOfStoppingEarly() = runBlocking {
+        val direct = FakePartialDirectDiscoveryPlugin("partial")
+        val engine = SourceDiscoveryEngine(SourcePluginRegistry(listOf(direct)))
+
+        val results = engine.discoverSeries(canonical())
+
+        assertEquals(1, results.size)
+        assertEquals("partial", results.single().sourceId)
+        assertEquals(2, results.single().books.size)
+        assertEquals(1, direct.discoveryCalls)
+        assertEquals(1, direct.resolveCalls)
+        assertEquals(1, direct.loadBooksCalls)
+    }
+
+    @Test
     fun deduplicatesSameCandidateReturnedByDirectDiscoveryAndSearch() = runBlocking {
         val hybrid = FakeHybridPlugin("hybrid")
         val engine = SourceDiscoveryEngine(SourcePluginRegistry(listOf(hybrid)))
@@ -113,6 +128,49 @@ class SourceDiscoveryEngineTest {
         override suspend fun resolveSeries(url: String): SourceSeries? = hydratedSeries(id)
 
         override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> = hydratedBooks(id)
+    }
+
+    private class FakePartialDirectDiscoveryPlugin(private val id: String) : SourcePlugin, SeriesDiscoveryProvider, SeriesProvider {
+        var discoveryCalls = 0
+        var resolveCalls = 0
+        var loadBooksCalls = 0
+
+        override val descriptor = SourceDescriptor(
+            id = id,
+            name = id,
+            version = 1,
+            hosts = setOf("$id.example.org"),
+            capabilities = setOf(SourceCapability.SERIES_DISCOVERY, SourceCapability.SERIES_LOOKUP)
+        )
+
+        override fun supports(url: String): Boolean = url.contains("$id.example.org")
+
+        override suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
+            discoveryCalls++
+            return listOf(
+                SeriesCandidate(
+                    SourceSeries(
+                        sourceId = id,
+                        url = "https://$id.example.org/series/star-blood",
+                        title = "Star Blood",
+                        authors = listOf(SourceAuthor("Author A")),
+                        books = listOf(
+                            SourceBookRef(url = "https://$id.example.org/book/1", title = "Book One", number = 1.0)
+                        )
+                    )
+                )
+            )
+        }
+
+        override suspend fun resolveSeries(url: String): SourceSeries? {
+            resolveCalls++
+            return hydratedSeries(id)
+        }
+
+        override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> {
+            loadBooksCalls++
+            return hydratedBooks(id)
+        }
     }
 
     private class FakeHybridPlugin(private val id: String) : SourcePlugin, SeriesDiscoveryProvider, SeriesSearchProvider, SeriesProvider {

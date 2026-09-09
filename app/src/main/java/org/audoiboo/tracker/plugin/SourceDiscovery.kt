@@ -283,8 +283,7 @@ class SourceDiscoveryEngine(
 
         info("provider $id CANDIDATES unique=${candidates.size} bookMatches=${matchedSearchBooks.size} inspectedBooks=${inspectedBookUrls.size} directHits=$directHitCount searchHits=$searchHitCount queriesWithHits=$searchQueriesWithHits searchErrors=$searchErrors")
         val findings = mutableListOf<SeriesDiscoveryFinding>()
-
-        buildBookSearchFinding(id, canonical, matchedSearchBooks.values.map { it.first })?.let(findings::add)
+        val bookSearchFinding = buildBookSearchFinding(id, canonical, matchedSearchBooks.values.map { it.first })
 
         candidates.forEachIndexed candidateLoop@ { candidateIndex, candidate ->
             if (candidate.series.sourceId != id) {
@@ -362,6 +361,11 @@ class SourceDiscoveryEngine(
             )
             if (accepted != null) findings += accepted else if (directFinding != null) findings += directFinding
         }
+
+        bookSearchFinding
+            ?.takeIf { searchFinding -> findings.none { it.books.size >= searchFinding.books.size } }
+            ?.let(findings::add)
+
         val result = findings
             .distinctBy { finding -> finding.books.map { SourceKeys.normalizeUrl(it.url) }.sorted().joinToString("|") }
             .sortedByDescending { it.confidence }

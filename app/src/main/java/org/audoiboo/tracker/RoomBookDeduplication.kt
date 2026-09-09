@@ -43,6 +43,30 @@ internal object RoomBookDeduplicationPolicy {
     internal fun isExplicitPrimaryExtra(seriesTitle: String, title: String): Boolean =
         explicitSeriesVolume(title, seriesTitle) == 0
 
+    /**
+     * FantLab cycle payloads may contain a nested subcycle flattened into the parent list. When the
+     * parent has a strong contiguous numbered backbone, treat only that backbone (plus the exact
+     * unnumbered volume-one title and explicit volume zero) as authoritative anchors. This keeps a
+     * nested cycle node and its unnumbered children from becoming permanent books of the parent.
+     */
+    internal fun authoritativeFantLabAnchors(seriesTitle: String, books: List<BookEntity>): List<BookEntity> {
+        if (books.size < 6) return books
+        val numbered = books.mapNotNull { explicitSeriesVolume(it.title, seriesTitle) }
+            .filter { it >= 1 }
+            .distinct()
+            .sorted()
+        if (numbered.size < 5) return books
+        val contiguous = numbered.zipWithNext().all { (left, right) -> right - left <= 1 }
+        if (!contiguous) return books
+
+        val normalizedSeries = SourceIdentityMatcher.normalizeTitle(seriesTitle)
+        return books.filter { book ->
+            val normalizedTitle = SourceIdentityMatcher.normalizeTitle(book.title)
+            val volume = explicitSeriesVolume(book.title, seriesTitle)
+            normalizedTitle == normalizedSeries || volume != null
+        }
+    }
+
     private fun sameLogicalBook(seriesTitle: String, left: BookEntity, right: BookEntity): Boolean {
         val leftTitle = SourceIdentityMatcher.normalizeTitle(left.title)
         val rightTitle = SourceIdentityMatcher.normalizeTitle(right.title)
@@ -140,7 +164,8 @@ internal object RoomBookDeduplication {
         base.duplicateToWinner.forEach { (duplicateId, winnerId) -> idsByWinner.getOrPut(winnerId) { linkedSetOf() } += duplicateId }
         val sourcesByWinner = idsByWinner.mapValues { (_, ids) -> ids.flatMap { originalSources[it].orEmpty() } }
         val primarySourceId = PluginPackageRuntime.registry.forUrl(item.series.url)?.descriptor?.id
-        val fantlabAnchors = base.books.filter { book -> sourcesByWinner[book.id].orEmpty().any { it.sourceId == "fantlab" } }
+        val fantlabMappedBooks = base.books.filter { book -> sourcesByWinner[book.id].orEmpty().any { it.sourceId == "fantlab" } }
+        val fantlabAnchors = RoomBookDeduplicationPolicy.authoritativeFantLabAnchors(item.series.name, fantlabMappedBooks)
 
         val extraToWinner = linkedMapOf<String, String>()
         val pruneIds = linkedSetOf<String>()
@@ -210,7 +235,8 @@ internal object RoomBookDeduplication {
         db.withTransaction { dao.upsertBooks(winners); dao.deleteMissingBooks(item.series.id, winners.map { it.id }) }
         SeriesDiagnosticLog.i(
             "RoomSeriesSync DEDUPE series=${item.series.name} before=${item.books.size} after=${winners.size} " +
-                "merged=${duplicateToWinner.size} pruned=${pruneIds.size} keptExtras=$keptExtras fantlabAnchors=${fantlabAnchors.size} primary=$primarySourceId"
+                "merged=${duplicateToWinner.size} pruned=${pruneIds.size} keptExtras=$keptExtras " +
+                "fantlabMapped=${fantlabMappedBooks.size} fantlabAnchors=${fantlabAnchors.size} primary=$primarySourceId"
         )
     }
 }

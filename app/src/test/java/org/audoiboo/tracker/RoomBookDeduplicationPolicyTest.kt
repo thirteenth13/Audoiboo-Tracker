@@ -53,6 +53,36 @@ class RoomBookDeduplicationPolicyTest {
         assertFalse(RoomBookDeduplicationPolicy.isExplicitPrimaryExtra("Звездная Кровь", "Звездная Кровь 13"))
     }
 
+    @Test
+    fun strongFantLabNumberedBackboneDropsNestedSubcycleRows() {
+        val main = buildList {
+            add(book("main-1", "Звездная Кровь", "Роман Прокофьев", 0))
+            for (number in 2..11) {
+                add(book("main-$number", "Звездная Кровь-$number. Том $number", "Роман Прокофьев", number - 1))
+            }
+        }
+        val nested = listOf(
+            book("nested-node", "Тысяча Братьев", "Роман Прокофьев", 10),
+            book("nested-1", "Звездная Кровь. Пламени Подобный", "Роман Прокофьев", 11),
+            book("nested-2", "Звездная Кровь. Лёд-Кузнец", "Роман Прокофьев", 12),
+            book("nested-3", "Звездная Кровь. Владыка Теней", "Роман Прокофьев", 13),
+            book("nested-4", "Звездная Кровь. Дарующий Молнии", "Роман Прокофьев", 14)
+        )
+
+        val anchors = RoomBookDeduplicationPolicy.authoritativeFantLabAnchors("Звездная Кровь", main + nested)
+
+        assertEquals(11, anchors.size)
+        assertEquals((1..11).map { "main-$it" }.toSet(), anchors.map { it.id }.toSet())
+    }
+
+    @Test
+    fun unnumberedFantLabSeriesIsNotAggressivelyFiltered() {
+        val books = (1..7).map { number ->
+            book("book-$number", "Отдельное название $number", "Автор", number - 1)
+        }
+        assertEquals(books, RoomBookDeduplicationPolicy.authoritativeFantLabAnchors("Серия", books))
+    }
+
     private fun book(id: String, title: String, author: String?, sortIndex: Int) = BookEntity(
         id = id, seriesId = "series", title = title, url = "https://example.org/$id", author = author,
         coverUrl = null, status = "NEW", archiveUrl = null, sortIndex = sortIndex, updatedAt = 1L

@@ -11,7 +11,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
     override val descriptor = SourceDescriptor(
         id = "fantlab",
         name = "FantLab Catalog",
-        version = 7,
+        version = 8,
         hosts = setOf("api.fantlab.ru", "fantlab.ru", "www.fantlab.ru"),
         capabilities = setOf(SourceCapability.AUTHOR_CATALOG, SourceCapability.BOOK_SEARCH, SourceCapability.SERIES_DISCOVERY)
     )
@@ -223,8 +223,10 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
         val sagaTitles = buildList {
             for (index in 0 until roots.length()) {
                 val root = roots.optJSONObject(index) ?: continue
-                if (!isCycleLike(root)) continue
-                val title = firstNonBlank(root, "work_name", "work_name_orig") ?: continue
+                // work_root_saga itself is already an ancestry list. Real FantLab payloads often
+                // omit work_type on these compact root objects, so requiring "цикл" here drops the
+                // nested-cycle name and makes the subseries impossible to reconstruct later.
+                val title = firstNonBlank(root, "work_name", "work_name_orig", "name", "rusname") ?: continue
                 add(title)
             }
         }.distinctBy(SourceIdentityMatcher::normalizeTitle)

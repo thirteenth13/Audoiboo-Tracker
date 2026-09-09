@@ -64,6 +64,50 @@ class DownloadResolutionPlannerTest {
     }
 
     @Test
+    fun singleBazaTrackIsProvisionalWhenLaterSourceHasCompletePlaylist() = runBlocking {
+        val baza = FakeResolverPlugin("baza-knig", "baza.test") {
+            listOf(DownloadCandidate(DownloadType.DIRECT_FILE, "https://baza.test/01.mp3", priority = 10))
+        }
+        val lis = FakeResolverPlugin("lis10book", "lis.test") {
+            listOf(
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://lis.test/01.mp3", priority = 10),
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://lis.test/02.mp3", priority = 9)
+            )
+        }
+        val planner = DownloadResolutionPlanner(SourcePluginRegistry(listOf(baza, lis)))
+
+        val result = planner.resolveAll(
+            listOf(
+                SourceBook("baza-knig", url = "https://baza.test/book", title = "Book"),
+                SourceBook("lis10book", url = "https://lis.test/book", title = "Book")
+            )
+        )
+
+        assertEquals(2, result.size)
+        assertEquals("lis10book", result.first().book.sourceId)
+    }
+
+    @Test
+    fun singlePlaylistProviderTrackIsReturnedWhenNoBetterFallbackExists() = runBlocking {
+        val lis = FakeResolverPlugin("lis10book", "lis.test") {
+            listOf(DownloadCandidate(DownloadType.DIRECT_FILE, "https://lis.test/only.mp3", priority = 10))
+        }
+        val unavailable = FakeResolverPlugin("fallback", "fallback.test") { emptyList() }
+        val planner = DownloadResolutionPlanner(SourcePluginRegistry(listOf(lis, unavailable)))
+
+        val result = planner.resolveAll(
+            listOf(
+                SourceBook("lis10book", url = "https://lis.test/book", title = "Book"),
+                SourceBook("fallback", url = "https://fallback.test/book", title = "Book")
+            )
+        )
+
+        assertEquals(1, result.size)
+        assertEquals("lis10book", result.single().book.sourceId)
+        assertEquals("https://lis.test/only.mp3", result.single().candidate.url)
+    }
+
+    @Test
     fun archiveWinsTieWithinOneSource() = runBlocking {
         val plugin = FakeResolverPlugin("source", "source.test") {
             listOf(

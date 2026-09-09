@@ -47,7 +47,7 @@ object DirectSiteMediaResolver {
         // Some Knigavuhe responses already embed init_data/merged_playlist in the page source.
         // Prefer it when present because it removes one dependency on recovering the numeric book id.
         extractKnigavuheMergedPlaylist(page.body)?.let { merged ->
-            val urls = extractKnigavuheUrls(manifest, merged)
+            val urls = extractKnigavuheUrls(manifest, merged, page.finalUrl)
             if (urls.isNotEmpty()) {
                 return Result(urls, listOf(
                     "knigavuhe-source=page-merged-playlist",
@@ -59,30 +59,88 @@ object DirectSiteMediaResolver {
 
         val bookId = extractKnigavuheBookId(page.body) ?: return null
         val origin = URI(page.finalUrl)
-        val apiUrl = "${origin.scheme}://${origin.authority}/ajax/book_data/$bookId/"
+        val base = "${origin.scheme}://${origin.authority}"
+
+        // The current player path was already validated by the Knigavuhe browser experiment.
+        // Port it into production before falling back to the older ajax/book_data endpoint.
+        val playUrl = "$base/play/id/$bookId"
+        val playResponse = get(
+            playUrl,
+            mapOf(
+                "X-Requested-With" to "XMLHttpRequest",
+                "Accept" to "application/json,text/plain,*/*"
+            )
+        )
+        if (playResponse != null && playResponse.statusCode in 200..299) {
+            val urls = extractJsonMedia(playResponse.body, playResponse.finalUrl)
+                .filter { isHttpMedia(it) && hostAllowed(it, manifest.permissions.effectiveDownloadHosts) }
+                .distinct()
+            if (urls.isNotEmpty()) {
+                return Result(urls, listOf(
+                    "knigavuhe-source=play-api",
+                    "knigavuhe-book-id=$bookId",
+                    "knigavuhe-play-url=$playUrl",
+                    "media=${urls.size}"
+                ))
+            }
+        }
+
+        // Compatibility fallback for the older player API/layout.
+        val apiUrl = "$base/ajax/book_data/$bookId/"
         val response = get(apiUrl) ?: return null
         if (response.statusCode !in 200..299) return null
-        val root = JSONArray(response.body)
-        val init = root.optJSONObject(1)?.optJSONObject("result")?.optJSONObject("init_data") ?: return null
-        val shortCount = init.optJSONArray("playlist")?.length() ?: 0
-        val merged = init.optJSONArray("merged_playlist") ?: return null
-        val urls = extractKnigavuheUrls(manifest, merged)
-        if (urls.isEmpty()) return null
-        return Result(urls, listOf(
-            "knigavuhe-source=ajax-book-data",
-            "knigavuhe-book-id=$bookId",
-            "knigavuhe-playlist=$shortCount",
-            "knigavuhe-merged=${merged.length()}",
-            "media=${urls.size}"
-        ))
+        val root = runCatching { JSONArray(response.body) }.getOrNull()
+        val init = root?.optJSONObject(1)?.optJSONObject("result")?.optJSONObject("init_data")
+        val shortCount = init?.optJSONArray("playlist")?.length() ?: 0
+        val merged = init?.optJSONArray("merged_playlist")
+        if (merged != null) {
+            val urls = extractKnigavuheUrls(manifest, merged, response.finalUrl)
+            if (urls.isNotEmpty()) {
+                return Result(urls, listOf(
+                    "knigavuhe-source=ajax-book-data",
+                    "knigavuhe-book-id=$bookId",
+                    "knigavuhe-playlist=$shortCount",
+                    "knigavuhe-merged=${merged.length()}",
+                    "media=${urls.size}"
+                ))
+            }
+        }
+
+        // Last direct attempt: tolerate a changed JSON layout as long as it still exposes media URLs.
+        val generic = extractJsonMedia(response.body, response.finalUrl)
+            .filter { isHttpMedia(it) && hostAllowed(it, manifest.permissions.effectiveDownloadHosts) }
+            .distinct()
+        return generic.takeIf { it.isNotEmpty() }?.let {
+            Result(it, listOf(
+                "knigavuhe-source=ajax-generic",
+                "knigavuhe-book-id=$bookId",
+                "media=${it.size}"
+            ))
+        }
     }
 
-    private fun extractKnigavuheUrls(manifest: PluginPackageManifest, merged: JSONArray): List<String> = buildList {
+    private fun extractKnigavuheUrls(
+        manifest: PluginPackageManifest,
+        merged: JSONArray,
+        baseUrl: String
+    ): List<String> = buildList {
         for (i in 0 until merged.length()) {
-            val item = merged.optJSONObject(i) ?: continue
-            if (item.optInt("error", 0) != 0) continue
-            val url = firstHttpString(item, "url", "src", "file") ?: continue
-            if (isHttpMedia(url) && hostAllowed(url, manifest.permissions.effectiveDownloadHosts)) add(url)
+            when (val item = merged.opt(i)) {
+                is JSONObject -> {
+                    if (item.optInt("error", 0) != 0) continue
+                    val raw = firstHttpString(item, "url", "src", "file")
+                        ?: listOf("url", "src", "file", "path")
+                            .asSequence()
+                            .map { item.optString(it).trim().replace("\\/", "/") }
+                            .firstOrNull { it.isNotBlank() }
+                    val url = resolveUrl(baseUrl, raw) ?: continue
+                    if (isHttpMedia(url) && hostAllowed(url, manifest.permissions.effectiveDownloadHosts)) add(url)
+                }
+                is String -> {
+                    val url = resolveUrl(baseUrl, item) ?: continue
+                    if (isHttpMedia(url) && hostAllowed(url, manifest.permissions.effectiveDownloadHosts)) add(url)
+                }
+            }
         }
     }.distinct()
 
@@ -140,8 +198,8 @@ object DirectSiteMediaResolver {
         ))
     }
 
-    private fun get(url: String): PluginHttpResponse? = runCatching {
-        HostPluginHttpTransport.get(PluginHttpRequest(url), 8L * 1024L * 1024L)
+    private fun get(url: String, headers: Map<String, String> = emptyMap()): PluginHttpResponse? = runCatching {
+        HostPluginHttpTransport.get(PluginHttpRequest(url, headers), 8L * 1024L * 1024L)
     }.getOrNull()
 
     private fun extractBazaPlaylistUrl(html: String, baseUrl: String): String? {
@@ -151,13 +209,14 @@ object DirectSiteMediaResolver {
             Regex("(?is)(https?:\\/\\/[^\\s\\\"'<>]+\\.pl\\.txt(?:\\?[^\\s\\\"'<>]*)?)")
         )
         val raw = patterns.firstNotNullOfOrNull { it.find(html)?.groupValues?.getOrNull(1) } ?: return null
-        return runCatching { URI(baseUrl).resolve(raw.replace("\\/", "/")).toString() }.getOrNull()
+        return resolveUrl(baseUrl, raw)
     }
 
     private fun extractKnigavuheBookId(html: String): String? {
         val patterns = listOf(
             Regex("/ajax/book_data/(\\d+)/"),
-            Regex("/play/id/(\\d+)/"),
+            Regex("/play/id/(\\d+)/?"),
+            Regex("/covers/(\\d+)(?:[/._-]|$)"),
             Regex("/audio/(\\d+)/(?:mobile/)?"),
             Regex("(?i)data-book-id\\s*=\\s*[\\\"'](\\d+)[\\\"']"),
             Regex("(?i)[\\\"']book_id[\\\"']\\s*:\\s*[\\\"']?(\\d+)"),
@@ -223,18 +282,23 @@ object DirectSiteMediaResolver {
                     val preferred = listOf("src", "url", "file", "path")
                     preferred.forEach { key ->
                         val v = value.optString(key).trim()
-                        if (v.isNotBlank()) runCatching { URI(baseUrl).resolve(v.replace("\\/", "/")).toString() }.getOrNull()?.let(out::add)
+                        if (v.isNotBlank()) resolveUrl(baseUrl, v)?.let(out::add)
                     }
                     val keys = value.keys()
                     while (keys.hasNext()) collect(value.opt(keys.next()), out)
                 }
-                is String -> if (value.contains(".mp3", true) || value.contains(".m4a", true)) {
-                    runCatching { URI(baseUrl).resolve(value.replace("\\/", "/")).toString() }.getOrNull()?.let(out::add)
+                is String -> if (value.contains(".mp3", true) || value.contains(".m4a", true) ||
+                    value.contains(".m4b", true) || value.contains(".aac", true) ||
+                    value.contains(".ogg", true) || value.contains(".opus", true) ||
+                    value.contains(".flac", true)) {
+                    resolveUrl(baseUrl, value)?.let(out::add)
                 }
             }
         }
         val out = mutableListOf<String>()
-        val parsed: Any = runCatching { JSONArray(raw) }.getOrElse { runCatching { JSONObject(raw) }.getOrNull() ?: return emptyList() }
+        val parsed: Any = runCatching { JSONArray(raw) }.getOrElse {
+            runCatching { JSONObject(raw) }.getOrNull() ?: return emptyList()
+        }
         collect(parsed, out)
         return out
     }
@@ -242,6 +306,12 @@ object DirectSiteMediaResolver {
     private fun firstHttpString(obj: JSONObject, vararg keys: String): String? = keys.asSequence()
         .map { obj.optString(it).trim().replace("\\/", "/") }
         .firstOrNull { it.startsWith("http://") || it.startsWith("https://") }
+
+    private fun resolveUrl(baseUrl: String, raw: String?): String? = runCatching {
+        val value = raw?.trim()?.replace("\\/", "/").orEmpty()
+        if (value.isBlank()) return@runCatching null
+        URI(baseUrl).resolve(value).toString()
+    }.getOrNull()
 
     private fun isHttpMedia(url: String): Boolean = runCatching {
         val uri = URI(url)

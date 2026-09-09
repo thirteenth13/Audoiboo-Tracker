@@ -77,6 +77,29 @@ class SourceIdentityMatcherTest {
     }
 
     @Test
+    fun semanticBookTitleAndAuthorOverrideProviderWideVolumeNumbering() {
+        val incoming = SourceBook(
+            sourceId = "poleknig",
+            url = "https://poleknig.test/drevniy-12",
+            title = "Древний 12: Вторжение",
+            authors = listOf(SourceAuthor("Сергей Тармашев")),
+            seriesTitle = "Древний",
+            seriesNumber = 12.0
+        )
+        val candidate = CanonicalBookMatchInput(
+            id = "drevniy-4",
+            title = "Вторжение",
+            authors = listOf("Сергей Тармашев"),
+            number = 4.0
+        )
+        val match = SourceIdentityMatcher.bestBookMatch(incoming, listOf(candidate))!!
+        assertEquals(MatchDisposition.AUTO_ACCEPT, match.disposition)
+        assertEquals("drevniy-4", match.value.id)
+        assertTrue(match.evidence.contains("volume number conflicts"))
+        assertTrue(match.evidence.contains("semantic title + author overrides provider volume numbering"))
+    }
+
+    @Test
     fun exactSeriesWithStrongVolumeOverlapOverridesNoisyProviderAuthor() {
         val incoming = SourceSeries(sourceId = "audioboo", url = "https://audioboo.example/stellar", title = "Стеллар", authors = listOf(SourceAuthor("Исполнитель сайта")))
         val books = listOf(

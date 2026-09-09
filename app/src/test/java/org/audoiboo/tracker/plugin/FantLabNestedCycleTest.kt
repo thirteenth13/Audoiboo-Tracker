@@ -2,6 +2,7 @@ package org.audoiboo.tracker.plugin
 
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -40,6 +41,84 @@ class FantLabNestedCycleTest {
             """.trimIndent()
         )
 
+        assertSeparated(author, json)
+    }
+
+    @Test
+    fun flatFantLabHierarchyUsesRootSagaAndDoesNotTreatCycleNodeAsBook() {
+        val author = CatalogAuthor("fantlab", "82803", "Роман Прокофьев")
+        val json = JSONObject(
+            """
+            {
+              "cycles_blocks": {
+                "1": {
+                  "list": [
+                    {
+                      "work_name": "Звёздная Кровь",
+                      "children": [
+                        {
+                          "work_id": 1,
+                          "work_name": "Звёздная Кровь",
+                          "work_type": "роман",
+                          "deep": 1,
+                          "work_root_saga": [
+                            {"work_name": "Звёздная Кровь", "work_type": "цикл"}
+                          ]
+                        },
+                        {
+                          "work_id": 900,
+                          "work_name": "Тысяча Братьев",
+                          "work_type": "цикл",
+                          "deep": 2,
+                          "position_is_node": 1,
+                          "work_root_saga": [
+                            {"work_name": "Звёздная Кровь", "work_type": "цикл"}
+                          ]
+                        },
+                        {
+                          "work_id": 101,
+                          "work_name": "Звёздная Кровь. Пламени Подобный",
+                          "work_type": "роман",
+                          "deep": 2,
+                          "work_root_saga": [
+                            {"work_name": "Звёздная Кровь", "work_type": "цикл"},
+                            {"work_name": "Тысяча Братьев", "work_type": "цикл"}
+                          ]
+                        },
+                        {
+                          "work_id": 102,
+                          "work_name": "Звёздная Кровь. Лёд-Кузнец",
+                          "work_type": "роман",
+                          "deep": 2,
+                          "work_root_saga": [
+                            {"work_name": "Звёздная Кровь", "work_type": "цикл"},
+                            {"work_name": "Тысяча Братьев", "work_type": "цикл"}
+                          ]
+                        },
+                        {
+                          "work_id": 11,
+                          "work_name": "Звёздная кровь-11. Колония Альфа",
+                          "work_type": "роман",
+                          "deep": 1,
+                          "work_root_saga": [
+                            {"work_name": "Звёздная Кровь", "work_type": "цикл"}
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+            """.trimIndent()
+        )
+
+        val books = FantLabCatalogPlugin.parseCatalog(author, json)
+        assertFalse(books.any { it.remoteId == "900" })
+        assertSeparated(author, json)
+    }
+
+    private fun assertSeparated(author: CatalogAuthor, json: JSONObject) {
         val catalog = AuthorCatalog(author, FantLabCatalogPlugin.parseCatalog(author, json))
         val grouped = CatalogSeriesHeuristics.group(catalog)
 

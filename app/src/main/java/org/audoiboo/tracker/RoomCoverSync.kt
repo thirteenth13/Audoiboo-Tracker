@@ -18,6 +18,14 @@ internal object RoomCoverSync {
             if (t is CancellationException) throw t
         }
 
+        // FantLab may expose a subcycle inside a parent cycle. Once book-level repair has removed
+        // those nested works from the parent, persist the subcycle as its own catalog-backed series.
+        try {
+            FantLabNestedSeriesSync.syncAll(context)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+        }
+
         // Cover/metadata enrichment is auxiliary work. A provider refresh may already have
         // discovered and persisted valid source matches, so enrichment failures must not turn the
         // whole series refresh into a false "Не вдалося оновити серію" result.

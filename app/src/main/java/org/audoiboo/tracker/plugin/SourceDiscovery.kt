@@ -136,13 +136,26 @@ class SourceDiscoveryEngine(
                     )
                 }
             }
-            if (directAccepted.isNotEmpty()) {
-                val result = directAccepted
+            val completeDirect = directAccepted.filter { coversCanonicalBooks(it.books, canonical) }
+            if (completeDirect.isNotEmpty()) {
+                val result = completeDirect
                     .distinctBy { it.books.map { book -> SourceKeys.normalizeUrl(book.url) }.sorted().joinToString("|") }
                     .sortedByDescending { it.confidence }
                     .take(maxCandidatesPerSource)
-                info("provider END id=$id findings=${result.size} hydrateErrors=0 loadErrors=0 bookLookupErrors=0 candidates=${candidates.size} early=direct")
+                info("provider END id=$id findings=${result.size} hydrateErrors=0 loadErrors=0 bookLookupErrors=0 candidates=${candidates.size} early=direct-complete")
                 return result
+            }
+            if (directAccepted.isNotEmpty()) {
+                directAccepted.flatMap { it.books }.forEach { book ->
+                    val match = SourceIdentityMatcher.bestBookMatch(book, canonical.books)
+                        ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                        ?: return@forEach
+                    matchedSearchBooks.putIfAbsent(match.value.id, book to match.value)
+                }
+                info(
+                    "provider $id DIRECT_PARTIAL accepted=${directAccepted.size} matchedBooks=${matchedSearchBooks.size}/${canonical.books.size}; " +
+                        "continuing with search/hydration"
+                )
             }
         } else if (SourceCapability.SERIES_DISCOVERY in plugin.descriptor.capabilities) {
             warn("provider $id declares SERIES_DISCOVERY but is not SeriesDiscoveryProvider")
@@ -280,14 +293,20 @@ class SourceDiscoveryEngine(
             }
 
             val directFinding = directCandidateFinding(id, canonical, candidate)
-            if (directFinding != null) {
+            if (directFinding != null && coversCanonicalBooks(directFinding.books, canonical)) {
                 info(
                     "provider $id candidate ${candidateIndex + 1}/${candidates.size} DIRECT_ACCEPT title='${candidate.series.title}' " +
                         "books=${directFinding.books.size} decision=${directFinding.disposition}/${"%.3f".format(directFinding.confidence)} " +
-                        "url=${candidate.series.url}"
+                        "url=${candidate.series.url} phase=final-complete"
                 )
                 findings += directFinding
                 return@candidateLoop
+            }
+            if (directFinding != null) {
+                info(
+                    "provider $id candidate ${candidateIndex + 1}/${candidates.size} DIRECT_PARTIAL title='${candidate.series.title}' " +
+                        "books=${directFinding.books.size}; hydrating url=${candidate.series.url}"
+                )
             }
 
             val provider = plugin as? SeriesProvider
@@ -301,6 +320,7 @@ class SourceDiscoveryEngine(
             } else candidate.series
             if (hydrated.sourceId != id) {
                 warn("provider $id candidate ${candidateIndex + 1}: hydrated wrong sourceId=${hydrated.sourceId}")
+                if (directFinding != null) findings += directFinding
                 return@candidateLoop
             }
             val books = if (provider != null) try {
@@ -340,7 +360,7 @@ class SourceDiscoveryEngine(
                     "decision=$decision overlap=${overlapMatch?.second?.joinToString(" | ").orEmpty()} " +
                     "seriesEvidence=${seriesMatch?.evidence?.joinToString(" | ").orEmpty()} url=${hydrated.url}"
             )
-            if (accepted != null) findings += accepted
+            if (accepted != null) findings += accepted else if (directFinding != null) findings += directFinding
         }
         val result = findings
             .distinctBy { finding -> finding.books.map { SourceKeys.normalizeUrl(it.url) }.sorted().joinToString("|") }
@@ -377,6 +397,20 @@ class SourceDiscoveryEngine(
             disposition = MatchDisposition.AUTO_ACCEPT,
             evidence = directOverlap.second + "direct discovery refs accepted without series hydration"
         )
+    }
+
+    private fun coversCanonicalBooks(
+        books: List<SourceBook>,
+        canonical: CanonicalSeriesMatchInput
+    ): Boolean {
+        if (books.isEmpty() || canonical.books.isEmpty()) return false
+        val matchedCanonicalIds = linkedSetOf<String>()
+        books.forEach { incoming ->
+            SourceIdentityMatcher.bestBookMatch(incoming, canonical.books)
+                ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                ?.let { matchedCanonicalIds += it.value.id }
+        }
+        return matchedCanonicalIds.size >= canonical.books.size
     }
 
     private fun searchCandidatePriority(

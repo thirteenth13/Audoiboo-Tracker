@@ -10,6 +10,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import androidx.room.Upsert
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "source_installations")
@@ -178,15 +180,39 @@ interface SourceMetadataDao {
         SeriesSourceEntity::class,
         BookSourceEntity::class,
         SourceAvailabilityEntity::class,
-        SeriesMatchDecisionEntity::class
+        SeriesMatchDecisionEntity::class,
+        AuthorAliasEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class SourceMetadataDatabase : RoomDatabase() {
     abstract fun dao(): SourceMetadataDao
+    abstract fun authorAliasDao(): AuthorAliasDao
 
     companion object {
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `author_alias_cache` (
+                        `aliasNorm` TEXT NOT NULL,
+                        `canonicalAuthor` TEXT NOT NULL,
+                        `source` TEXT NOT NULL,
+                        `confidence` REAL NOT NULL,
+                        `found` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`aliasNorm`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_author_alias_cache_canonicalAuthor` " +
+                        "ON `author_alias_cache` (`canonicalAuthor`)"
+                )
+            }
+        }
+
         @Volatile private var instance: SourceMetadataDatabase? = null
 
         fun get(context: Context): SourceMetadataDatabase = instance ?: synchronized(this) {
@@ -194,7 +220,8 @@ abstract class SourceMetadataDatabase : RoomDatabase() {
                 context.applicationContext,
                 SourceMetadataDatabase::class.java,
                 "audoiboo-sources.db"
-            ).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2)
+                .build().also { instance = it }
         }
     }
 }

@@ -16,8 +16,8 @@ package org.audoiboo.tracker.plugin
 object SeriesBookMembershipPolicy {
     fun belongsTo(series: SourceSeries, book: SourceBook): Boolean {
         val declared = book.seriesTitle?.takeIf { it.isNotBlank() } ?: return true
-        val expected = SourceIdentityMatcher.normalizeTitle(series.title)
-        val actual = SourceIdentityMatcher.normalizeTitle(declared)
+        val expected = normalizeSeriesMetadata(series.title)
+        val actual = normalizeSeriesMetadata(declared)
         if (expected.isBlank() || expected != actual) return false
         return inferredNestedSeriesKey(series, book) == null
     }
@@ -30,6 +30,16 @@ object SeriesBookMembershipPolicy {
 
     fun inferredNestedVolumeNumber(series: SourceSeries, book: SourceBook): Int? =
         nestedParts(series, book)?.second
+
+    private fun normalizeSeriesMetadata(value: String): String {
+        val tokens = SourceIdentityMatcher.normalizeTitle(value)
+            .split(' ')
+            .filter { it.isNotBlank() }
+            .toMutableList()
+        while (tokens.isNotEmpty() && tokens.first() in GENERIC_SERIES_LABELS) tokens.removeAt(0)
+        while (tokens.isNotEmpty() && tokens.last() in GENERIC_SERIES_LABELS) tokens.removeAt(tokens.lastIndex)
+        return tokens.joinToString(" ")
+    }
 
     private fun nestedParts(series: SourceSeries, book: SourceBook): Pair<String, Int>? {
         val expected = SourceIdentityMatcher.normalizeTitle(series.title)
@@ -58,6 +68,10 @@ object SeriesBookMembershipPolicy {
 
     private fun isVolumeNumber(token: String): Boolean =
         token.toDoubleOrNull() != null || Regex("^\\d+(?:[.-]\\d+)*$").matches(token)
+
+    private val GENERIC_SERIES_LABELS = setOf(
+        "цикл", "циклы", "серия", "серії", "серія", "series"
+    )
 
     private val GENERIC_VOLUME_QUALIFIERS = setOf(
         "книга", "книги", "кн",

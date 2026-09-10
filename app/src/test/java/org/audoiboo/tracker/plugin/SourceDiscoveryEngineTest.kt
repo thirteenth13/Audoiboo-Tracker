@@ -23,6 +23,18 @@ class SourceDiscoveryEngineTest {
     }
 
     @Test
+    fun strongSeriesCandidateDoesNotStopRemainingCanonicalBookQueries() = runBlocking {
+        val source = CountingStrongSeriesSearchPlugin("search-all")
+        val engine = SourceDiscoveryEngine(SourcePluginRegistry(listOf(source)))
+
+        val results = engine.discoverSeries(canonical())
+
+        assertTrue("expected more than one targeted query, calls=${source.searchCalls}", source.searchCalls > 1)
+        assertEquals(1, results.size)
+        assertEquals(2, results.single().books.size)
+    }
+
+    @Test
     fun discoversSourceWithoutTextSearchThroughDirectDiscoveryCapability() = runBlocking {
         val direct = FakeDirectDiscoveryPlugin("izib-like")
         val engine = SourceDiscoveryEngine(SourcePluginRegistry(listOf(direct)))
@@ -99,6 +111,29 @@ class SourceDiscoveryEngineTest {
 
         override suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate> {
             if (broken) error("broken search")
+            return listOf(candidate(id))
+        }
+
+        override suspend fun resolveSeries(url: String): SourceSeries? = hydratedSeries(id)
+
+        override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> = hydratedBooks(id)
+    }
+
+    private class CountingStrongSeriesSearchPlugin(private val id: String) : SourcePlugin, SeriesSearchProvider, SeriesProvider {
+        var searchCalls = 0
+
+        override val descriptor = SourceDescriptor(
+            id = id,
+            name = id,
+            version = 1,
+            hosts = setOf("$id.example.org"),
+            capabilities = setOf(SourceCapability.SERIES_SEARCH, SourceCapability.SERIES_LOOKUP)
+        )
+
+        override fun supports(url: String): Boolean = url.contains("$id.example.org")
+
+        override suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate> {
+            searchCalls++
             return listOf(candidate(id))
         }
 

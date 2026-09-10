@@ -87,6 +87,14 @@ class SourceDiscoveryEngine(
         }
         val result = findings
             .distinctBy { it.sourceId to SourceKeys.normalizeUrl(it.series.url) }
+            .groupBy { it.sourceId }
+            .values
+            .mapNotNull { providerFindings ->
+                providerFindings.maxWithOrNull(
+                    compareBy<SeriesDiscoveryFinding> { canonicalCoverage(it.books, canonical) }
+                        .thenBy { it.confidence }
+                )
+            }
             .sortedWith(compareByDescending<SeriesDiscoveryFinding> { it.confidence }.thenBy { it.sourceId })
         info("discovery END canonical='${canonical.title}' findings=${result.size} bySource=${result.groupingBy { it.sourceId }.eachCount()}")
         return result
@@ -352,12 +360,15 @@ class SourceDiscoveryEngine(
         }
 
         bookSearchFinding
-            ?.takeIf { searchFinding -> findings.none { it.books.size >= searchFinding.books.size } }
+            ?.takeIf { searchFinding -> findings.none { canonicalCoverage(it.books, canonical) >= canonicalCoverage(searchFinding.books, canonical) } }
             ?.let(findings::add)
 
         val result = findings
             .distinctBy { finding -> finding.books.map { SourceKeys.normalizeUrl(it.url) }.sorted().joinToString("|") }
-            .sortedByDescending { it.confidence }
+            .sortedWith(
+                compareByDescending<SeriesDiscoveryFinding> { canonicalCoverage(it.books, canonical) }
+                    .thenByDescending { it.confidence }
+            )
             .take(maxCandidatesPerSource)
         info("provider END id=$id findings=${result.size} hydrateErrors=$hydrateErrors loadErrors=$loadErrors bookLookupErrors=$bookLookupErrors candidates=${candidates.size}")
         return result
@@ -395,15 +406,20 @@ class SourceDiscoveryEngine(
     private fun coversCanonicalBooks(
         books: List<SourceBook>,
         canonical: CanonicalSeriesMatchInput
-    ): Boolean {
-        if (books.isEmpty() || canonical.books.isEmpty()) return false
+    ): Boolean = canonicalCoverage(books, canonical) >= canonical.books.size && canonical.books.isNotEmpty()
+
+    private fun canonicalCoverage(
+        books: List<SourceBook>,
+        canonical: CanonicalSeriesMatchInput
+    ): Int {
+        if (books.isEmpty() || canonical.books.isEmpty()) return 0
         val matchedCanonicalIds = linkedSetOf<String>()
         books.forEach { incoming ->
             SourceIdentityMatcher.bestBookMatch(incoming, canonical.books)
                 ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
                 ?.let { matchedCanonicalIds += it.value.id }
         }
-        return matchedCanonicalIds.size >= canonical.books.size
+        return matchedCanonicalIds.size
     }
 
     private fun searchCandidatePriority(

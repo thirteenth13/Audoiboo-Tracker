@@ -35,6 +35,18 @@ class SourceDiscoveryEngineTest {
     }
 
     @Test
+    fun keepsOnlyBestCanonicalCoverageForSameProvider() = runBlocking {
+        val source = CompetingDirectDiscoveryPlugin("competing")
+        val results = SourceDiscoveryEngine(SourcePluginRegistry(listOf(source)))
+            .discoverSeries(canonical())
+
+        assertEquals(1, results.size)
+        assertEquals("competing", results.single().sourceId)
+        assertEquals(2, results.single().books.size)
+        assertEquals("https://competing.example.org/series/full", results.single().series.url)
+    }
+
+    @Test
     fun discoversSourceWithoutTextSearchThroughDirectDiscoveryCapability() = runBlocking {
         val direct = FakeDirectDiscoveryPlugin("izib-like")
         val engine = SourceDiscoveryEngine(SourcePluginRegistry(listOf(direct)))
@@ -140,6 +152,47 @@ class SourceDiscoveryEngineTest {
         override suspend fun resolveSeries(url: String): SourceSeries? = hydratedSeries(id)
 
         override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> = hydratedBooks(id)
+    }
+
+    private class CompetingDirectDiscoveryPlugin(private val id: String) : SourcePlugin, SeriesDiscoveryProvider, SeriesProvider {
+        override val descriptor = SourceDescriptor(
+            id = id,
+            name = id,
+            version = 1,
+            hosts = setOf("$id.example.org"),
+            capabilities = setOf(SourceCapability.SERIES_DISCOVERY, SourceCapability.SERIES_LOOKUP)
+        )
+
+        override fun supports(url: String): Boolean = url.contains("$id.example.org")
+
+        override suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> = listOf(
+            SeriesCandidate(
+                SourceSeries(
+                    sourceId = id,
+                    url = "https://$id.example.org/series/partial",
+                    title = "Star Blood",
+                    authors = listOf(SourceAuthor("Author A")),
+                    books = listOf(
+                        SourceBookRef(url = "https://$id.example.org/book/1", title = "Book One", number = 1.0)
+                    )
+                )
+            ),
+            SeriesCandidate(
+                SourceSeries(
+                    sourceId = id,
+                    url = "https://$id.example.org/series/full",
+                    title = "Star Blood",
+                    authors = listOf(SourceAuthor("Author A")),
+                    books = listOf(
+                        SourceBookRef(url = "https://$id.example.org/book/1-full", title = "Book One", number = 1.0),
+                        SourceBookRef(url = "https://$id.example.org/book/2-full", title = "Book Two", number = 2.0)
+                    )
+                )
+            )
+        )
+
+        override suspend fun resolveSeries(url: String): SourceSeries? = null
+        override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> = emptyList()
     }
 
     private class FakeDirectDiscoveryPlugin(private val id: String) : SourcePlugin, SeriesDiscoveryProvider, SeriesProvider {

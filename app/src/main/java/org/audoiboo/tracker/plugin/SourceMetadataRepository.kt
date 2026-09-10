@@ -116,6 +116,20 @@ object SourceMetadataRepository {
                 )
             )
         }
+
+        // Source metadata lives in a separate Room database from the library. Touch only canonical
+        // books whose source links changed so the library Flow invalidates and RoomBookCard reloads
+        // its source badges without requiring the screen to be recreated.
+        val touchedBookIds = books.map { it.canonicalBookId }.toSet()
+        if (touchedBookIds.isNotEmpty()) {
+            val libraryDao = AudoibooDatabase.get(context).libraryDao()
+            val refreshedBooks = libraryDao.seriesWithBooks(canonicalSeriesId)
+                ?.books
+                .orEmpty()
+                .filter { it.id in touchedBookIds }
+                .map { it.copy(updatedAt = now) }
+            if (refreshedBooks.isNotEmpty()) libraryDao.upsertBooks(refreshedBooks)
+        }
     }
 
     suspend fun recordSeriesMatchDecision(

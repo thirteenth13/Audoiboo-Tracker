@@ -57,14 +57,31 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
     override suspend fun discoverSeries(canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
         val title = canonical.title.trim()
         if (title.isBlank()) return emptyList()
+        val author = canonical.authors.firstOrNull()?.trim()?.takeIf { it.isNotBlank() }
+
         val encoded = URLEncoder.encode(title, StandardCharsets.UTF_8.name()).replace("+", "%20")
         val candidateUrl = "https://audioboo.org/xfsearch/cikl/$encoded/"
         diagnostic("provider audioboo DISCOVERY_DIRECT url=$candidateUrl")
         val direct = resolveSeries(candidateUrl)
         diagnostic("provider audioboo DISCOVERY_DIRECT result=${direct?.url ?: "null"} title=${direct?.title ?: "-"}")
-        if (direct != null) return listOf(SeriesCandidate(direct))
+        if (direct != null) {
+            val directBooks = AudiobooFastParser.parseSeries(direct.url).orEmpty()
+            val directRefs = canonicalRefs(directBooks, author.orEmpty(), canonical)
+            diagnostic("provider audioboo DISCOVERY_DIRECT parsedBooks=${directBooks.size} canonicalRefs=${directRefs.size}")
+            if (directRefs.isNotEmpty()) {
+                return listOf(
+                    SeriesCandidate(
+                        direct.copy(
+                            authors = author?.let { listOf(SourceAuthor(it)) }.orEmpty(),
+                            books = directRefs
+                        )
+                    )
+                )
+            }
+            diagnostic("provider audioboo DISCOVERY_DIRECT rejected=no-canonical-books; trying author/search fallback")
+        }
 
-        val author = canonical.authors.firstOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
+        if (author == null) return emptyList()
         val encodedAuthor = URLEncoder.encode(author, StandardCharsets.UTF_8.name()).replace("+", "%20")
         val authorUrl = "https://audioboo.org/xfsearch/avtora/$encodedAuthor/"
         diagnostic("provider audioboo DISCOVERY_AUTHOR url=$authorUrl")
@@ -95,12 +112,13 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
         fallbackAuthor: String,
         canonical: CanonicalSeriesMatchInput
     ): List<SourceBookRef> = books.mapNotNull { book ->
+        val authors = book.author?.takeIf { it.isNotBlank() }?.let { listOf(SourceAuthor(it)) }
+            ?: fallbackAuthor.takeIf { it.isNotBlank() }?.let { listOf(SourceAuthor(it)) }.orEmpty()
         val sourceBook = SourceBook(
             sourceId = descriptor.id,
             url = book.url,
             title = book.title,
-            authors = book.author?.takeIf { it.isNotBlank() }?.let { listOf(SourceAuthor(it)) }
-                ?: listOf(SourceAuthor(fallbackAuthor)),
+            authors = authors,
             seriesTitle = book.seriesTitle,
             coverUrl = book.coverUrl
         )

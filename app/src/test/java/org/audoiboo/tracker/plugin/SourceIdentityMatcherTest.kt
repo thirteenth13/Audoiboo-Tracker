@@ -57,6 +57,43 @@ class SourceIdentityMatcherTest {
     }
 
     @Test
+    fun numberedProviderVariantWithAuthorAndTitleEvidenceAutoLinksCanonicalVolume() {
+        val incoming = SourceBook(
+            sourceId = "audioboo",
+            url = "https://audioboo.example/stellar-9",
+            title = "Стеллар 9 — Прометей аудиокнига",
+            authors = listOf(SourceAuthor("Прокофьев Роман")),
+            seriesTitle = "Стеллар",
+            seriesNumber = 9.0
+        )
+        val candidate = CanonicalBookMatchInput(
+            id = "stellar-9",
+            title = "Прометей",
+            authors = listOf("Роман Прокофьев"),
+            number = 9.0
+        )
+        val match = SourceIdentityMatcher.bestBookMatch(incoming, listOf(candidate))!!
+        assertEquals("stellar-9", match.value.id)
+        assertEquals(MatchDisposition.AUTO_ACCEPT, match.disposition)
+        assertTrue(match.evidence.contains("volume number + author + title evidence"))
+    }
+
+    @Test
+    fun volumeNumberAloneDoesNotAutoLinkUnrelatedProviderTitle() {
+        val incoming = SourceBook(
+            sourceId = "provider",
+            url = "https://provider.example/9",
+            title = "Совсем другая книга",
+            authors = listOf(SourceAuthor("Роман Прокофьев")),
+            seriesTitle = "Стеллар",
+            seriesNumber = 9.0
+        )
+        val candidate = CanonicalBookMatchInput("stellar-9", "Прометей", listOf("Роман Прокофьев"), 9.0)
+        val match = SourceIdentityMatcher.bestBookMatch(incoming, listOf(candidate))!!
+        assertTrue(match.disposition != MatchDisposition.AUTO_ACCEPT)
+    }
+
+    @Test
     fun conflictingExplicitVolumeNumberRejectsDecoratedCrossVolumeMatch() {
         val incoming = SourceBook(
             sourceId = "audio-source",

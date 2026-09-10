@@ -208,6 +208,14 @@ object SourceIdentityMatcher {
             if (numberAgrees) {
                 score += 0.05f
                 evidence += "volume number agrees"
+                // Once the containing series has already been accepted, matching volume number +
+                // compatible author is strong enough to attach provider wording variants to the
+                // canonical volume. Require some title evidence so a bare/wrong provider label
+                // cannot link by ordinal alone.
+                if (authorOverlap && titleSimilarity >= 0.25f) {
+                    score = max(score, AUTO_ACCEPT_THRESHOLD)
+                    evidence += "volume number + author + title evidence"
+                }
             } else {
                 evidence += "volume number conflicts"
                 val semanticTitleExact = seriesTitle.isNotBlank() && cleanedIncoming.isNotBlank() && cleanedIncoming == cleanedCandidate

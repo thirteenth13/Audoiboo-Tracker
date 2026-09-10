@@ -27,6 +27,28 @@ class SeriesBookMembershipPolicyTest {
     }
 
     @Test
+    fun genericSeriesLabelAtEdgeDoesNotDropCanonicalBook() {
+        val stellar = SourceSeries(
+            sourceId = "audioboo",
+            url = "https://audioboo.org/series/stellar",
+            title = "Стеллар"
+        )
+        val prefixed = SourceBook(
+            sourceId = "audioboo",
+            url = "https://audioboo.org/book-9",
+            title = "Стеллар 9. Прометей",
+            seriesTitle = "Цикл Стеллар"
+        )
+        val suffixed = prefixed.copy(
+            url = "https://audioboo.org/book-10",
+            seriesTitle = "Стеллар серия"
+        )
+
+        assertTrue(SeriesBookMembershipPolicy.belongsTo(stellar, prefixed))
+        assertTrue(SeriesBookMembershipPolicy.belongsTo(stellar, suffixed))
+    }
+
+    @Test
     fun titleWithoutParentSeriesPrefixIsAcceptedWhenDeclaredSeriesMatches() {
         val book = SourceBook(
             sourceId = "audioboo",

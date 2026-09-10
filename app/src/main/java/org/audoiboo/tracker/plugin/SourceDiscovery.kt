@@ -253,17 +253,6 @@ class SourceDiscoveryEngine(
                     }
                 }
 
-                val bestSeriesCandidate = selectedHits.firstOrNull {
-                    it.second >= 0.90f && isPlausibleSeriesCandidate(id, it.first.series.url)
-                }
-                if (bestSeriesCandidate != null && candidates.isNotEmpty()) {
-                    info(
-                        "provider $id SEARCH short-circuit strong series candidate after ${index + 1} queries " +
-                            "score=${"%.3f".format(bestSeriesCandidate.second)} url=${bestSeriesCandidate.first.series.url}"
-                    )
-                    break
-                }
-
                 val madeProgress = inspectedBookUrls.size > beforeInspected || matchedSearchBooks.size > beforeMatches
                 if (!madeProgress && fingerprint.isNotBlank() && fingerprint == lastFingerprint) {
                     repeatedFingerprintCount++

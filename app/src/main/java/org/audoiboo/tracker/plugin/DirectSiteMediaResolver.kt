@@ -144,27 +144,16 @@ object DirectSiteMediaResolver {
         if (page.statusCode !in 200..299) return null
         val configText = extractBalancedObjectAfter(page.body, "new XSPlayer(") ?: return null
         val cfg = JSONObject(configText)
-        val prefixRaw = cfg.optString("mp3_url_prefix").replace("\\/", "/").trim().trimEnd('/')
-        val prefix = when {
-            prefixRaw.startsWith("https://") || prefixRaw.startsWith("http://") -> prefixRaw
-            prefixRaw.isNotBlank() -> "https://$prefixRaw"
-            else -> return null
-        }
-        val sign = cfg.optString("sign")
         val tracks = cfg.optJSONArray("tracks") ?: return null
-        val urls = buildList {
-            for (i in 0 until tracks.length()) {
-                val row = tracks.optJSONArray(i) ?: continue
-                val file = row.optString(4).replace("\\/", "/").trim()
-                if (file.isBlank()) continue
-                val url = "$prefix/$file$sign"
-                if (isHttpMedia(url) && hostAllowed(url, manifest.permissions.effectiveDownloadHosts)) add(url)
-            }
-        }.distinct()
+        val urls = IzibXsPlayerPolicy.extract(
+            config = cfg,
+            pageUrl = page.finalUrl,
+            allowedHosts = manifest.permissions.effectiveDownloadHosts
+        )
         if (urls.isEmpty()) return null
         return Result(urls, listOf(
             "izib-xsplayer-tracks=${tracks.length()}",
-            "izib-prefix=${prefix.take(300)}",
+            "izib-xsplayer-tolerant=true",
             "media=${urls.size}"
         ))
     }

@@ -81,15 +81,11 @@ class CatalogDiscoveryEngine(
 
     suspend fun discoverByAuthor(authorQuery: String): List<CatalogDiscoveryResult> {
         if (authorQuery.isBlank()) return emptyList()
-        SeriesDiagnosticLog.i("CATALOG AUTHOR START query='$authorQuery' timeout=${providerTimeoutMs}ms")
+        SeriesDiagnosticLog.i("CATALOG AUTHOR START query='$authorQuery' stageTimeout=${providerTimeoutMs}ms")
         val results = supervisorScope {
             registry.withCapability(SourceCapability.AUTHOR_CATALOG).mapNotNull { plugin ->
                 val provider = plugin as? AuthorCatalogProvider ?: return@mapNotNull null
-                async {
-                    val result = withTimeoutOrNull(providerTimeoutMs) { discoverProvider(plugin, provider, authorQuery) }
-                    if (result == null) SeriesDiagnosticLog.w("CATALOG AUTHOR TIMEOUT provider=${plugin.descriptor.id} query='$authorQuery' after=${providerTimeoutMs}ms")
-                    result.orEmpty()
-                }
+                async { discoverProvider(plugin, provider, authorQuery) }
             }.awaitAll().flatten()
         }
         SeriesDiagnosticLog.i("CATALOG AUTHOR END query='$authorQuery' results=${results.size} providers=${results.groupingBy { it.providerId }.eachCount()}")
@@ -99,7 +95,14 @@ class CatalogDiscoveryEngine(
     private suspend fun discoverProvider(plugin: SourcePlugin, provider: AuthorCatalogProvider, authorQuery: String): List<CatalogDiscoveryResult> {
         SeriesDiagnosticLog.i("CATALOG AUTHOR SEARCH provider=${plugin.descriptor.id} query='$authorQuery' limit=$maxAuthorsPerProvider")
         val authors = try {
-            withContext(Dispatchers.IO) { provider.searchAuthors(authorQuery, maxAuthorsPerProvider) }
+            val result = withTimeoutOrNull(providerTimeoutMs) {
+                withContext(Dispatchers.IO) { provider.searchAuthors(authorQuery, maxAuthorsPerProvider) }
+            }
+            if (result == null) {
+                SeriesDiagnosticLog.w("CATALOG AUTHOR SEARCH TIMEOUT provider=${plugin.descriptor.id} query='$authorQuery' after=${providerTimeoutMs}ms")
+                return emptyList()
+            }
+            result
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             SeriesDiagnosticLog.e("CATALOG AUTHOR SEARCH FAILED provider=${plugin.descriptor.id} query='$authorQuery'", t)
@@ -112,7 +115,13 @@ class CatalogDiscoveryEngine(
                 async {
                     try {
                         SeriesDiagnosticLog.i("CATALOG AUTHOR LOAD provider=${plugin.descriptor.id} id=${author.remoteId} name='${author.name}' limit=$maxBooksPerAuthor")
-                        val catalog = withContext(Dispatchers.IO) { provider.loadAuthorCatalog(author, maxBooksPerAuthor) }
+                        val catalog = withTimeoutOrNull(providerTimeoutMs) {
+                            withContext(Dispatchers.IO) { provider.loadAuthorCatalog(author, maxBooksPerAuthor) }
+                        }
+                        if (catalog == null) {
+                            SeriesDiagnosticLog.w("CATALOG AUTHOR LOAD TIMEOUT provider=${plugin.descriptor.id} id=${author.remoteId} name='${author.name}' after=${providerTimeoutMs}ms")
+                            return@async null
+                        }
                         SeriesDiagnosticLog.i("CATALOG AUTHOR BOOKS provider=${plugin.descriptor.id} id=${author.remoteId} name='${author.name}' books=${catalog.books.size}")
                         val grouped = CatalogSeriesHeuristics.group(catalog)
                         SeriesDiagnosticLog.i("CATALOG AUTHOR GROUPED provider=${plugin.descriptor.id} id=${author.remoteId} series=${grouped.series.size} standalone=${grouped.standaloneBooks.size} seriesNames=${grouped.series.take(20).joinToString { "'${it.title}'(${it.books.size})" }}")

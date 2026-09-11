@@ -155,7 +155,7 @@ internal object RoomBookDeduplication {
             .forEach { item -> repair(context, db, item) }
     }
 
-    private suspend fun repair(context: Context, db: AudoibooDatabase, item: SeriesWithBooks) {
+    internal suspend fun repair(context: Context, db: AudoibooDatabase, item: SeriesWithBooks) {
         val dao = db.libraryDao()
         val base = RoomBookDeduplicationPolicy.deduplicate(item.series.name, item.books)
         val originalSources = item.books.associate { book -> book.id to SourceMetadataRepository.sourcesForBook(context, book.id) }

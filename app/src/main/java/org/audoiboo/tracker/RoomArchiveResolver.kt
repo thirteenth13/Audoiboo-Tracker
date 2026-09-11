@@ -3,12 +3,23 @@ package org.audoiboo.tracker
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.audoiboo.tracker.plugin.BookSourceEntity
 import org.audoiboo.tracker.plugin.DownloadResolutionPlanner
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 import org.audoiboo.tracker.plugin.SourceAuthor
 import org.audoiboo.tracker.plugin.SourceBook
 import org.audoiboo.tracker.plugin.SourceKeys
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
+
+internal object SourceObservationPreference {
+    fun rank(sources: List<BookSourceEntity>): List<BookSourceEntity> = sources.sortedWith(
+        compareByDescending<BookSourceEntity> { it.confidence }
+            .thenByDescending { it.lastCheckedAt ?: Long.MIN_VALUE }
+            .thenByDescending { it.lastSeenAt }
+            .thenBy { it.sourceId }
+            .thenBy { SourceKeys.normalizeUrl(it.url) }
+    )
+}
 
 internal object RoomArchiveResolver {
     suspend fun resolveAll(
@@ -28,7 +39,9 @@ internal object RoomArchiveResolver {
                 coverUrl = book.coverUrl
             )
         }
-        val mapped = SourceMetadataRepository.sourcesForBook(context, book.id).map { source ->
+        val mapped = SourceObservationPreference.rank(
+            SourceMetadataRepository.sourcesForBook(context, book.id)
+        ).map { source ->
             SourceBook(
                 sourceId = source.sourceId,
                 remoteId = source.remoteKey.takeIf { it != SourceKeys.normalizeUrl(source.url) },

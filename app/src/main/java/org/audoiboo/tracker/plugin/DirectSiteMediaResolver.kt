@@ -44,8 +44,6 @@ object DirectSiteMediaResolver {
         val page = get(pageUrl) ?: return null
         if (page.statusCode !in 200..299) return null
 
-        // Some Knigavuhe responses already embed init_data/merged_playlist in the page source.
-        // Prefer it when present because it removes one dependency on recovering the numeric book id.
         extractKnigavuheMergedPlaylist(page.body)?.let { merged ->
             val urls = extractKnigavuheUrls(manifest, merged, page.finalUrl)
             if (urls.isNotEmpty()) {
@@ -60,9 +58,6 @@ object DirectSiteMediaResolver {
         val bookId = extractKnigavuheBookId(page.body) ?: return null
         val origin = URI(page.finalUrl)
         val base = "${origin.scheme}://${origin.authority}"
-
-        // The current player path was already validated by the Knigavuhe browser experiment.
-        // Port it into production before falling back to the older ajax/book_data endpoint.
         val playUrl = "$base/play/id/$bookId"
         val playResponse = get(
             playUrl,
@@ -85,7 +80,6 @@ object DirectSiteMediaResolver {
             }
         }
 
-        // Compatibility fallback for the older player API/layout.
         val apiUrl = "$base/ajax/book_data/$bookId/"
         val response = get(apiUrl) ?: return null
         if (response.statusCode !in 200..299) return null
@@ -106,7 +100,6 @@ object DirectSiteMediaResolver {
             }
         }
 
-        // Last direct attempt: tolerate a changed JSON layout as long as it still exposes media URLs.
         val generic = extractJsonMedia(response.body, response.finalUrl)
             .filter { isHttpMedia(it) && hostAllowed(it, manifest.permissions.effectiveDownloadHosts) }
             .distinct()
@@ -181,19 +174,14 @@ object DirectSiteMediaResolver {
         val apiUrl = "${uri.scheme}://${uri.authority}/api/p/$slug"
         val response = get(apiUrl) ?: return null
         if (response.statusCode !in 200..299) return null
-        val chapters = JSONObject(response.body).optJSONArray("chapters") ?: return null
-        val ordered = buildList<Pair<Int, String>> {
-            for (i in 0 until chapters.length()) {
-                val item = chapters.optJSONObject(i) ?: continue
-                val url = item.optString("src").trim()
-                if (!isHttpMedia(url) || !hostAllowed(url, manifest.permissions.effectiveDownloadHosts)) continue
-                add(item.optInt("position", i + 1) to url)
-            }
-        }.sortedBy { it.first }.map { it.second }.distinct()
+        val ordered = Lis10BookPlaylistPolicy.extract(
+            responseBody = response.body,
+            baseUrl = response.finalUrl,
+            allowedHosts = manifest.permissions.effectiveDownloadHosts
+        )
         if (ordered.isEmpty()) return null
         return Result(ordered, listOf(
             "lis10book-api=/api/p/$slug",
-            "lis10book-chapters=${chapters.length()}",
             "media=${ordered.size}"
         ))
     }

@@ -100,6 +100,21 @@ data class SeriesMatchDecisionEntity(
     val decidedAt: Long = System.currentTimeMillis()
 )
 
+@Entity(
+    tableName = "book_match_decisions",
+    primaryKeys = ["canonicalSeriesId", "sourceId", "remoteKey"],
+    indices = [Index("sourceId"), Index("decision"), Index("candidateCanonicalBookId")]
+)
+data class BookMatchDecisionEntity(
+    val canonicalSeriesId: String,
+    val sourceId: String,
+    val remoteKey: String,
+    val candidateCanonicalBookId: String? = null,
+    val decision: String,
+    val confidence: Float? = null,
+    val decidedAt: Long = System.currentTimeMillis()
+)
+
 @Dao
 interface SourceMetadataDao {
     @Query("SELECT * FROM source_installations ORDER BY name COLLATE NOCASE")
@@ -162,6 +177,18 @@ interface SourceMetadataDao {
     @Query("DELETE FROM series_match_decisions WHERE canonicalSeriesId=:seriesId AND sourceId=:sourceId AND remoteKey=:remoteKey")
     suspend fun clearMatchDecision(seriesId: String, sourceId: String, remoteKey: String)
 
+    @Query("SELECT * FROM book_match_decisions WHERE canonicalSeriesId=:seriesId AND decision='REVIEW_PENDING' ORDER BY decidedAt DESC")
+    suspend fun pendingBookMatchDecisions(seriesId: String): List<BookMatchDecisionEntity>
+
+    @Query("SELECT * FROM book_match_decisions WHERE canonicalSeriesId=:seriesId AND sourceId=:sourceId AND remoteKey=:remoteKey LIMIT 1")
+    suspend fun bookMatchDecision(seriesId: String, sourceId: String, remoteKey: String): BookMatchDecisionEntity?
+
+    @Upsert
+    suspend fun upsertBookMatchDecision(value: BookMatchDecisionEntity)
+
+    @Query("DELETE FROM book_match_decisions WHERE canonicalSeriesId=:seriesId AND sourceId=:sourceId AND remoteKey=:remoteKey")
+    suspend fun clearBookMatchDecision(seriesId: String, sourceId: String, remoteKey: String)
+
     @Transaction
     suspend fun registerPlugin(descriptor: SourceDescriptor, enabled: Boolean = true) {
         val old = installation(descriptor.id)
@@ -184,9 +211,10 @@ interface SourceMetadataDao {
         BookSourceEntity::class,
         SourceAvailabilityEntity::class,
         SeriesMatchDecisionEntity::class,
+        BookMatchDecisionEntity::class,
         AuthorAliasEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class SourceMetadataDatabase : RoomDatabase() {
@@ -216,6 +244,28 @@ abstract class SourceMetadataDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `book_match_decisions` (
+                        `canonicalSeriesId` TEXT NOT NULL,
+                        `sourceId` TEXT NOT NULL,
+                        `remoteKey` TEXT NOT NULL,
+                        `candidateCanonicalBookId` TEXT,
+                        `decision` TEXT NOT NULL,
+                        `confidence` REAL,
+                        `decidedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`canonicalSeriesId`, `sourceId`, `remoteKey`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_book_match_decisions_sourceId` ON `book_match_decisions` (`sourceId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_book_match_decisions_decision` ON `book_match_decisions` (`decision`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_book_match_decisions_candidateCanonicalBookId` ON `book_match_decisions` (`candidateCanonicalBookId`)")
+            }
+        }
+
         @Volatile private var instance: SourceMetadataDatabase? = null
 
         fun get(context: Context): SourceMetadataDatabase = instance ?: synchronized(this) {
@@ -223,7 +273,7 @@ abstract class SourceMetadataDatabase : RoomDatabase() {
                 context.applicationContext,
                 SourceMetadataDatabase::class.java,
                 "audoiboo-sources.db"
-            ).addMigrations(MIGRATION_1_2)
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build().also { instance = it }
         }
     }

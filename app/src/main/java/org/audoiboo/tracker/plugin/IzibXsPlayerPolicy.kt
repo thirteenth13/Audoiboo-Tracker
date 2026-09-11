@@ -26,14 +26,10 @@ object IzibXsPlayerPolicy {
     }
 
     internal fun trackFile(value: Any?): String? = when (value) {
-        is JSONArray -> {
-            // Legacy Izib player uses index 4, but tolerate compact/shifted layouts.
-            val preferred = listOf(4, 3, 2, 1, 0)
-                .asSequence()
-                .mapNotNull { idx -> value.optString(idx).cleanMediaCandidate() }
-                .firstOrNull()
-            preferred
-        }
+        is JSONArray -> listOf(4, 3, 2, 1, 0)
+            .asSequence()
+            .mapNotNull { idx -> value.optString(idx).cleanMediaCandidate() }
+            .firstOrNull()
         is JSONObject -> listOf("file", "src", "url", "path")
             .asSequence()
             .mapNotNull { key -> value.optString(key).cleanMediaCandidate() }
@@ -58,7 +54,7 @@ object IzibXsPlayerPolicy {
             raw.startsWith("http://") || raw.startsWith("https://") -> raw
             raw.startsWith("//") -> URI(pageUrl).scheme + ":" + raw
             raw.startsWith("/") -> URI(pageUrl).resolve(raw).toString().trimEnd('/')
-            raw.contains('.') && !raw.contains('/') -> "https://$raw"
+            HOST_LIKE.matches(raw) -> "https://$raw"
             else -> URI(pageUrl).resolve(raw).toString().trimEnd('/')
         }
     }.getOrNull()
@@ -95,5 +91,6 @@ object IzibXsPlayerPolicy {
         }
     }.getOrDefault(false)
 
+    private val HOST_LIKE = Regex("^[A-Za-z0-9.-]+\\.[A-Za-z]{2,}(?::\\d+)?(?:/.*)?$")
     private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac")
 }

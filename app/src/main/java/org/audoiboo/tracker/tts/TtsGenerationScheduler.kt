@@ -29,7 +29,7 @@ import org.audoiboo.tracker.ebook.BookDocument
 internal object TtsGenerationScheduler {
     private const val KEY_SESSION_ID = "tts_session_id"
     private const val KEY_TITLE = "tts_title"
-    private fun workName(sessionId: String) = "audoiboo-tts-${safe(sessionId)}"
+    internal fun workName(sessionId: String) = "audoiboo-tts-${TtsStableId.hex(sessionId)}"
 
     /** Persists all process-death-safe inputs before handing the job to WorkManager. */
     fun enqueue(
@@ -87,8 +87,6 @@ internal object TtsGenerationScheduler {
             a.documentFingerprint == b.documentFingerprint &&
             a.voice.stableKey == b.voice.stableKey &&
             a.speed == b.speed
-
-    private fun safe(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_")
 }
 
 /** Concrete app runtime hook; keeps WorkManager orchestration independent from Sherpa JNI wiring. */
@@ -118,7 +116,7 @@ internal class TtsGenerationWorker(
     override suspend fun doWork(): Result {
         val sessionId = TtsGenerationScheduler.sessionId(this) ?: return Result.failure()
         val title = TtsGenerationScheduler.title(this).ifBlank { "Аудіокнига" }
-        setForeground(foregroundInfo(title))
+        setForeground(foregroundInfo(sessionId, title))
 
         val runtime = TtsBackgroundRuntimeRegistry.current() ?: return Result.retry()
         return runCatching { runtime.run(applicationContext, sessionId) }
@@ -134,7 +132,7 @@ internal class TtsGenerationWorker(
             )
     }
 
-    private fun foregroundInfo(title: String): ForegroundInfo {
+    private fun foregroundInfo(sessionId: String, title: String): ForegroundInfo {
         createChannel()
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_audoiboo)
@@ -144,14 +142,15 @@ internal class TtsGenerationWorker(
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
+        val notificationId = TtsStableId.notificationId(sessionId)
         return if (Build.VERSION.SDK_INT >= 35) {
             ForegroundInfo(
-                NOTIFICATION_ID,
+                notificationId,
                 notification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING,
             )
         } else {
-            ForegroundInfo(NOTIFICATION_ID, notification)
+            ForegroundInfo(notificationId, notification)
         }
     }
 
@@ -165,6 +164,5 @@ internal class TtsGenerationWorker(
 
     companion object {
         private const val CHANNEL_ID = "audoiboo_tts"
-        private const val NOTIFICATION_ID = 4113
     }
 }

@@ -169,7 +169,7 @@ object SourceIdentityMatcher {
         }
         tokens = tokens.filterNot { it in removable }
         return tokens.joinToString(" ")
-            .replace(Regex("\\b(книга|том|часть|частина|book|volume|vol)\\b"), " ")
+            .replace(Regex("\\b(книга|том|часть|частина|book|volume|vol|аудиокнига|аудиокниги|аудио|слушать|онлайн)\\b"), " ")
             .replace(Regex("\\b\\d+(?:[.,]\\d+)?\\b"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()

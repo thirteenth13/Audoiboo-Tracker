@@ -20,6 +20,7 @@ data class PreparedSherpaBookTts(
  */
 class SherpaBookTtsCoordinator(
     private val installer: SherpaVoiceInstaller,
+    private val packageResolver: (String) -> SherpaVoicePackage? = SherpaVoiceCatalog::forLanguage,
     private val sessionIdFactory: () -> String = { UUID.randomUUID().toString() },
 ) {
     fun prepare(document: BookDocument, speed: Float = 1.0f): Result<PreparedSherpaBookTts> = runCatching {
@@ -28,8 +29,8 @@ class SherpaBookTtsCoordinator(
 
         val language = document.language?.trim()?.takeIf(String::isNotBlank)
             ?: error("Book language is required for local TTS")
-        val pkg = SherpaVoiceCatalog.forLanguage(language)
-            ?: error("No bundled Sherpa voice catalog entry for language: $language")
+        val pkg = packageResolver(language)
+            ?: error("No Sherpa voice catalog entry for language: $language")
         val model = installer.ensureInstalled(pkg).getOrThrow()
         val voice = TtsVoice(
             id = pkg.modelId,

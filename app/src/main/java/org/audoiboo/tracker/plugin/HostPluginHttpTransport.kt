@@ -3,6 +3,7 @@ package org.audoiboo.tracker.plugin
 import android.webkit.CookieManager
 import org.jsoup.Connection
 import org.jsoup.Jsoup
+import java.io.EOFException
 import java.net.URI
 
 /**
@@ -36,24 +37,47 @@ object HostPluginHttpTransport : PluginHttpTransport {
             ?.trim()
             ?.takeIf { it.isNotBlank() }
 
-        val connection = Jsoup.connect(request.url)
-            .userAgent(browserUserAgent ?: DEFAULT_USER_AGENT)
-            .header("Accept-Language", "ru-RU,ru;q=0.9,uk;q=0.8,en;q=0.6")
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            .timeout(TIMEOUT_MS)
-            .maxBodySize(maxResponseBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
-            .followRedirects(false)
-            .ignoreContentType(true)
-            .ignoreHttpErrors(true)
-            .headers(request.headers)
-            .method(Connection.Method.GET)
+        fun execute(recoveryAttempt: Boolean): Connection.Response {
+            val connection = Jsoup.connect(request.url)
+                .userAgent(browserUserAgent ?: DEFAULT_USER_AGENT)
+                .header("Accept-Language", "ru-RU,ru;q=0.9,uk;q=0.8,en;q=0.6")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .timeout(TIMEOUT_MS)
+                .maxBodySize(maxResponseBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                .followRedirects(false)
+                .ignoreContentType(true)
+                .ignoreHttpErrors(true)
+                .headers(request.headers)
+                .method(Connection.Method.GET)
 
-        if (!origin.isNullOrBlank()) connection.referrer(origin)
-        if (!cookies.isNullOrBlank() && request.headers.keys.none { it.equals("Cookie", ignoreCase = true) }) {
-            connection.header("Cookie", cookies)
+            if (recoveryAttempt) {
+                // A few providers occasionally close a reused/gzip connection before Jsoup has
+                // consumed the full response. Retry once with a fresh, non-compressed connection.
+                // The URL is unchanged, so sandbox redirect/host validation remains intact.
+                if (request.headers.keys.none { it.equals("Connection", ignoreCase = true) }) {
+                    connection.header("Connection", "close")
+                }
+                if (request.headers.keys.none { it.equals("Accept-Encoding", ignoreCase = true) }) {
+                    connection.header("Accept-Encoding", "identity")
+                }
+            }
+
+            if (!origin.isNullOrBlank()) connection.referrer(origin)
+            if (!cookies.isNullOrBlank() && request.headers.keys.none { it.equals("Cookie", ignoreCase = true) }) {
+                connection.header("Cookie", cookies)
+            }
+            return connection.execute()
         }
 
-        val response = connection.execute()
+        val response = try {
+            execute(recoveryAttempt = false)
+        } catch (t: Throwable) {
+            if (!shouldRetryTruncatedResponse(t)) throw t
+            val host = runCatching { URI(request.url).host }.getOrNull().orEmpty()
+            SeriesDiagnosticLog.w("NET RETRY truncated-response host=$host url=${request.url}")
+            execute(recoveryAttempt = true)
+        }
+
         runCatching {
             response.multiHeaders()["Set-Cookie"].orEmpty().forEach { value ->
                 CookieManager.getInstance().setCookie(request.url, value)
@@ -69,4 +93,7 @@ object HostPluginHttpTransport : PluginHttpTransport {
             headers = headers
         )
     }
+
+    internal fun shouldRetryTruncatedResponse(error: Throwable): Boolean =
+        generateSequence(error) { it.cause }.any { it is EOFException }
 }

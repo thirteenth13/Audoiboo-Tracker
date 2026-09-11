@@ -12,6 +12,11 @@ data class CanonicalSourceBookLink(
     val confidence: Float = 1f
 )
 
+data class PendingBookReview(
+    val decision: BookMatchDecisionEntity,
+    val source: BookSourceEntity
+)
+
 object SourceMetadataRepository {
     const val AUDIOBOO_SOURCE_ID = "audioboo"
 
@@ -43,8 +48,12 @@ object SourceMetadataRepository {
         SourceMetadataDatabase.get(context).dao().pendingMatchDecisions(canonicalSeriesId)
     }
 
-    suspend fun pendingBookReviews(context: Context, canonicalSeriesId: String): List<BookMatchDecisionEntity> = withContext(Dispatchers.IO) {
-        SourceMetadataDatabase.get(context).dao().pendingBookMatchDecisions(canonicalSeriesId)
+    suspend fun pendingBookReviews(context: Context, canonicalSeriesId: String): List<PendingBookReview> = withContext(Dispatchers.IO) {
+        val dao = SourceMetadataDatabase.get(context).dao()
+        dao.pendingBookMatchDecisions(canonicalSeriesId).mapNotNull { decision ->
+            val source = dao.bookSource(decision.sourceId, decision.remoteKey) ?: return@mapNotNull null
+            PendingBookReview(decision, source)
+        }
     }
 
     suspend fun resolvePendingSeriesReview(
@@ -67,6 +76,37 @@ object SourceMetadataRepository {
         )
     }
 
+    suspend fun resolvePendingBookReview(
+        context: Context,
+        review: PendingBookReview,
+        accept: Boolean
+    ): Boolean = withContext(Dispatchers.IO) {
+        val dao = SourceMetadataDatabase.get(context).dao()
+        val decision = review.decision
+        val source = dao.bookSource(decision.sourceId, decision.remoteKey) ?: return@withContext false
+        val targetBookId = decision.candidateCanonicalBookId
+        if (accept && targetBookId.isNullOrBlank()) return@withContext false
+        val now = System.currentTimeMillis()
+        if (accept) {
+            dao.upsertBookSource(
+                source.copy(
+                    canonicalBookId = targetBookId,
+                    canonicalSeriesId = decision.canonicalSeriesId,
+                    confidence = (decision.confidence ?: source.confidence).coerceIn(0f, 1f),
+                    lastSeenAt = now,
+                    lastCheckedAt = now
+                )
+            )
+        }
+        dao.upsertBookMatchDecision(
+            decision.copy(
+                decision = if (accept) "USER_ACCEPTED" else "USER_REJECTED",
+                decidedAt = now
+            )
+        )
+        true
+    }
+
     suspend fun recordPendingBookReview(
         context: Context,
         canonicalSeriesId: String,
@@ -77,12 +117,16 @@ object SourceMetadataRepository {
         val dao = SourceMetadataDatabase.get(context).dao()
         val now = System.currentTimeMillis()
         val remoteKey = SourceKeys.remoteKey(book.remoteId, book.url)
+        val priorDecision = dao.bookMatchDecision(canonicalSeriesId, book.sourceId, remoteKey)
+        // A user's explicit rejection is sticky. Discovery may refresh the unlinked observation,
+        // but must not silently turn the same source book back into REVIEW_PENDING.
+        val keepRejected = priorDecision?.decision == "USER_REJECTED"
         val existing = dao.bookSource(book.sourceId, remoteKey) ?: dao.bookSourceByUrl(book.sourceId, book.url)
         val key = existing?.key ?: SourceKeys.bookSourceKey(book.sourceId, remoteKey)
         dao.upsertBookSource(
             BookSourceEntity(
                 key = key,
-                canonicalBookId = null,
+                canonicalBookId = if (keepRejected) existing?.canonicalBookId else null,
                 canonicalSeriesId = canonicalSeriesId,
                 sourceId = book.sourceId,
                 remoteKey = remoteKey,
@@ -96,17 +140,19 @@ object SourceMetadataRepository {
                 lastCheckedAt = now
             )
         )
-        dao.upsertBookMatchDecision(
-            BookMatchDecisionEntity(
-                canonicalSeriesId = canonicalSeriesId,
-                sourceId = book.sourceId,
-                remoteKey = remoteKey,
-                candidateCanonicalBookId = candidateCanonicalBookId,
-                decision = "REVIEW_PENDING",
-                confidence = confidence?.coerceIn(0f, 1f),
-                decidedAt = now
+        if (!keepRejected) {
+            dao.upsertBookMatchDecision(
+                BookMatchDecisionEntity(
+                    canonicalSeriesId = canonicalSeriesId,
+                    sourceId = book.sourceId,
+                    remoteKey = remoteKey,
+                    candidateCanonicalBookId = candidateCanonicalBookId,
+                    decision = "REVIEW_PENDING",
+                    confidence = confidence?.coerceIn(0f, 1f),
+                    decidedAt = now
+                )
             )
-        )
+        }
     }
 
     suspend fun clearPendingBookReview(

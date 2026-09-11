@@ -16,14 +16,20 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import java.io.File
+import java.net.URI
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.audoiboo.tracker.plugin.HostPluginHttpTransport
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
+import org.audoiboo.tracker.tts.FlibustaBookTtsFlow
 
 private const val SOURCE_BROWSER_DEFAULT_HOME = "https://audioboo.org/"
 
@@ -56,6 +62,7 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
     var address by remember { mutableStateOf(initialUrl) }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var syncing by remember { mutableStateOf(false) }
+    var preparingTts by remember { mutableStateOf(false) }
 
     fun navigate(raw: String) {
         val value = raw.trim()
@@ -96,6 +103,32 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
         }
     }
 
+    fun startFlibustaTts() {
+        val url = currentUrl.trim()
+        if (!isFlibustaBookUrl(url) || preparingTts) return
+        preparingTts = true
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                val output = File(activity.filesDir, "tts/output")
+                FlibustaBookTtsFlow.create(activity).enqueue(activity, url, output)
+            }
+            preparingTts = false
+            result.onSuccess { session ->
+                Toast.makeText(
+                    activity,
+                    "Озвучення поставлено в чергу • ${session.voice.displayName}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }.onFailure { error ->
+                Toast.makeText(
+                    activity,
+                    "Не вдалося запустити озвучення: ${error.message ?: "невідома помилка"}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
     BackHandler(enabled = webView?.canGoBack() == true) {
         webView?.goBack()
     }
@@ -110,6 +143,11 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
                     }) { Icon(Icons.Filled.ArrowBack, "Назад") }
                 },
                 actions = {
+                    if (isFlibustaBookUrl(currentUrl)) {
+                        IconButton(onClick = ::startFlibustaTts, enabled = !preparingTts) {
+                            Icon(Icons.Filled.VolumeUp, "Озвучити книгу локально")
+                        }
+                    }
                     IconButton(onClick = { webView?.loadUrl(SOURCE_BROWSER_DEFAULT_HOME) }) { Icon(Icons.Filled.Home, "Головна") }
                     IconButton(onClick = { webView?.reload() }) { Icon(Icons.Filled.Refresh, "Оновити") }
                     IconButton(onClick = ::addCurrentPage, enabled = !syncing) { Icon(Icons.Filled.Add, "Додати поточну сторінку") }
@@ -128,7 +166,7 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
                     TextButton(onClick = { navigate(address) }) { Text("Відкрити") }
                 }
             )
-            if (syncing) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (syncing || preparingTts) LinearProgressIndicator(Modifier.fillMaxWidth())
             AndroidView(
                 factory = { context ->
                     WebView(context).apply {
@@ -159,3 +197,11 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
         }
     }
 }
+
+internal fun isFlibustaBookUrl(url: String): Boolean = runCatching {
+    val uri = URI(url)
+    val host = uri.host?.lowercase() ?: return@runCatching false
+    val supportedHost = host == "flibusta.site" || host == "flibusta.one" || host == "flibusta.name" ||
+        host.endsWith(".flibusta.site") || host.endsWith(".flibusta.one") || host.endsWith(".flibusta.name")
+    supportedHost && Regex("^/b/[^/]+/?$").matches(uri.path.orEmpty())
+}.getOrDefault(false)

@@ -5,6 +5,7 @@ import java.io.File
 import org.audoiboo.tracker.ebook.BookDocument
 import org.audoiboo.tracker.ebook.EbookImportException
 import org.audoiboo.tracker.ebook.Fb2Importer
+import org.audoiboo.tracker.ebook.TtsSynthesisPlanner
 import org.audoiboo.tracker.plugin.flibusta.FlibustaDownloadResolver
 import org.audoiboo.tracker.plugin.flibusta.FlibustaResolveResult
 
@@ -14,6 +15,14 @@ data class PreparedFlibustaBookTts(
     val sourceUrl: String,
     val fileName: String,
     val tts: PreparedSherpaBookTts,
+)
+
+/** Metadata the UI needs after a Flibusta TTS job has been handed to WorkManager. */
+data class EnqueuedFlibustaBookTts(
+    val session: TtsSession,
+    val title: String,
+    val relativeDir: String,
+    val chunkCount: Int,
 )
 
 /**
@@ -56,7 +65,7 @@ class FlibustaBookTtsFlow(
         bookUrl: String,
         outputDir: File,
         speed: Float = 1.0f,
-    ): Result<TtsSession> = runCatching {
+    ): Result<EnqueuedFlibustaBookTts> = runCatching {
         val prepared = prepare(bookUrl, speed).getOrThrow()
         TtsGenerationScheduler.enqueue(
             context = context.applicationContext,
@@ -65,7 +74,13 @@ class FlibustaBookTtsFlow(
             model = prepared.tts.model,
             outputDir = outputDir,
         )
-        prepared.tts.session
+        val title = prepared.document.title?.trim().takeUnless { it.isNullOrBlank() } ?: "Аудіокнига"
+        EnqueuedFlibustaBookTts(
+            session = prepared.tts.session,
+            title = title,
+            relativeDir = TtsPlayerLibraryBridge.relativePath(prepared.document),
+            chunkCount = TtsSynthesisPlanner.build(prepared.document).chunkCount,
+        )
     }
 
     companion object {

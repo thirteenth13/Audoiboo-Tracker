@@ -6,13 +6,14 @@ import org.w3c.dom.Node
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
-import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
 
 object Fb2Importer {
     private const val MAX_ZIP_ENTRIES = 128
     private const val MAX_FB2_BYTES = 48L * 1024 * 1024
     private const val MAX_TOTAL_UNCOMPRESSED_BYTES = 64L * 1024 * 1024
+    private const val ACCESS_EXTERNAL_DTD = "http://javax.xml.XMLConstants/property/accessExternalDTD"
+    private const val ACCESS_EXTERNAL_SCHEMA = "http://javax.xml.XMLConstants/property/accessExternalSchema"
 
     fun import(payload: ByteArray): ImportedEbook {
         if (payload.size < 4) throw EbookImportException("FB2 payload is empty or too small")
@@ -77,8 +78,8 @@ object Fb2Importer {
             runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
             runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
             runCatching { setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false) }
-            runCatching { setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "") }
-            runCatching { setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "") }
+            runCatching { setAttribute(ACCESS_EXTERNAL_DTD, "") }
+            runCatching { setAttribute(ACCESS_EXTERNAL_SCHEMA, "") }
         }
 
         val dom = try {

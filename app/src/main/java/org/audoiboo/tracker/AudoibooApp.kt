@@ -81,6 +81,8 @@ class AudoibooApp : Application() {
             // Old builds could replace stable catalog:// identity URLs with an audio-provider page.
             // Repair only rows whose catalog identity is provable from their stable entity IDs.
             runCatching { CatalogCanonicalUrlRepair.repair(this@AudoibooApp) }
+            // Merge only strong provider duplicates into authoritative catalog book anchors.
+            runCatching { CatalogBookDeduplicationRepair.repairAll(this@AudoibooApp) }
             // Rebind stale MediaStore/SAF URIs after reboot, provider changes or an app restore.
             runCatching { LibraryUriRecovery.recover(this@AudoibooApp) }
             runCatching { RoomCoverSync.enqueueAll(this@AudoibooApp) }

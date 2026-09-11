@@ -75,10 +75,11 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
     var ttsState by remember { mutableStateOf<TtsSessionState?>(null) }
     var ttsCompletedChunks by remember { mutableIntStateOf(0) }
     var ttsError by remember { mutableStateOf<String?>(null) }
+    var ttsMonitorRevision by remember { mutableIntStateOf(0) }
 
     val ttsBusy = preparingTts || ttsState == TtsSessionState.QUEUED || ttsState == TtsSessionState.RUNNING
 
-    LaunchedEffect(activeTts?.session?.sessionId) {
+    LaunchedEffect(activeTts?.session?.sessionId, ttsMonitorRevision) {
         val job = activeTts ?: return@LaunchedEffect
         val store = TtsSessionStore(File(activity.filesDir, "tts/sessions"))
         val workManager = WorkManager.getInstance(activity.applicationContext)
@@ -104,9 +105,14 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
                     Toast.makeText(activity, "Озвучення завершено: ${job.title}", Toast.LENGTH_LONG).show()
                     break
                 }
-                WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
+                WorkInfo.State.FAILED -> {
                     ttsState = TtsSessionState.FAILED
                     if (ttsError.isNullOrBlank()) ttsError = "Фонове озвучення завершилося з помилкою"
+                    break
+                }
+                WorkInfo.State.CANCELLED -> {
+                    ttsState = TtsSessionState.PAUSED
+                    ttsError = null
                     break
                 }
                 else -> Unit
@@ -134,22 +140,10 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
             val result = runCatching { RoomSeriesSync.sync(activity, url) }.getOrNull()
             syncing = false
             when {
-                result?.seriesId != null -> {
-                    Toast.makeText(activity, "${result.name}: ${result.books} книг додано", Toast.LENGTH_LONG).show()
-                }
-                result?.review != null -> {
-                    Toast.makeText(
-                        activity,
-                        "${result.name}: серію знайдено (${result.books} книг), але збіг із бібліотекою потребує підтвердження",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-                plugin == null -> {
-                    Toast.makeText(activity, "Для цього сайту немає активного плагіна", Toast.LENGTH_LONG).show()
-                }
-                else -> {
-                    Toast.makeText(activity, "Плагін ${plugin.descriptor.name} не зміг визначити серію з цієї сторінки", Toast.LENGTH_LONG).show()
-                }
+                result?.seriesId != null -> Toast.makeText(activity, "${result.name}: ${result.books} книг додано", Toast.LENGTH_LONG).show()
+                result?.review != null -> Toast.makeText(activity, "${result.name}: серію знайдено (${result.books} книг), але збіг із бібліотекою потребує підтвердження", Toast.LENGTH_LONG).show()
+                plugin == null -> Toast.makeText(activity, "Для цього сайту немає активного плагіна", Toast.LENGTH_LONG).show()
+                else -> Toast.makeText(activity, "Плагін ${plugin.descriptor.name} не зміг визначити серію з цієї сторінки", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -169,19 +163,28 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
                 activeTts = job
                 ttsState = TtsSessionState.QUEUED
                 ttsCompletedChunks = job.session.nextGlobalChunkIndex
-                Toast.makeText(
-                    activity,
-                    "Озвучення поставлено в чергу • ${job.session.voice.displayName}",
-                    Toast.LENGTH_LONG
-                ).show()
+                Toast.makeText(activity, "Озвучення поставлено в чергу • ${job.session.voice.displayName}", Toast.LENGTH_LONG).show()
             }.onFailure { error ->
                 ttsError = error.message ?: "невідома помилка"
-                Toast.makeText(
-                    activity,
-                    "Не вдалося запустити озвучення: ${ttsError}",
-                    Toast.LENGTH_LONG
-                ).show()
+                Toast.makeText(activity, "Не вдалося запустити озвучення: ${ttsError}", Toast.LENGTH_LONG).show()
             }
+        }
+    }
+
+    fun pauseTts(job: EnqueuedFlibustaBookTts) {
+        TtsGenerationScheduler.pause(activity.applicationContext, job.session.sessionId)
+    }
+
+    fun resumeTts(job: EnqueuedFlibustaBookTts) {
+        runCatching {
+            TtsGenerationScheduler.resume(activity.applicationContext, job.session.sessionId, job.title)
+        }.onSuccess {
+            ttsState = TtsSessionState.QUEUED
+            ttsError = null
+            ttsMonitorRevision++
+        }.onFailure { error ->
+            ttsState = TtsSessionState.FAILED
+            ttsError = error.message ?: "Не вдалося продовжити озвучення"
         }
     }
 
@@ -192,18 +195,16 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
         })
     }
 
-    BackHandler(enabled = webView?.canGoBack() == true) {
-        webView?.goBack()
-    }
+    BackHandler(enabled = webView?.canGoBack() == true) { webView?.goBack() }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Браузер джерел") },
                 navigationIcon = {
-                    IconButton(onClick = {
-                        if (webView?.canGoBack() == true) webView?.goBack() else activity.finish()
-                    }) { Icon(Icons.Filled.ArrowBack, "Назад") }
+                    IconButton(onClick = { if (webView?.canGoBack() == true) webView?.goBack() else activity.finish() }) {
+                        Icon(Icons.Filled.ArrowBack, "Назад")
+                    }
                 },
                 actions = {
                     if (isFlibustaBookUrl(currentUrl)) {
@@ -225,9 +226,7 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
                 singleLine = true,
                 label = { Text("URL будь-якого джерела") },
-                trailingIcon = {
-                    TextButton(onClick = { navigate(address) }) { Text("Відкрити") }
-                }
+                trailingIcon = { TextButton(onClick = { navigate(address) }) { Text("Відкрити") } },
             )
             if (syncing || preparingTts) LinearProgressIndicator(Modifier.fillMaxWidth())
 
@@ -255,10 +254,20 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
                         ttsError?.takeIf { ttsState == TtsSessionState.FAILED }?.let {
                             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                         }
-                        if (ttsState == TtsSessionState.COMPLETED) {
-                            Button(onClick = { openGeneratedBook(job) }, modifier = Modifier.fillMaxWidth()) {
-                                Text("Відкрити готову книгу в плеєрі")
-                            }
+                        when (ttsState) {
+                            TtsSessionState.QUEUED, TtsSessionState.RUNNING -> OutlinedButton(
+                                onClick = { pauseTts(job) }, modifier = Modifier.fillMaxWidth()
+                            ) { Text("Призупинити озвучення") }
+                            TtsSessionState.PAUSED -> Button(
+                                onClick = { resumeTts(job) }, modifier = Modifier.fillMaxWidth()
+                            ) { Text("Продовжити озвучення") }
+                            TtsSessionState.FAILED -> Button(
+                                onClick = { resumeTts(job) }, modifier = Modifier.fillMaxWidth()
+                            ) { Text("Повторити з останнього фрагмента") }
+                            TtsSessionState.COMPLETED -> Button(
+                                onClick = { openGeneratedBook(job) }, modifier = Modifier.fillMaxWidth()
+                            ) { Text("Відкрити готову книгу в плеєрі") }
+                            null -> Unit
                         }
                     }
                 }

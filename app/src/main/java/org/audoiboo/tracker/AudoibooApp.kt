@@ -78,6 +78,9 @@ class AudoibooApp : Application() {
         appScope.launch {
             // Tracking series are the only existing user data that still needs legacy import support.
             runCatching { LegacyLibraryImporter.importIfNeeded(this@AudoibooApp) }
+            // Old builds could replace stable catalog:// identity URLs with an audio-provider page.
+            // Repair only rows whose catalog identity is provable from their stable entity IDs.
+            runCatching { CatalogCanonicalUrlRepair.repair(this@AudoibooApp) }
             // Rebind stale MediaStore/SAF URIs after reboot, provider changes or an app restore.
             runCatching { LibraryUriRecovery.recover(this@AudoibooApp) }
             runCatching { RoomCoverSync.enqueueAll(this@AudoibooApp) }

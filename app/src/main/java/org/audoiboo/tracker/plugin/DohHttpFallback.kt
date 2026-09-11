@@ -22,8 +22,9 @@ internal object DohHttpFallback {
     private const val DOH_URL = "https://cloudflare-dns.com/dns-query"
     private val bootstrapAddresses = listOf("1.1.1.1", "1.0.0.1").map(InetAddress::getByName)
 
-    private val bootstrapDns = Dns { hostname ->
-        if (hostname.equals(DOH_HOST, ignoreCase = true)) bootstrapAddresses else Dns.SYSTEM.lookup(hostname)
+    private val bootstrapDns = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> =
+            if (hostname.equals(DOH_HOST, ignoreCase = true)) bootstrapAddresses else Dns.SYSTEM.lookup(hostname)
     }
 
     private val dohClient = OkHttpClient.Builder()
@@ -35,8 +36,12 @@ internal object DohHttpFallback {
         .callTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    private val providerDns = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> = resolve(hostname)
+    }
+
     private val providerClient = OkHttpClient.Builder()
-        .dns(Dns { hostname -> resolve(hostname) })
+        .dns(providerDns)
         .followRedirects(false)
         .followSslRedirects(false)
         .connectTimeout(12, TimeUnit.SECONDS)
@@ -65,9 +70,10 @@ internal object DohHttpFallback {
         }
 
         providerClient.newCall(builder.build()).execute().use { response ->
-            val body = response.body?.byteStream()?.use { input ->
+            val bytes = response.body?.byteStream()?.use { input ->
                 readLimited(input, maxResponseBytes)
-            }.orEmpty().toString(StandardCharsets.UTF_8)
+            } ?: ByteArray(0)
+            val body = bytes.toString(StandardCharsets.UTF_8)
             val headers = response.headers.names().associateWith { name -> response.headers.values(name) }
             return PluginHttpResponse(
                 statusCode = response.code,

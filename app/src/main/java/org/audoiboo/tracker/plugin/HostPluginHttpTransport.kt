@@ -6,6 +6,7 @@ import org.jsoup.Jsoup
 import java.io.EOFException
 import java.net.ConnectException
 import java.net.NoRouteToHostException
+import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.URI
 import java.net.UnknownHostException
@@ -169,8 +170,7 @@ object HostPluginHttpTransport : PluginHttpTransport {
     internal fun isNetworkFailure(error: Throwable): Boolean =
         generateSequence(error) { it.cause }.any {
             it is UnknownHostException ||
-                it is ConnectException ||
-                it is NoRouteToHostException ||
+                it is SocketException ||
                 it is SocketTimeoutException
         }
 
@@ -178,8 +178,7 @@ object HostPluginHttpTransport : PluginHttpTransport {
         generateSequence(error) { it.cause }
             .firstOrNull {
                 it is UnknownHostException ||
-                    it is ConnectException ||
-                    it is NoRouteToHostException ||
+                    it is SocketException ||
                     it is SocketTimeoutException
             }
             ?.javaClass

@@ -8,6 +8,16 @@ import org.audoiboo.tracker.ebook.BookDocument
 
 /** Makes committed TTS chapter files visible to the existing audiobook player/library. */
 internal object TtsPlayerLibraryBridge {
+    fun relativePath(
+        document: BookDocument,
+        relativeRoot: String = "Audoiboo/TTS",
+    ): String {
+        val bookTitle = document.title?.trim().takeUnless { it.isNullOrBlank() } ?: "TTS Book"
+        return listOf(relativeRoot.trim().trimEnd('/'), safeSegment(bookTitle))
+            .filter(String::isNotBlank)
+            .joinToString("/")
+    }
+
     fun items(
         document: BookDocument,
         result: TtsBookGenerationResult,
@@ -16,9 +26,7 @@ internal object TtsPlayerLibraryBridge {
         val bookTitle = document.title?.trim().takeUnless { it.isNullOrBlank() } ?: "TTS Book"
         val author = document.authors.map(String::trim).filter(String::isNotBlank).joinToString(", ").ifBlank { null }
         val series = document.series?.trim().takeUnless { it.isNullOrBlank() }
-        val relativePath = listOf(relativeRoot.trim().trimEnd('/'), safeSegment(bookTitle))
-            .filter(String::isNotBlank)
-            .joinToString("/")
+        val relativePath = relativePath(document, relativeRoot)
 
         return result.chapters
             .filter { it.audioFile.isFile && it.audioFile.length() > 44L }

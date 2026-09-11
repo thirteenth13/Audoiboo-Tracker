@@ -342,6 +342,13 @@ internal object RoomSeriesSync {
             }
         }
 
+        // Older builds could already have persisted provider-backed duplicate rows. Run the
+        // conservative repair after source snapshots are current so duplicate source mappings can
+        // be reassigned to the surviving canonical book instead of being lost.
+        dao.seriesWithBooks(canonicalSeriesId)
+            ?.takeUnless { it.series.url.startsWith("catalog://", ignoreCase = true) }
+            ?.let { RoomBookDeduplication.repair(context, db, it) }
+
         LibraryRepository.mirrorLegacy(context)
         RoomCoverSync.enqueueAll(context)
         dao.seriesWithBooks(canonicalSeriesId)?.let { result.copy(books = it.books.size) } ?: result

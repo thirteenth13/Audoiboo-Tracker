@@ -61,6 +61,13 @@ data class TtsSession(
         )
     }
 
+    fun pause(): TtsSession = copy(state = TtsSessionState.PAUSED, lastError = null)
+
+    fun queueForResume(): TtsSession {
+        require(state != TtsSessionState.COMPLETED) { "Completed TTS session cannot be resumed" }
+        return copy(state = TtsSessionState.QUEUED, lastError = null)
+    }
+
     fun fail(message: String): TtsSession {
         require(message.isNotBlank())
         return copy(state = TtsSessionState.FAILED, lastError = message)

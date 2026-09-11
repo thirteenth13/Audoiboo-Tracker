@@ -4,7 +4,11 @@ import android.webkit.CookieManager
 import org.jsoup.Connection
 import org.jsoup.Jsoup
 import java.io.EOFException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
 import java.net.URI
+import java.net.UnknownHostException
 
 /**
  * Production transport used by the plugin sandbox. It performs exactly one HTTP hop and never
@@ -36,10 +40,11 @@ object HostPluginHttpTransport : PluginHttpTransport {
             .getOrNull()
             ?.trim()
             ?.takeIf { it.isNotBlank() }
+        val userAgent = browserUserAgent ?: DEFAULT_USER_AGENT
 
         fun execute(recoveryAttempt: Boolean): Connection.Response {
             val connection = Jsoup.connect(request.url)
-                .userAgent(browserUserAgent ?: DEFAULT_USER_AGENT)
+                .userAgent(userAgent)
                 .header("Accept-Language", "ru-RU,ru;q=0.9,uk;q=0.8,en;q=0.6")
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .timeout(TIMEOUT_MS)
@@ -70,22 +75,32 @@ object HostPluginHttpTransport : PluginHttpTransport {
         }
 
         val response = try {
-            execute(recoveryAttempt = false)
-        } catch (t: Throwable) {
-            if (!shouldRetryTruncatedResponse(t)) throw t
-            val host = runCatching { URI(request.url).host }.getOrNull().orEmpty()
-            SeriesDiagnosticLog.w("NET RETRY truncated-response host=$host url=${request.url}")
-            execute(recoveryAttempt = true)
-        }
-
-        runCatching {
-            response.multiHeaders()["Set-Cookie"].orEmpty().forEach { value ->
-                CookieManager.getInstance().setCookie(request.url, value)
+            try {
+                execute(recoveryAttempt = false)
+            } catch (t: Throwable) {
+                if (!shouldRetryTruncatedResponse(t)) throw t
+                val host = runCatching { URI(request.url).host }.getOrNull().orEmpty()
+                SeriesDiagnosticLog.w("NET RETRY truncated-response host=$host url=${request.url}")
+                execute(recoveryAttempt = true)
             }
-            CookieManager.getInstance().flush()
+        } catch (t: Throwable) {
+            if (!shouldRetryWithDoh(t)) throw t
+            val host = runCatching { URI(request.url).host }.getOrNull().orEmpty()
+            SeriesDiagnosticLog.w("NET RETRY doh host=$host reason=${networkFailureName(t)} url=${request.url}")
+            val fallback = DohHttpFallback.get(
+                request = request,
+                maxResponseBytes = maxResponseBytes,
+                userAgent = userAgent,
+                origin = origin,
+                cookies = cookies
+            )
+            storeCookies(request.url, fallback.headers)
+            SeriesDiagnosticLog.i("NET DOH GET ${request.url} -> ${fallback.statusCode}, ${fallback.body.length}b")
+            return fallback
         }
 
-        val headers = response.headers().mapValues { (_, value) -> listOf(value) }
+        val headers = response.multiHeaders().mapValues { (_, values) -> values.toList() }
+        storeCookies(request.url, headers)
         return PluginHttpResponse(
             statusCode = response.statusCode(),
             finalUrl = response.url().toString(),
@@ -94,6 +109,37 @@ object HostPluginHttpTransport : PluginHttpTransport {
         )
     }
 
+    private fun storeCookies(url: String, headers: Map<String, List<String>>) {
+        runCatching {
+            headers.entries
+                .firstOrNull { it.key.equals("Set-Cookie", ignoreCase = true) }
+                ?.value
+                .orEmpty()
+                .forEach { value -> CookieManager.getInstance().setCookie(url, value) }
+            CookieManager.getInstance().flush()
+        }
+    }
+
     internal fun shouldRetryTruncatedResponse(error: Throwable): Boolean =
         generateSequence(error) { it.cause }.any { it is EOFException }
+
+    internal fun shouldRetryWithDoh(error: Throwable): Boolean =
+        generateSequence(error) { it.cause }.any {
+            it is UnknownHostException ||
+                it is ConnectException ||
+                it is NoRouteToHostException ||
+                it is SocketTimeoutException
+        }
+
+    internal fun networkFailureName(error: Throwable): String =
+        generateSequence(error) { it.cause }
+            .firstOrNull {
+                it is UnknownHostException ||
+                    it is ConnectException ||
+                    it is NoRouteToHostException ||
+                    it is SocketTimeoutException
+            }
+            ?.javaClass
+            ?.simpleName
+            ?: error.javaClass.simpleName
 }

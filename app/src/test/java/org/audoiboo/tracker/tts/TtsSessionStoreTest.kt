@@ -11,24 +11,7 @@ class TtsSessionStoreTest {
     fun roundTripsCheckpointAndDeletesIt() {
         val root = Files.createTempDirectory("tts-session-store").toFile()
         val store = TtsSessionStore(root)
-        val session = TtsSession(
-            sessionId = "book:42",
-            providerId = "sherpa-onnx",
-            voice = TtsVoice(
-                id = "uk-voice",
-                displayName = "Український голос",
-                language = "uk-UA",
-                modelId = "vits-uk",
-                modelVersion = "2",
-                speakerId = 3,
-            ),
-            documentFingerprint = "fingerprint",
-            speed = 1.25f,
-            state = TtsSessionState.RUNNING,
-            nextGlobalChunkIndex = 17,
-            completedChapterIndexes = setOf(0, 2, 5),
-            lastError = "помилка",
-        )
+        val session = sampleSession("book:42")
 
         store.save(session)
 
@@ -38,11 +21,45 @@ class TtsSessionStoreTest {
     }
 
     @Test
+    fun previouslyAmbiguousSessionIdsDoNotOverwriteEachOther() {
+        val root = Files.createTempDirectory("tts-session-collision").toFile()
+        val store = TtsSessionStore(root)
+        val colon = sampleSession("a:b")
+        val slash = sampleSession("a/b")
+
+        store.save(colon)
+        store.save(slash)
+
+        assertEquals(colon, store.load(colon.sessionId))
+        assertEquals(slash, store.load(slash.sessionId))
+        assertEquals(2, root.listFiles { file -> file.extension == "properties" }?.size)
+    }
+
+    @Test
     fun corruptCheckpointIsIgnored() {
         val root = Files.createTempDirectory("tts-session-corrupt").toFile()
-        root.resolve("broken.properties").writeText("not-a-valid-session")
+        root.resolve(TtsStableId.hex("broken") + ".properties").writeText("not-a-valid-session")
         val store = TtsSessionStore(root)
 
         assertNull(store.load("broken"))
     }
+
+    private fun sampleSession(sessionId: String) = TtsSession(
+        sessionId = sessionId,
+        providerId = "sherpa-onnx",
+        voice = TtsVoice(
+            id = "uk-voice",
+            displayName = "Український голос",
+            language = "uk-UA",
+            modelId = "vits-uk",
+            modelVersion = "2",
+            speakerId = 3,
+        ),
+        documentFingerprint = "fingerprint",
+        speed = 1.25f,
+        state = TtsSessionState.RUNNING,
+        nextGlobalChunkIndex = 17,
+        completedChapterIndexes = setOf(0, 2, 5),
+        lastError = "помилка",
+    )
 }

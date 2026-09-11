@@ -5,6 +5,7 @@ import java.io.File
 import org.audoiboo.tracker.PlayerLibrary
 import org.audoiboo.tracker.PlayerLibraryItem
 import org.audoiboo.tracker.ebook.BookDocument
+import org.audoiboo.tracker.ebook.TtsSynthesisPlanner
 
 /** Makes committed TTS chapter files visible to the existing audiobook player/library. */
 internal object TtsPlayerLibraryBridge {
@@ -13,7 +14,8 @@ internal object TtsPlayerLibraryBridge {
         relativeRoot: String = "Audoiboo/TTS",
     ): String {
         val bookTitle = document.title?.trim().takeUnless { it.isNullOrBlank() } ?: "TTS Book"
-        return listOf(relativeRoot.trim().trimEnd('/'), safeSegment(bookTitle))
+        val fingerprint = TtsSynthesisPlanner.fingerprint(document).take(10)
+        return listOf(relativeRoot.trim().trimEnd('/'), "${safeSegment(bookTitle)} [$fingerprint]")
             .filter(String::isNotBlank)
             .joinToString("/")
     }

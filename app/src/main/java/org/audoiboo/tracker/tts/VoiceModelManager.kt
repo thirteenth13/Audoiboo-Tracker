@@ -22,7 +22,11 @@ data class VoiceModelSpec(
 }
 
 class VoiceModelManager(private val modelsRoot: File) {
-    fun modelDir(spec: VoiceModelSpec): File = File(modelsRoot, safe(spec.modelId) + "/" + safe(spec.version))
+    fun modelDir(modelId: String, version: String): File =
+        File(modelsRoot, safe(modelId) + "/" + safe(version))
+
+    fun modelDir(spec: VoiceModelSpec): File = modelDir(spec.modelId, spec.version)
+
     fun modelFile(spec: VoiceModelSpec): File = File(modelDir(spec), spec.fileName)
 
     fun isInstalled(spec: VoiceModelSpec): Boolean {

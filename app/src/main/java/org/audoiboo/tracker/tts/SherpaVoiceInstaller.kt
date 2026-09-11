@@ -24,9 +24,7 @@ class SherpaVoiceInstaller(
     fun installedSpec(pkg: SherpaVoicePackage): VoiceModelSpec? = runCatching {
         val dir = modelManager.modelDir(pkg.modelId, pkg.version)
         val manifestFile = File(dir, INSTALL_MANIFEST)
-        val modelFile = File(dir, pkg.modelFileName)
-        val tokens = File(dir, "tokens.txt")
-        if (!manifestFile.isFile || !modelFile.isFile || !tokens.isFile) return null
+        if (!manifestFile.isFile || !hasRequiredRuntimeFiles(dir, pkg)) return null
 
         val manifest = Properties().apply {
             manifestFile.inputStream().buffered().use { input -> load(input) }
@@ -56,6 +54,9 @@ class SherpaVoiceInstaller(
 
         val archive = File(parent, ".${finalDir.name}.${UUID.randomUUID()}.tar.bz2.part")
         val staging = File(parent, ".${finalDir.name}.${UUID.randomUUID()}.staging")
+        val backup = File(parent, ".${finalDir.name}.${UUID.randomUUID()}.backup")
+        var movedExisting = false
+        var publishedNew = false
         try {
             download(pkg, archive)
             require(VoiceModelManager.digest(archive).equals(pkg.archiveSha256, ignoreCase = true)) {
@@ -64,11 +65,11 @@ class SherpaVoiceInstaller(
 
             check(staging.mkdirs()) { "Cannot create voice model staging directory" }
             extract(pkg, archive, staging)
+            require(hasRequiredRuntimeFiles(staging, pkg)) {
+                "Voice package is missing model, tokens.txt, or espeak-ng-data"
+            }
 
             val stagedModel = File(staging, pkg.modelFileName)
-            require(stagedModel.isFile) { "Voice package does not contain ${pkg.modelFileName}" }
-            require(File(staging, "tokens.txt").isFile) { "Voice package does not contain tokens.txt" }
-
             val spec = VoiceModelSpec(
                 modelId = pkg.modelId,
                 version = pkg.version,
@@ -78,14 +79,39 @@ class SherpaVoiceInstaller(
             )
             writeInstallManifest(staging, pkg, spec)
 
-            if (finalDir.exists()) check(finalDir.deleteRecursively()) { "Cannot replace installed voice model" }
-            check(staging.renameTo(finalDir)) { "Cannot publish installed voice model" }
-            modelManager.verify(spec).getOrThrow()
-            checkNotNull(installedSpec(pkg)) { "Published voice model manifest verification failed" }
+            if (finalDir.exists()) {
+                check(finalDir.renameTo(backup)) { "Cannot preserve existing voice model before replacement" }
+                movedExisting = true
+            }
+            try {
+                check(staging.renameTo(finalDir)) { "Cannot publish installed voice model" }
+                publishedNew = true
+                modelManager.verify(spec).getOrThrow()
+                checkNotNull(installedSpec(pkg)) { "Published voice model manifest verification failed" }
+                if (backup.exists()) check(backup.deleteRecursively()) { "Cannot remove previous voice model backup" }
+                movedExisting = false
+                spec
+            } catch (failure: Throwable) {
+                if (publishedNew && finalDir.exists()) finalDir.deleteRecursively()
+                if (movedExisting && backup.exists()) {
+                    check(backup.renameTo(finalDir)) { "Voice model publish failed and previous installation could not be restored" }
+                    movedExisting = false
+                }
+                throw failure
+            }
         } finally {
             archive.delete()
             if (staging.exists()) staging.deleteRecursively()
+            if (!movedExisting && backup.exists()) backup.deleteRecursively()
         }
+    }
+
+    private fun hasRequiredRuntimeFiles(dir: File, pkg: SherpaVoicePackage): Boolean {
+        val model = File(dir, pkg.modelFileName)
+        val tokens = File(dir, "tokens.txt")
+        val espeak = File(dir, "espeak-ng-data")
+        return model.isFile && tokens.isFile && espeak.isDirectory &&
+            espeak.walkTopDown().any { it.isFile }
     }
 
     private fun writeInstallManifest(dir: File, pkg: SherpaVoicePackage, spec: VoiceModelSpec) {

@@ -3,6 +3,7 @@ package org.audoiboo.tracker.plugin
 import android.util.Log
 import org.audoiboo.tracker.AudiobooFastParser
 import org.audoiboo.tracker.AudiobooSearchParser
+import org.audoiboo.tracker.FastBook
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -89,12 +90,17 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
     }
 
     private fun canonicalRefs(
-        books: List<org.audoiboo.tracker.FastBook>,
+        books: List<FastBook>,
         fallbackAuthor: String,
-        canonical: CanonicalSeriesMatchInput
+        canonical: CanonicalSeriesMatchInput,
+        trustFallbackAuthor: Boolean = false
     ): List<SourceBookRef> = books.mapNotNull { book ->
-        val authors = book.author?.takeIf { it.isNotBlank() }?.let { listOf(SourceAuthor(it)) }
-            ?: fallbackAuthor.takeIf { it.isNotBlank() }?.let { listOf(SourceAuthor(it)) }.orEmpty()
+        val authors = when {
+            trustFallbackAuthor && fallbackAuthor.isNotBlank() -> listOf(SourceAuthor(fallbackAuthor))
+            !book.author.isNullOrBlank() -> listOf(SourceAuthor(book.author))
+            fallbackAuthor.isNotBlank() -> listOf(SourceAuthor(fallbackAuthor))
+            else -> emptyList()
+        }
         val sourceBook = SourceBook(
             sourceId = descriptor.id,
             url = book.url,
@@ -103,13 +109,15 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
             seriesTitle = book.seriesTitle,
             coverUrl = book.coverUrl
         )
-        val match = SourceIdentityMatcher.bestBookMatch(sourceBook, canonical.books)
+        val strictMatch = SourceIdentityMatcher.bestBookMatch(sourceBook, canonical.books)
             ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+        val match = strictMatch?.value
+            ?: if (trustFallbackAuthor) audiobooAuthorPageBookMatch(book, canonical.books) else null
             ?: return@mapNotNull null
         SourceBookRef(
             url = book.url,
             title = book.title,
-            number = match.value.number
+            number = match.number
         )
     }.distinctBy { SourceKeys.normalizeUrl(it.url) }
 
@@ -118,19 +126,22 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
             val encoded = URLEncoder.encode(alias, StandardCharsets.UTF_8.name()).replace("+", "%20")
             val refs = linkedMapOf<String, SourceBookRef>()
             var firstUrl: String? = null
-            var consecutiveEmptyPages = 0
 
             for (page in 1..3) {
                 val url = "https://audioboo.org/xfsearch/avtora/$encoded/" + if (page == 1) "" else "page/$page/"
                 firstUrl = firstUrl ?: url
                 diagnostic("provider audioboo AUTHOR_FALLBACK alias='$alias' page=$page url=$url")
                 val books = AudiobooFastParser.parseSeries(url).orEmpty()
-                val pageRefs = canonicalRefs(books, author, canonical)
-                diagnostic("provider audioboo AUTHOR_FALLBACK alias='$alias' page=$page parsedBooks=${books.size} canonicalRefs=${pageRefs.size}")
+                val pageRefs = canonicalRefs(books, author, canonical, trustFallbackAuthor = true)
+                val sample = books.take(4).joinToString(" | ") { book ->
+                    "${book.title} [series=${book.seriesTitle ?: "-"}; author=${book.author ?: "-"}]"
+                }
+                diagnostic("provider audioboo AUTHOR_FALLBACK alias='$alias' page=$page parsedBooks=${books.size} canonicalRefs=${pageRefs.size} sample=$sample")
                 pageRefs.forEach { ref -> refs.putIfAbsent(SourceKeys.normalizeUrl(ref.url), ref) }
 
-                consecutiveEmptyPages = if (books.isEmpty()) consecutiveEmptyPages + 1 else 0
-                if (consecutiveEmptyPages >= 2) break
+                // Audioboo returns 404 after the final author page. parseSeries intentionally turns
+                // that into an empty result, so one empty page after a successful page is terminal.
+                if (books.isEmpty()) break
             }
 
             if (refs.isNotEmpty()) {
@@ -217,6 +228,48 @@ internal fun audiobooAuthorAliases(author: String): List<String> {
     return listOf(tokens.joinToString(" "), reversed)
         .filter(String::isNotBlank)
         .distinctBy(SourceIdentityMatcher::normalizeTitle)
+}
+
+internal fun audiobooAuthorPageBookMatch(
+    book: FastBook,
+    candidates: List<CanonicalBookMatchInput>
+): CanonicalBookMatchInput? {
+    if (candidates.isEmpty()) return null
+    val provider = audiobooComparableBookTitle(book.title, book.seriesTitle)
+    if (provider.isBlank()) return null
+
+    val exact = candidates.filter { candidate ->
+        audiobooComparableBookTitle(candidate.title, book.seriesTitle) == provider
+    }
+    if (exact.size == 1) return exact.single()
+
+    // Author-page provenance already establishes the author. Permit a provider decoration such as
+    // "Древний 1. Катастрофа" only when exactly one canonical title is a strong suffix/containment
+    // match. Single-token titles are deliberately excluded from this relaxed path to avoid linking
+    // broad titles such as "Тьма" to "Рассвет Тьмы".
+    val relaxed = candidates.filter { candidate ->
+        val canonical = audiobooComparableBookTitle(candidate.title, book.seriesTitle)
+        val tokens = canonical.split(' ').filter(String::isNotBlank)
+        tokens.size >= 2 && canonical.length >= 8 &&
+            (provider.endsWith(" $canonical") || provider.startsWith("$canonical "))
+    }
+    return relaxed.singleOrNull()
+}
+
+internal fun audiobooComparableBookTitle(title: String, seriesTitle: String?): String {
+    var normalized = SourceIdentityMatcher.normalizeTitle(title)
+    val series = SourceIdentityMatcher.normalizeTitle(seriesTitle.orEmpty())
+    if (series.isNotBlank()) {
+        val seriesTokens = series.split(' ').filter { it.length > 1 }.toSet()
+        normalized = normalized.split(' ')
+            .filterNot { it in seriesTokens }
+            .joinToString(" ")
+    }
+    return normalized
+        .replace(Regex("\\b(книга|том|часть|частина|аудиокнига|аудиокниги|аудио|слушать|онлайн|book|volume|vol)\\b"), " ")
+        .replace(Regex("\\b\\d+(?:[.,]\\d+)?\\b"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
 }
 
 object BuiltInSourcePlugins {

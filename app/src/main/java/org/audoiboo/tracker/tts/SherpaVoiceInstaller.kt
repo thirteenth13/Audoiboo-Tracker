@@ -7,8 +7,8 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Properties
 import java.util.UUID
-import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 
@@ -17,6 +17,38 @@ class SherpaVoiceInstaller(
     private val modelManager: VoiceModelManager,
     private val openStream: (String) -> InputStream = ::openHttpStream,
 ) {
+    /** Reuses only an installation that can be tied back to the pinned archive metadata. */
+    fun ensureInstalled(pkg: SherpaVoicePackage): Result<VoiceModelSpec> =
+        installedSpec(pkg)?.let { Result.success(it) } ?: install(pkg)
+
+    fun installedSpec(pkg: SherpaVoicePackage): VoiceModelSpec? = runCatching {
+        val dir = modelManager.modelDir(pkg.modelId, pkg.version)
+        val manifestFile = File(dir, INSTALL_MANIFEST)
+        val modelFile = File(dir, pkg.modelFileName)
+        val tokens = File(dir, "tokens.txt")
+        if (!manifestFile.isFile || !modelFile.isFile || !tokens.isFile) return null
+
+        val manifest = Properties().apply {
+            manifestFile.inputStream().buffered().use(::load)
+        }
+        if (manifest.getProperty("modelId") != pkg.modelId ||
+            manifest.getProperty("version") != pkg.version ||
+            manifest.getProperty("archiveSha256")?.equals(pkg.archiveSha256, ignoreCase = true) != true ||
+            manifest.getProperty("modelFileName") != pkg.modelFileName
+        ) return null
+
+        val modelSha = manifest.getProperty("modelSha256")?.takeIf { it.matches(SHA256) } ?: return null
+        val spec = VoiceModelSpec(
+            modelId = pkg.modelId,
+            version = pkg.version,
+            language = pkg.language,
+            sha256 = modelSha,
+            fileName = pkg.modelFileName,
+        )
+        modelManager.verify(spec).getOrThrow()
+        spec
+    }.getOrNull()
+
     fun install(pkg: SherpaVoicePackage): Result<VoiceModelSpec> = runCatching {
         val finalDir = modelManager.modelDir(pkg.modelId, pkg.version)
         val parent = requireNotNull(finalDir.parentFile)
@@ -44,14 +76,28 @@ class SherpaVoiceInstaller(
                 sha256 = VoiceModelManager.digest(stagedModel),
                 fileName = pkg.modelFileName,
             )
+            writeInstallManifest(staging, pkg, spec)
 
             if (finalDir.exists()) check(finalDir.deleteRecursively()) { "Cannot replace installed voice model" }
             check(staging.renameTo(finalDir)) { "Cannot publish installed voice model" }
             modelManager.verify(spec).getOrThrow()
-            spec
+            checkNotNull(installedSpec(pkg)) { "Published voice model manifest verification failed" }
         } finally {
             archive.delete()
             if (staging.exists()) staging.deleteRecursively()
+        }
+    }
+
+    private fun writeInstallManifest(dir: File, pkg: SherpaVoicePackage, spec: VoiceModelSpec) {
+        val properties = Properties().apply {
+            setProperty("modelId", pkg.modelId)
+            setProperty("version", pkg.version)
+            setProperty("archiveSha256", pkg.archiveSha256.lowercase())
+            setProperty("modelFileName", pkg.modelFileName)
+            setProperty("modelSha256", spec.sha256.lowercase())
+        }
+        File(dir, INSTALL_MANIFEST).outputStream().buffered().use { output ->
+            properties.store(output, "Audoiboo verified Sherpa voice installation")
         }
     }
 
@@ -86,7 +132,7 @@ class SherpaVoiceInstaller(
             BZip2CompressorInputStream(fileInput, true).use { bzip ->
                 TarArchiveInputStream(bzip).use { tar ->
                     while (true) {
-                        val entry = tar.nextEntry as? TarArchiveEntry ?: break
+                        val entry = tar.nextEntry ?: break
                         entries++
                         require(entries <= MAX_ENTRIES) { "Voice package contains too many entries" }
                         require(!entry.isSymbolicLink && !entry.isLink) { "Voice package links are not allowed" }
@@ -145,6 +191,8 @@ class SherpaVoiceInstaller(
     }
 
     companion object {
+        private const val INSTALL_MANIFEST = ".audoiboo-model.properties"
+        private val SHA256 = Regex("[0-9a-fA-F]{64}")
         private const val MAX_ENTRIES = 512
         private const val MAX_SINGLE_FILE_BYTES = 128L * 1024 * 1024
         private const val MAX_EXTRACTED_BYTES = 256L * 1024 * 1024

@@ -1,9 +1,11 @@
 package org.audoiboo.tracker.tts
 
+import java.io.File
 import org.audoiboo.tracker.plugin.flibusta.FlibustaFailureCode
 import org.audoiboo.tracker.plugin.flibusta.FlibustaPayloadKind
 import org.audoiboo.tracker.plugin.flibusta.FlibustaResolveResult
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -37,6 +39,17 @@ class FlibustaBookTtsFlowTest {
         assertEquals("https://flibusta.site/b/42/fb2", result.sourceUrl)
         assertEquals(1.15f, result.tts.session.speed)
         assertEquals("Перший розділ", result.document.chapters.single().title)
+    }
+
+    @Test
+    fun `different sessions never share physical chapter output directory`() {
+        val root = File("tts-output")
+        val first = FlibustaBookTtsFlow.outputDirectory(root, "session-a")
+        val second = FlibustaBookTtsFlow.outputDirectory(root, "session-b")
+
+        assertNotEquals(first.path, second.path)
+        assertEquals(File(root, TtsStableId.hex("session-a")).path, first.path)
+        assertTrue(first.path.startsWith(root.path))
     }
 
     @Test

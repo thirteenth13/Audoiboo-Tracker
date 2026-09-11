@@ -12,24 +12,34 @@ import java.net.UnknownHostException
 
 class HostPluginDohFallbackPolicyTest {
     @Test
-    fun retriesDnsAndConnectionFailuresThroughDoh() {
+    fun dohIsUsedOnlyForRealDnsFailure() {
         assertTrue(HostPluginHttpTransport.shouldRetryWithDoh(UnknownHostException("dns")))
-        assertTrue(HostPluginHttpTransport.shouldRetryWithDoh(ConnectException("blocked")))
-        assertTrue(HostPluginHttpTransport.shouldRetryWithDoh(NoRouteToHostException("route")))
-        assertTrue(HostPluginHttpTransport.shouldRetryWithDoh(SocketTimeoutException("timeout")))
+        assertFalse(HostPluginHttpTransport.shouldRetryWithDoh(ConnectException("blocked")))
+        assertFalse(HostPluginHttpTransport.shouldRetryWithDoh(NoRouteToHostException("route")))
+        assertFalse(HostPluginHttpTransport.shouldRetryWithDoh(SocketTimeoutException("timeout")))
+    }
+
+    @Test
+    fun proxyAcceptsDnsAndConnectionFailures() {
+        assertTrue(HostPluginHttpTransport.shouldRetryWithProxy(UnknownHostException("dns")))
+        assertTrue(HostPluginHttpTransport.shouldRetryWithProxy(ConnectException("blocked")))
+        assertTrue(HostPluginHttpTransport.shouldRetryWithProxy(NoRouteToHostException("route")))
+        assertTrue(HostPluginHttpTransport.shouldRetryWithProxy(SocketTimeoutException("timeout")))
+        assertFalse(HostPluginHttpTransport.shouldRetryWithProxy(IllegalArgumentException("bad url")))
     }
 
     @Test
     fun findsNetworkFailureInsideWrappedException() {
         val wrapped = IllegalStateException("wrapper", ConnectException("connect"))
-        assertTrue(HostPluginHttpTransport.shouldRetryWithDoh(wrapped))
+        assertFalse(HostPluginHttpTransport.shouldRetryWithDoh(wrapped))
+        assertTrue(HostPluginHttpTransport.shouldRetryWithProxy(wrapped))
         assertEquals("ConnectException", HostPluginHttpTransport.networkFailureName(wrapped))
     }
 
     @Test
-    fun doesNotSendParserOrTlsLogicErrorsToDoh() {
-        assertFalse(HostPluginHttpTransport.shouldRetryWithDoh(IllegalArgumentException("bad url")))
-        assertFalse(HostPluginHttpTransport.shouldRetryWithDoh(EOFException("truncated")))
+    fun fantlabUsesBoundedTransportTimeout() {
+        assertEquals(6_000, HostPluginHttpTransport.requestTimeoutMs("https://api.fantlab.ru/search-autors?q=test"))
+        assertEquals(20_000, HostPluginHttpTransport.requestTimeoutMs("https://example.org/book"))
     }
 
     @Test

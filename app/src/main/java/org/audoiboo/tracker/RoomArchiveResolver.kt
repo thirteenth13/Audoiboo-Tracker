@@ -41,8 +41,8 @@ internal object RoomArchiveResolver {
             )
         }
         val sources = buildList {
-            if (primary != null) add(primary)
             addAll(mapped)
+            if (primary != null) add(primary)
         }
             .distinctBy { it.sourceId to SourceKeys.normalizeUrl(it.url) }
             .let { all -> sourceId?.let { selected -> all.filter { it.sourceId == selected } } ?: all }

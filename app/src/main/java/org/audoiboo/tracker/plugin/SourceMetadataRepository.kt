@@ -43,6 +43,10 @@ object SourceMetadataRepository {
         SourceMetadataDatabase.get(context).dao().pendingMatchDecisions(canonicalSeriesId)
     }
 
+    suspend fun pendingBookReviews(context: Context, canonicalSeriesId: String): List<BookMatchDecisionEntity> = withContext(Dispatchers.IO) {
+        SourceMetadataDatabase.get(context).dao().pendingBookMatchDecisions(canonicalSeriesId)
+    }
+
     suspend fun resolvePendingSeriesReview(
         context: Context,
         canonicalSeriesId: String,
@@ -61,6 +65,57 @@ object SourceMetadataRepository {
                 confidence = confidence?.coerceIn(0f, 1f)
             )
         )
+    }
+
+    suspend fun recordPendingBookReview(
+        context: Context,
+        canonicalSeriesId: String,
+        book: SourceBook,
+        candidateCanonicalBookId: String?,
+        confidence: Float?
+    ) = withContext(Dispatchers.IO) {
+        val dao = SourceMetadataDatabase.get(context).dao()
+        val now = System.currentTimeMillis()
+        val remoteKey = SourceKeys.remoteKey(book.remoteId, book.url)
+        val existing = dao.bookSource(book.sourceId, remoteKey) ?: dao.bookSourceByUrl(book.sourceId, book.url)
+        val key = existing?.key ?: SourceKeys.bookSourceKey(book.sourceId, remoteKey)
+        dao.upsertBookSource(
+            BookSourceEntity(
+                key = key,
+                canonicalBookId = null,
+                canonicalSeriesId = canonicalSeriesId,
+                sourceId = book.sourceId,
+                remoteKey = remoteKey,
+                url = book.url,
+                remoteTitle = book.title,
+                remoteAuthor = book.authors.joinToString(", ") { it.name }.takeIf { it.isNotBlank() },
+                remoteOrder = book.seriesNumber,
+                confidence = confidence?.coerceIn(0f, 1f) ?: existing?.confidence ?: 0f,
+                firstSeenAt = existing?.firstSeenAt ?: now,
+                lastSeenAt = now,
+                lastCheckedAt = now
+            )
+        )
+        dao.upsertBookMatchDecision(
+            BookMatchDecisionEntity(
+                canonicalSeriesId = canonicalSeriesId,
+                sourceId = book.sourceId,
+                remoteKey = remoteKey,
+                candidateCanonicalBookId = candidateCanonicalBookId,
+                decision = "REVIEW_PENDING",
+                confidence = confidence?.coerceIn(0f, 1f),
+                decidedAt = now
+            )
+        )
+    }
+
+    suspend fun clearPendingBookReview(
+        context: Context,
+        canonicalSeriesId: String,
+        book: SourceBook
+    ) = withContext(Dispatchers.IO) {
+        val remoteKey = SourceKeys.remoteKey(book.remoteId, book.url)
+        SourceMetadataDatabase.get(context).dao().clearBookMatchDecision(canonicalSeriesId, book.sourceId, remoteKey)
     }
 
     suspend fun recordSeriesSnapshot(
@@ -116,6 +171,7 @@ object SourceMetadataRepository {
                     lastCheckedAt = now
                 )
             )
+            dao.clearBookMatchDecision(canonicalSeriesId, book.sourceId, remoteKey)
         }
     }
 

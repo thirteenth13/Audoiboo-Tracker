@@ -129,6 +129,9 @@ interface SourceMetadataDao {
     @Query("SELECT * FROM book_sources WHERE canonicalBookId=:bookId ORDER BY sourceId")
     suspend fun bookSources(bookId: String): List<BookSourceEntity>
 
+    @Query("SELECT * FROM book_sources WHERE canonicalBookId=:bookId ORDER BY sourceId")
+    fun observeBookSources(bookId: String): Flow<List<BookSourceEntity>>
+
     @Query("SELECT * FROM book_sources WHERE sourceId=:sourceId AND remoteKey=:remoteKey LIMIT 1")
     suspend fun bookSource(sourceId: String, remoteKey: String): BookSourceEntity?
 

@@ -8,6 +8,7 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 
@@ -85,7 +86,7 @@ class SherpaVoiceInstaller(
             BZip2CompressorInputStream(fileInput, true).use { bzip ->
                 TarArchiveInputStream(bzip).use { tar ->
                     while (true) {
-                        val entry = tar.nextTarEntry ?: break
+                        val entry = tar.nextEntry as? TarArchiveEntry ?: break
                         entries++
                         require(entries <= MAX_ENTRIES) { "Voice package contains too many entries" }
                         require(!entry.isSymbolicLink && !entry.isLink) { "Voice package links are not allowed" }

@@ -11,6 +11,7 @@ import org.audoiboo.tracker.plugin.CanonicalBookMatchInput
 import org.audoiboo.tracker.plugin.CanonicalSeriesMatchInput
 import org.audoiboo.tracker.plugin.CanonicalSourceBookLink
 import org.audoiboo.tracker.plugin.MatchDisposition
+import org.audoiboo.tracker.plugin.PinnedSeriesDiscoveryPolicy
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 import org.audoiboo.tracker.plugin.SeriesBookMembershipPolicy
 import org.audoiboo.tracker.plugin.SeriesDecisionPolicy
@@ -401,8 +402,7 @@ internal object RoomSeriesSync {
             }
         val pinnedSourceIds = pinned.map { it.sourceId }.toSet()
         val discovered = SourceDiscoveryEngine(registry).discoverSeries(canonical, excludeSourceId)
-            .filterNot { it.sourceId in pinnedSourceIds }
-        val findings = pinned + discovered
+        val findings = PinnedSeriesDiscoveryPolicy.merge(pinned, discovered)
         val db = AudoibooDatabase.get(context)
         val dao = db.libraryDao()
 

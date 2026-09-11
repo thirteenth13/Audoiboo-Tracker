@@ -46,6 +46,12 @@ internal data class RoomSeriesSyncResult(
     val review: RoomSeriesMatchReview? = null
 )
 
+private data class PendingBookReview(
+    val book: SourceBook,
+    val candidateCanonicalBookId: String?,
+    val confidence: Float?
+)
+
 /**
  * Room-native add/update path routed through the active source plugin registry.
  * Canonical series are a union across providers: a partial provider refresh may add/hydrate books,
@@ -174,6 +180,7 @@ internal object RoomSeriesSync {
         val usedCanonicalBookIds = linkedSetOf<String>()
         var nextSortIndex = (existingBooks.maxOfOrNull { it.sortIndex } ?: -1) + 1
         val links = mutableListOf<CanonicalSourceBookLink>()
+        val pendingBookReviews = mutableListOf<PendingBookReview>()
         val rehomedLinks = mutableListOf<Triple<String, String, SourceBook>>()
 
         val result = db.withTransaction {
@@ -223,17 +230,23 @@ internal object RoomSeriesSync {
                 val mapped = mappedBookIds[source]?.let(existingBookById::get)
                 val direct = existingBookByUrl[SourceKeys.normalizeUrl(source.url)]
                 val availableCandidates = existingBooks.filterNot { it.id in usedCanonicalBookIds }.map(::canonicalBookInput)
-                val contentMatch = if (mapped == null && direct == null) {
+                val identityMatch = if (mapped == null && direct == null) {
                     AuthorEnrichedIdentityMatcher.bestBookMatch(
                         context = context,
                         incoming = source,
                         candidates = availableCandidates
-                    )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                    )
                 } else null
+                val contentMatch = identityMatch?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
                 val contentMatched = contentMatch?.value?.id?.let(existingBookById::get)
                 val canonical = mapped ?: direct ?: contentMatched
-                if (canonical == null && selected != null && !CanonicalBookCreationPolicy.shouldCreateUnmatched(source, availableCandidates)) {
-                    return@sourceLoop
+                if (canonical == null && selected != null) {
+                    val blockedByOccupiedVolume = !CanonicalBookCreationPolicy.shouldCreateUnmatched(source, availableCandidates)
+                    if (identityMatch?.disposition == MatchDisposition.REVIEW || blockedByOccupiedVolume) {
+                        val candidateId = identityMatch?.value?.id ?: occupiedVolumeCandidate(source, availableCandidates)?.id
+                        pendingBookReviews += PendingBookReview(source, candidateId, identityMatch?.confidence)
+                        return@sourceLoop
+                    }
                 }
                 val confidence = when {
                     mapped != null || direct != null -> 1f
@@ -309,6 +322,11 @@ internal object RoomSeriesSync {
             relationship = "SAME_SERIES", confidence = userAcceptedConfidence ?: autoSeriesConfidence ?: 1f,
             userVerified = userAcceptedConfidence != null || (autoSeriesConfidence == null && selected != null)
         )
+        pendingBookReviews.forEach { pending ->
+            SourceMetadataRepository.recordPendingBookReview(
+                context, canonicalSeriesId, pending.book, pending.candidateCanonicalBookId, pending.confidence
+            )
+        }
         rehomedLinks.forEach { (canonicalBookId, targetSeriesId, source) ->
             SourceBookReassignment.record(context, canonicalBookId, targetSeriesId, source)
         }
@@ -402,6 +420,7 @@ internal object RoomSeriesSync {
             if (finding.disposition != MatchDisposition.AUTO_ACCEPT && !acceptedReview) return@forEach
             if (!SeriesDecisionPolicy.allowsAutomaticLink(canonicalSeriesId, decisions)) return@forEach
 
+            val pendingBookReviews = mutableListOf<PendingBookReview>()
             val links = db.withTransaction {
                 val snapshot = dao.seriesWithBooks(canonicalSeriesId) ?: return@withTransaction emptyList()
                 val canonicalBooks = snapshot.books.sortedBy { it.sortIndex }.toMutableList()
@@ -412,14 +431,20 @@ internal object RoomSeriesSync {
 
                 SeriesBookMembershipPolicy.filter(finding.series, finding.books).forEach sourceLoop@ { sourceBook ->
                     val availableCandidates = canonicalBooks.filterNot { it.id in usedIds }.map(::canonicalBookInput)
-                    val match = AuthorEnrichedIdentityMatcher.bestBookMatch(
+                    val identityMatch = AuthorEnrichedIdentityMatcher.bestBookMatch(
                         context = context,
                         incoming = sourceBook,
                         candidates = availableCandidates
-                    )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
+                    )
+                    val match = identityMatch?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
                     val existing = match?.value?.id?.let { id -> canonicalBooks.firstOrNull { it.id == id } }
-                    if (existing == null && !CanonicalBookCreationPolicy.shouldCreateUnmatched(sourceBook, availableCandidates)) {
-                        return@sourceLoop
+                    if (existing == null) {
+                        val blockedByOccupiedVolume = !CanonicalBookCreationPolicy.shouldCreateUnmatched(sourceBook, availableCandidates)
+                        if (identityMatch?.disposition == MatchDisposition.REVIEW || blockedByOccupiedVolume) {
+                            val candidateId = identityMatch?.value?.id ?: occupiedVolumeCandidate(sourceBook, availableCandidates)?.id
+                            pendingBookReviews += PendingBookReview(sourceBook, candidateId, identityMatch?.confidence)
+                            return@sourceLoop
+                        }
                     }
                     val entity = if (existing != null) {
                         usedIds += existing.id
@@ -449,11 +474,24 @@ internal object RoomSeriesSync {
             SourceMetadataRepository.recordSeriesSnapshot(
                 context, canonicalSeriesId, finding.series, links, "SAME_SERIES", finding.confidence, acceptedReview || finding.sourceId in pinnedSourceIds
             )
+            pendingBookReviews.forEach { pending ->
+                SourceMetadataRepository.recordPendingBookReview(
+                    context, canonicalSeriesId, pending.book, pending.candidateCanonicalBookId, pending.confidence
+                )
+            }
             SourceMetadataRepository.recordSeriesMatchDecision(
                 context, canonicalSeriesId, finding.series,
                 if (acceptedReview || finding.sourceId in pinnedSourceIds) "USER_ACCEPTED" else "AUTO_ACCEPTED", "SAME_SERIES", finding.confidence
             )
         }
+    }
+
+    private fun occupiedVolumeCandidate(
+        source: SourceBook,
+        candidates: List<CanonicalBookMatchInput>
+    ): CanonicalBookMatchInput? {
+        val number = source.seriesNumber ?: return null
+        return candidates.firstOrNull { candidate -> candidate.number != null && candidate.number == number }
     }
 
     private fun canonicalSeriesInput(item: SeriesWithBooks): CanonicalSeriesMatchInput = CanonicalSeriesMatchInput(

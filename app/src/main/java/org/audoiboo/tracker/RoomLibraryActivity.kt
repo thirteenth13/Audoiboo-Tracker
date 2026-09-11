@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
+import org.audoiboo.tracker.plugin.PendingBookReview
 import org.audoiboo.tracker.plugin.SeriesMatchDecisionEntity
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
 
@@ -56,8 +57,10 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
     var confirmDelete by remember { mutableStateOf(false) }
     var pendingReview by remember { mutableStateOf<PendingSeriesReview?>(null) }
     var discoveryReviews by remember { mutableStateOf<List<SeriesMatchDecisionEntity>>(emptyList()) }
+    var bookReviews by remember { mutableStateOf<List<PendingBookReview>>(emptyList()) }
     var reviewRefreshKey by remember { mutableIntStateOf(0) }
     var resolvingDiscoveryReview by remember { mutableStateOf(false) }
+    var resolvingBookReview by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val library by LibraryRepository.observe(activity).collectAsState(initial = emptyList())
     val pagingFlow = remember(query, bookFilter) { LibraryRepository.pagedBooks(activity, query, bookFilter) }
@@ -65,9 +68,9 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
     val series = library.firstOrNull { it.series.id == selectedSeries }
 
     LaunchedEffect(selectedSeries, reviewRefreshKey) {
-        discoveryReviews = selectedSeries
-            ?.let { SourceMetadataRepository.pendingSeriesReviews(activity, it) }
-            .orEmpty()
+        val id = selectedSeries
+        discoveryReviews = id?.let { SourceMetadataRepository.pendingSeriesReviews(activity, it) }.orEmpty()
+        bookReviews = id?.let { SourceMetadataRepository.pendingBookReviews(activity, it) }.orEmpty()
     }
 
     fun openSourceBrowser(url: String? = null) {
@@ -126,6 +129,21 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
         }
     }
 
+    fun resolveBookReview(review: PendingBookReview, accept: Boolean) {
+        if (resolvingBookReview) return
+        resolvingBookReview = true
+        scope.launch {
+            val resolved = runCatching { SourceMetadataRepository.resolvePendingBookReview(activity, review, accept) }.getOrDefault(false)
+            resolvingBookReview = false
+            reviewRefreshKey++
+            when {
+                !resolved -> Toast.makeText(activity, "Не вдалося зберегти рішення для книги", Toast.LENGTH_LONG).show()
+                accept -> Toast.makeText(activity, "Джерело прив’язано до книги", Toast.LENGTH_SHORT).show()
+                else -> Toast.makeText(activity, "Збіг книги відхилено", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -152,7 +170,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
         }
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            if (syncing || resolvingDiscoveryReview) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (syncing || resolvingDiscoveryReview || resolvingBookReview) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (series == null && tab != RoomLibraryTab.DOWNLOADS) {
                 OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth().padding(12.dp), singleLine = true,
                     leadingIcon = { Icon(Icons.Filled.Search, null) }, label = { Text(if (tab == RoomLibraryTab.BOOKS) "Книга, автор або тег" else "Пошук серії") })
@@ -164,7 +182,14 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
                 }
             }
             when {
-                series != null -> RoomSeriesDetail(item = series, pendingReviews = discoveryReviews, reviewBusy = resolvingDiscoveryReview, onResolveReview = ::resolveDiscoveryReview)
+                series != null -> RoomSeriesDetail(
+                    item = series,
+                    pendingReviews = discoveryReviews,
+                    pendingBookReviews = bookReviews,
+                    reviewBusy = resolvingDiscoveryReview || resolvingBookReview,
+                    onResolveReview = ::resolveDiscoveryReview,
+                    onResolveBookReview = ::resolveBookReview
+                )
                 tab == RoomLibraryTab.SERIES -> RoomSeriesList(library.filter { query.isBlank() || it.series.name.contains(query, true) }, onOpen = { selectedSeries = it })
                 tab == RoomLibraryTab.DOWNLOADS -> ManagedDownloadsScreen(activity)
                 else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -227,7 +252,14 @@ private fun RoomSeriesList(library: List<SeriesWithBooks>, onOpen: (String) -> U
 }
 
 @Composable
-private fun RoomSeriesDetail(item: SeriesWithBooks, pendingReviews: List<SeriesMatchDecisionEntity>, reviewBusy: Boolean, onResolveReview: (SeriesMatchDecisionEntity, Boolean) -> Unit) {
+private fun RoomSeriesDetail(
+    item: SeriesWithBooks,
+    pendingReviews: List<SeriesMatchDecisionEntity>,
+    pendingBookReviews: List<PendingBookReview>,
+    reviewBusy: Boolean,
+    onResolveReview: (SeriesMatchDecisionEntity, Boolean) -> Unit,
+    onResolveBookReview: (PendingBookReview, Boolean) -> Unit
+) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (pendingReviews.isNotEmpty()) item(key = "source-reviews") {
             ElevatedCard(Modifier.fillMaxWidth()) {
@@ -241,6 +273,38 @@ private fun RoomSeriesDetail(item: SeriesWithBooks, pendingReviews: List<SeriesM
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 TextButton(onClick = { onResolveReview(review, true) }, enabled = !reviewBusy) { Text("Підтвердити") }
                                 TextButton(onClick = { onResolveReview(review, false) }, enabled = !reviewBusy) { Text("Відхилити") }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (pendingBookReviews.isNotEmpty()) item(key = "book-reviews") {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Rule, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Потрібна перевірка книг", fontWeight = FontWeight.SemiBold)
+                    }
+                    pendingBookReviews.forEach { review ->
+                        val candidate = review.decision.candidateCanonicalBookId?.let { id -> item.books.firstOrNull { it.id == id } }
+                        val percent = ((review.decision.confidence ?: review.source.confidence) * 100).toInt()
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(review.source.remoteTitle ?: review.source.url, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text("${roomSourceLabel(review.source.sourceId)}${review.source.remoteOrder?.let { " • том ${formatBookOrder(it)}" }.orEmpty()} • $percent%", style = MaterialTheme.typography.bodySmall)
+                            if (!review.source.remoteAuthor.isNullOrBlank()) Text(review.source.remoteAuthor, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                if (candidate != null) "Пропонована книга: ${candidate.title}" else "Надійного кандидата немає — можна лише відхилити збіг",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { onResolveBookReview(review, true) }, enabled = !reviewBusy && candidate != null) { Text("Прив’язати") }
+                                TextButton(onClick = { onResolveBookReview(review, false) }, enabled = !reviewBusy) { Text("Відхилити") }
+                                if (review.source.url.startsWith("http", ignoreCase = true)) {
+                                    val context = LocalContext.current
+                                    TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(review.source.url))) }) { Text("Відкрити") }
+                                }
                             }
                         }
                     }
@@ -351,6 +415,8 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
         confirmButton = { TextButton(onClick = { val values = tagText.split(',').map { it.trim() }.filter { it.isNotBlank() }; scope.launch { LibraryRepository.setBookTags(context, book.id, values); tags = LibraryRepository.bookWithTags(context, book.id)?.tags?.map { it.name }.orEmpty(); editTags = false } }) { Text("Зберегти") } },
         dismissButton = { TextButton(onClick = { editTags = false }) { Text("Скасувати") } })
 }
+
+private fun formatBookOrder(value: Double): String = if (value % 1.0 == 0.0) value.toInt().toString() else value.toString()
 
 private fun roomSourceLabel(sourceId: String): String = when (sourceId) {
     "audioboo" -> "Audioboo"

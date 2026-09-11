@@ -79,10 +79,12 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
                     )
                 )
             }
-            diagnostic("provider audioboo DISCOVERY_DIRECT rejected=no-canonical-books; trying search fallback")
+            diagnostic("provider audioboo DISCOVERY_DIRECT rejected=no-canonical-books; trying author fallback")
         }
 
         if (author == null) return emptyList()
+        val authorFallback = authorPageFallback(author, canonical)
+        if (authorFallback.isNotEmpty()) return authorFallback
         return searchFallback(author, canonical)
     }
 
@@ -110,6 +112,46 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
             number = match.value.number
         )
     }.distinctBy { SourceKeys.normalizeUrl(it.url) }
+
+    private fun authorPageFallback(author: String, canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
+        audiobooAuthorAliases(author).forEach { alias ->
+            val encoded = URLEncoder.encode(alias, StandardCharsets.UTF_8.name()).replace("+", "%20")
+            val refs = linkedMapOf<String, SourceBookRef>()
+            var firstUrl: String? = null
+            var consecutiveEmptyPages = 0
+
+            for (page in 1..3) {
+                val url = "https://audioboo.org/xfsearch/avtora/$encoded/" + if (page == 1) "" else "page/$page/"
+                firstUrl = firstUrl ?: url
+                diagnostic("provider audioboo AUTHOR_FALLBACK alias='$alias' page=$page url=$url")
+                val books = AudiobooFastParser.parseSeries(url).orEmpty()
+                val pageRefs = canonicalRefs(books, author, canonical)
+                diagnostic("provider audioboo AUTHOR_FALLBACK alias='$alias' page=$page parsedBooks=${books.size} canonicalRefs=${pageRefs.size}")
+                pageRefs.forEach { ref -> refs.putIfAbsent(SourceKeys.normalizeUrl(ref.url), ref) }
+
+                consecutiveEmptyPages = if (books.isEmpty()) consecutiveEmptyPages + 1 else 0
+                if (consecutiveEmptyPages >= 2) break
+            }
+
+            if (refs.isNotEmpty()) {
+                return listOf(
+                    SeriesCandidate(
+                        SourceSeries(
+                            sourceId = descriptor.id,
+                            url = firstUrl ?: return@forEach,
+                            title = canonical.title,
+                            authors = listOf(SourceAuthor(author)),
+                            books = refs.values.sortedWith(
+                                compareBy<SourceBookRef> { it.number ?: Double.MAX_VALUE }
+                                    .thenBy { it.title.orEmpty() }
+                            )
+                        )
+                    )
+                )
+            }
+        }
+        return emptyList()
+    }
 
     private fun searchFallback(author: String, canonical: CanonicalSeriesMatchInput): List<SeriesCandidate> {
         val firstBook = canonical.books.firstOrNull()?.title.orEmpty()
@@ -164,6 +206,15 @@ internal fun audiobooFallbackQueries(author: String, firstBook: String): List<St
     val cleanBook = firstBook.trim()
     val authorAndBook = listOf(cleanAuthor, cleanBook).filter(String::isNotBlank).joinToString(" ")
     return listOf(authorAndBook, cleanAuthor)
+        .filter(String::isNotBlank)
+        .distinctBy(SourceIdentityMatcher::normalizeTitle)
+}
+
+internal fun audiobooAuthorAliases(author: String): List<String> {
+    val tokens = author.trim().split(Regex("\\s+")).filter(String::isNotBlank)
+    if (tokens.isEmpty()) return emptyList()
+    val reversed = tokens.reversed().joinToString(" ")
+    return listOf(tokens.joinToString(" "), reversed)
         .filter(String::isNotBlank)
         .distinctBy(SourceIdentityMatcher::normalizeTitle)
 }

@@ -67,12 +67,13 @@ class FlibustaBookTtsFlow(
         speed: Float = 1.0f,
     ): Result<EnqueuedFlibustaBookTts> = runCatching {
         val prepared = prepare(bookUrl, speed).getOrThrow()
+        val sessionOutputDir = outputDirectory(outputDir, prepared.tts.session.sessionId)
         TtsGenerationScheduler.enqueue(
             context = context.applicationContext,
             session = prepared.tts.session,
             document = prepared.document,
             model = prepared.tts.model,
-            outputDir = outputDir,
+            outputDir = sessionOutputDir,
         )
         val title = prepared.document.title?.trim().takeUnless { it.isNullOrBlank() } ?: "Аудіокнига"
         EnqueuedFlibustaBookTts(
@@ -84,6 +85,9 @@ class FlibustaBookTtsFlow(
     }
 
     companion object {
+        internal fun outputDirectory(root: File, sessionId: String): File =
+            File(root, TtsStableId.hex(sessionId))
+
         fun create(context: Context): FlibustaBookTtsFlow {
             val resolver = FlibustaDownloadResolver()
             val coordinator = SherpaBookTtsCoordinator.create(context.applicationContext)

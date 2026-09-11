@@ -74,12 +74,33 @@ internal object TtsGenerationScheduler {
         )
     }
 
+    fun pause(context: Context, sessionId: String) {
+        require(sessionId.isNotBlank())
+        WorkManager.getInstance(context.applicationContext).cancelUniqueWork(workName(sessionId))
+        val store = sessionStore(context)
+        store.load(sessionId)?.let { current ->
+            if (current.state != TtsSessionState.COMPLETED) store.save(current.pause())
+        }
+    }
+
+    fun resume(context: Context, sessionId: String, title: String) {
+        require(sessionId.isNotBlank())
+        val store = sessionStore(context)
+        val current = requireNotNull(store.load(sessionId)) { "TTS session checkpoint is missing" }
+        val queued = current.queueForResume()
+        store.save(queued)
+        enqueue(context, sessionId, title)
+    }
+
     fun cancel(context: Context, sessionId: String) {
         WorkManager.getInstance(context.applicationContext).cancelUniqueWork(workName(sessionId))
     }
 
     internal fun sessionId(worker: CoroutineWorker): String? = worker.inputData.getString(KEY_SESSION_ID)
     internal fun title(worker: CoroutineWorker): String = worker.inputData.getString(KEY_TITLE).orEmpty()
+
+    private fun sessionStore(context: Context): TtsSessionStore =
+        TtsSessionStore(File(context.applicationContext.filesDir, "tts/sessions"))
 
     private fun sameSessionIdentity(a: TtsSession, b: TtsSession): Boolean =
         a.sessionId == b.sessionId &&

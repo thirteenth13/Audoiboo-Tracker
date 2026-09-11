@@ -141,6 +141,9 @@ interface SourceMetadataDao {
     @Upsert
     suspend fun upsertSeriesSource(value: SeriesSourceEntity)
 
+    @Query("SELECT * FROM book_sources ORDER BY sourceId, remoteKey")
+    suspend fun allBookSources(): List<BookSourceEntity>
+
     @Query("SELECT * FROM book_sources WHERE canonicalBookId=:bookId ORDER BY sourceId")
     suspend fun bookSources(bookId: String): List<BookSourceEntity>
 

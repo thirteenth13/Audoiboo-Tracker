@@ -1,6 +1,7 @@
 package org.audoiboo.tracker
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.os.Bundle
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
@@ -22,14 +23,21 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import java.io.File
 import java.net.URI
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.audoiboo.tracker.plugin.HostPluginHttpTransport
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
+import org.audoiboo.tracker.tts.EnqueuedFlibustaBookTts
 import org.audoiboo.tracker.tts.FlibustaBookTtsFlow
+import org.audoiboo.tracker.tts.TtsGenerationScheduler
+import org.audoiboo.tracker.tts.TtsSessionState
+import org.audoiboo.tracker.tts.TtsSessionStore
 
 private const val SOURCE_BROWSER_DEFAULT_HOME = "https://audioboo.org/"
 
@@ -63,6 +71,49 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
     var webView by remember { mutableStateOf<WebView?>(null) }
     var syncing by remember { mutableStateOf(false) }
     var preparingTts by remember { mutableStateOf(false) }
+    var activeTts by remember { mutableStateOf<EnqueuedFlibustaBookTts?>(null) }
+    var ttsState by remember { mutableStateOf<TtsSessionState?>(null) }
+    var ttsCompletedChunks by remember { mutableIntStateOf(0) }
+    var ttsError by remember { mutableStateOf<String?>(null) }
+
+    val ttsBusy = preparingTts || ttsState == TtsSessionState.QUEUED || ttsState == TtsSessionState.RUNNING
+
+    LaunchedEffect(activeTts?.session?.sessionId) {
+        val job = activeTts ?: return@LaunchedEffect
+        val store = TtsSessionStore(File(activity.filesDir, "tts/sessions"))
+        val workManager = WorkManager.getInstance(activity.applicationContext)
+        while (true) {
+            val snapshot = withContext(Dispatchers.IO) { store.load(job.session.sessionId) }
+            if (snapshot != null) {
+                ttsState = snapshot.state
+                ttsCompletedChunks = snapshot.nextGlobalChunkIndex.coerceAtMost(job.chunkCount)
+                ttsError = snapshot.lastError
+            }
+
+            val workState = withContext(Dispatchers.IO) {
+                workManager.getWorkInfosForUniqueWork(TtsGenerationScheduler.workName(job.session.sessionId))
+                    .get()
+                    .firstOrNull()
+                    ?.state
+            }
+            when (workState) {
+                WorkInfo.State.SUCCEEDED -> {
+                    ttsState = TtsSessionState.COMPLETED
+                    ttsCompletedChunks = job.chunkCount
+                    ttsError = null
+                    Toast.makeText(activity, "Озвучення завершено: ${job.title}", Toast.LENGTH_LONG).show()
+                    break
+                }
+                WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
+                    ttsState = TtsSessionState.FAILED
+                    if (ttsError.isNullOrBlank()) ttsError = "Фонове озвучення завершилося з помилкою"
+                    break
+                }
+                else -> Unit
+            }
+            delay(1_000)
+        }
+    }
 
     fun navigate(raw: String) {
         val value = raw.trim()
@@ -105,28 +156,40 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
 
     fun startFlibustaTts() {
         val url = currentUrl.trim()
-        if (!isFlibustaBookUrl(url) || preparingTts) return
+        if (!isFlibustaBookUrl(url) || ttsBusy) return
         preparingTts = true
+        ttsError = null
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 val output = File(activity.filesDir, "tts/output")
                 FlibustaBookTtsFlow.create(activity).enqueue(activity, url, output)
             }
             preparingTts = false
-            result.onSuccess { session ->
+            result.onSuccess { job ->
+                activeTts = job
+                ttsState = TtsSessionState.QUEUED
+                ttsCompletedChunks = job.session.nextGlobalChunkIndex
                 Toast.makeText(
                     activity,
-                    "Озвучення поставлено в чергу • ${session.voice.displayName}",
+                    "Озвучення поставлено в чергу • ${job.session.voice.displayName}",
                     Toast.LENGTH_LONG
                 ).show()
             }.onFailure { error ->
+                ttsError = error.message ?: "невідома помилка"
                 Toast.makeText(
                     activity,
-                    "Не вдалося запустити озвучення: ${error.message ?: "невідома помилка"}",
+                    "Не вдалося запустити озвучення: ${ttsError}",
                     Toast.LENGTH_LONG
                 ).show()
             }
         }
+    }
+
+    fun openGeneratedBook(job: EnqueuedFlibustaBookTts) {
+        activity.startActivity(Intent(activity, PlayerActivity::class.java).apply {
+            putExtra("relativeDir", job.relativeDir)
+            putExtra("title", job.title)
+        })
     }
 
     BackHandler(enabled = webView?.canGoBack() == true) {
@@ -144,7 +207,7 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
                 },
                 actions = {
                     if (isFlibustaBookUrl(currentUrl)) {
-                        IconButton(onClick = ::startFlibustaTts, enabled = !preparingTts) {
+                        IconButton(onClick = ::startFlibustaTts, enabled = !ttsBusy) {
                             Icon(Icons.Filled.VolumeUp, "Озвучити книгу локально")
                         }
                     }
@@ -167,6 +230,40 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
                 }
             )
             if (syncing || preparingTts) LinearProgressIndicator(Modifier.fillMaxWidth())
+
+            activeTts?.let { job ->
+                ElevatedCard(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(job.title, style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            when (ttsState) {
+                                TtsSessionState.QUEUED -> "Озвучення: у черзі"
+                                TtsSessionState.RUNNING -> "Озвучення: виконується"
+                                TtsSessionState.PAUSED -> "Озвучення: призупинено"
+                                TtsSessionState.COMPLETED -> "Озвучення завершено"
+                                TtsSessionState.FAILED -> "Озвучення завершилося з помилкою"
+                                null -> "Озвучення: підготовка"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        if (job.chunkCount > 0 && ttsState != TtsSessionState.COMPLETED) {
+                            val completed = ttsCompletedChunks.coerceIn(0, job.chunkCount)
+                            val percent = completed * 100 / job.chunkCount
+                            Text("Прогрес: $completed/${job.chunkCount} фрагментів • $percent%", style = MaterialTheme.typography.bodySmall)
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                        }
+                        ttsError?.takeIf { ttsState == TtsSessionState.FAILED }?.let {
+                            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (ttsState == TtsSessionState.COMPLETED) {
+                            Button(onClick = { openGeneratedBook(job) }, modifier = Modifier.fillMaxWidth()) {
+                                Text("Відкрити готову книгу в плеєрі")
+                            }
+                        }
+                    }
+                }
+            }
+
             AndroidView(
                 factory = { context ->
                     WebView(context).apply {

@@ -7,7 +7,7 @@ import org.audoiboo.tracker.PlayerLibraryItem
 import org.audoiboo.tracker.ebook.BookDocument
 
 /** Makes committed TTS chapter files visible to the existing audiobook player/library. */
-object TtsPlayerLibraryBridge {
+internal object TtsPlayerLibraryBridge {
     fun items(
         document: BookDocument,
         result: TtsBookGenerationResult,

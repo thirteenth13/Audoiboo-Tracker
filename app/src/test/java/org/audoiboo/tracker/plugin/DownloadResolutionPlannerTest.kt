@@ -88,6 +88,82 @@ class DownloadResolutionPlannerTest {
     }
 
     @Test
+    fun laterLargerPlaylistBeatsEarlierStrongPlaylist() = runBlocking {
+        val first = FakeResolverPlugin("first", "first.test") {
+            listOf(
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://first.test/01.mp3", priority = 10),
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://first.test/02.mp3", priority = 9)
+            )
+        }
+        val second = FakeResolverPlugin("second", "second.test") {
+            (1..5).map { index ->
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://second.test/$index.mp3", priority = 10 - index)
+            }
+        }
+        val planner = DownloadResolutionPlanner(SourcePluginRegistry(listOf(first, second)))
+
+        val result = planner.resolveAll(
+            listOf(
+                SourceBook("first", url = "https://first.test/book", title = "Book"),
+                SourceBook("second", url = "https://second.test/book", title = "Book")
+            )
+        )
+
+        assertEquals(5, result.size)
+        assertEquals("second", result.first().book.sourceId)
+    }
+
+    @Test
+    fun laterArchiveBeatsEarlierCompletePlaylist() = runBlocking {
+        val playlist = FakeResolverPlugin("playlist", "playlist.test") {
+            (1..8).map { index ->
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://playlist.test/$index.mp3", priority = 100)
+            }
+        }
+        val archive = FakeResolverPlugin("archive", "archive.test") {
+            listOf(DownloadCandidate(DownloadType.ARCHIVE, "https://archive.test/book.zip", priority = 1))
+        }
+        val planner = DownloadResolutionPlanner(SourcePluginRegistry(listOf(playlist, archive)))
+
+        val result = planner.resolveAll(
+            listOf(
+                SourceBook("playlist", url = "https://playlist.test/book", title = "Book"),
+                SourceBook("archive", url = "https://archive.test/book", title = "Book")
+            )
+        )
+
+        assertEquals(1, result.size)
+        assertEquals("archive", result.single().book.sourceId)
+        assertEquals(DownloadType.ARCHIVE, result.single().candidate.type)
+    }
+
+    @Test
+    fun equalQualityKeepsMappedSourceOrder() = runBlocking {
+        val first = FakeResolverPlugin("first", "first.test") {
+            listOf(
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://first.test/01.mp3", priority = 5),
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://first.test/02.mp3", priority = 5)
+            )
+        }
+        val second = FakeResolverPlugin("second", "second.test") {
+            listOf(
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://second.test/01.mp3", priority = 5),
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://second.test/02.mp3", priority = 5)
+            )
+        }
+        val planner = DownloadResolutionPlanner(SourcePluginRegistry(listOf(first, second)))
+
+        val result = planner.resolveAll(
+            listOf(
+                SourceBook("first", url = "https://first.test/book", title = "Book"),
+                SourceBook("second", url = "https://second.test/book", title = "Book")
+            )
+        )
+
+        assertEquals("first", result.first().book.sourceId)
+    }
+
+    @Test
     fun singlePlaylistProviderTrackIsReturnedWhenNoBetterFallbackExists() = runBlocking {
         val lis = FakeResolverPlugin("lis10book", "lis.test") {
             listOf(DownloadCandidate(DownloadType.DIRECT_FILE, "https://lis.test/only.mp3", priority = 10))
@@ -108,11 +184,11 @@ class DownloadResolutionPlannerTest {
     }
 
     @Test
-    fun archiveWinsTieWithinOneSource() = runBlocking {
+    fun archiveWinsWithinOneSourceEvenWithLowerPriority() = runBlocking {
         val plugin = FakeResolverPlugin("source", "source.test") {
             listOf(
-                DownloadCandidate(DownloadType.DIRECT_FILE, "https://source.test/book.mp3", priority = 10),
-                DownloadCandidate(DownloadType.ARCHIVE, "https://source.test/book.zip", priority = 10)
+                DownloadCandidate(DownloadType.DIRECT_FILE, "https://source.test/book.mp3", priority = 100),
+                DownloadCandidate(DownloadType.ARCHIVE, "https://source.test/book.zip", priority = 1)
             )
         }
         val result = DownloadResolutionPlanner(SourcePluginRegistry(listOf(plugin))).resolve(

@@ -118,7 +118,7 @@ object SourceMetadataRepository {
         val now = System.currentTimeMillis()
         val remoteKey = SourceKeys.remoteKey(book.remoteId, book.url)
         val priorDecision = dao.bookMatchDecision(canonicalSeriesId, book.sourceId, remoteKey)
-        // A user's explicit rejection is sticky. Discovery may refresh the unlinked observation,
+        // A user's explicit rejection is sticky. Discovery may refresh the observation,
         // but must not silently turn the same source book back into REVIEW_PENDING.
         val keepRejected = priorDecision?.decision == "USER_REJECTED"
         val existing = dao.bookSource(book.sourceId, remoteKey) ?: dao.bookSourceByUrl(book.sourceId, book.url)
@@ -126,7 +126,7 @@ object SourceMetadataRepository {
         dao.upsertBookSource(
             BookSourceEntity(
                 key = key,
-                canonicalBookId = if (keepRejected) existing?.canonicalBookId else null,
+                canonicalBookId = PendingBookReviewMappingPolicy.canonicalBookId(existing?.canonicalBookId),
                 canonicalSeriesId = canonicalSeriesId,
                 sourceId = book.sourceId,
                 remoteKey = remoteKey,

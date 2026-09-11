@@ -302,11 +302,51 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
     var editTags by remember(book.id) { mutableStateOf(false) }
     var tagText by remember(book.id) { mutableStateOf("") }
     var resolvingArchive by remember(book.id) { mutableStateOf(false) }
+    var chooseDownloadSource by remember(book.id) { mutableStateOf(false) }
     LaunchedEffect(book.id, book.updatedAt) {
         tags = LibraryRepository.bookWithTags(context, book.id)?.tags?.map { it.name }.orEmpty()
         sourceIds = SourceMetadataRepository.sourcesForBook(context, book.id)
             .map { it.sourceId }
             .distinct()
+    }
+
+    fun enqueueDownload(sourceId: String?) {
+        if (resolvingArchive) return
+        scope.launch {
+            resolvingArchive = true
+            val resolvedUrls = runCatching { RoomArchiveResolver.resolveAll(context, book, sourceId) }.getOrDefault(emptyList())
+            val urls = if (resolvedUrls.isNotEmpty()) {
+                resolvedUrls
+            } else if (sourceId == null) {
+                listOfNotNull(book.archiveUrl)
+            } else {
+                emptyList()
+            }
+            resolvingArchive = false
+            if (urls.isNotEmpty()) {
+                urls.distinct().forEach { url ->
+                    ManagedDownloads.enqueue(
+                        context = context,
+                        title = book.title,
+                        series = seriesName ?: "Без серії",
+                        author = book.author,
+                        bookUrl = book.url,
+                        archiveUrl = url,
+                        fileNameHint = url
+                    )
+                }
+                Toast.makeText(
+                    context,
+                    if (urls.size == 1) "Додано до завантажень" else "Додано треків: ${urls.distinct().size}",
+                    Toast.LENGTH_SHORT
+                ).show()
+            } else if (sourceId != null) {
+                Toast.makeText(context, "${roomSourceLabel(sourceId)}: аудіо не знайдено", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(context, "Плагін не знайшов аудіо — відкриваю браузер джерел", Toast.LENGTH_LONG).show()
+                context.startActivity(Intent(context, MainActivity::class.java).putExtra(MainActivity.EXTRA_URL, book.url))
+            }
+        }
     }
 
     ElevatedCard(Modifier.fillMaxWidth()) {
@@ -331,39 +371,37 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
             Column {
                 IconButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(book.url))) }) { Icon(Icons.Filled.OpenInBrowser, "Сторінка") }
                 IconButton(onClick = {
-                    if (!resolvingArchive) scope.launch {
-                        resolvingArchive = true
-                        val resolvedUrls = runCatching { RoomArchiveResolver.resolveAll(context, book) }.getOrDefault(emptyList())
-                        val urls = if (resolvedUrls.isNotEmpty()) resolvedUrls else listOfNotNull(book.archiveUrl)
-                        resolvingArchive = false
-                        if (urls.isNotEmpty()) {
-                            urls.distinct().forEach { url ->
-                                ManagedDownloads.enqueue(
-                                    context = context,
-                                    title = book.title,
-                                    series = seriesName ?: "Без серії",
-                                    author = book.author,
-                                    bookUrl = book.url,
-                                    archiveUrl = url,
-                                    fileNameHint = url
-                                )
-                            }
-                            Toast.makeText(
-                                context,
-                                if (urls.size == 1) "Додано до завантажень" else "Додано треків: ${urls.distinct().size}",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        } else {
-                            Toast.makeText(context, "Плагін не знайшов аудіо — відкриваю браузер джерел", Toast.LENGTH_LONG).show()
-                            context.startActivity(Intent(context, MainActivity::class.java).putExtra(MainActivity.EXTRA_URL, book.url))
-                        }
-                    }
+                    if (sourceIds.size > 1) chooseDownloadSource = true
+                    else enqueueDownload(sourceIds.singleOrNull())
                 }, enabled = !resolvingArchive) {
                     if (resolvingArchive) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
                     else Icon(if (book.archiveUrl.isNullOrBlank()) Icons.Filled.Link else Icons.Filled.CloudDownload, if (book.archiveUrl.isNullOrBlank()) "Знайти аудіо" else "Завантажити")
                 }
             }
         }
+    }
+
+    if (chooseDownloadSource) {
+        AlertDialog(
+            onDismissRequest = { chooseDownloadSource = false },
+            title = { Text("Звідки завантажити?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = { chooseDownloadSource = false; enqueueDownload(null) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Автоматично — найкраще доступне") }
+                    sourceIds.forEach { sourceId ->
+                        TextButton(
+                            onClick = { chooseDownloadSource = false; enqueueDownload(sourceId) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(roomSourceLabel(sourceId)) }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { chooseDownloadSource = false }) { Text("Скасувати") } }
+        )
     }
 
     if (editTags) AlertDialog(onDismissRequest = { editTags = false }, title = { Text("Теги: ${book.title}") },

@@ -112,7 +112,7 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
         val strictMatch = SourceIdentityMatcher.bestBookMatch(sourceBook, canonical.books)
             ?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
         val match = strictMatch?.value
-            ?: if (trustFallbackAuthor) audiobooAuthorPageBookMatch(book, canonical.books) else null
+            ?: (if (trustFallbackAuthor) audiobooAuthorPageBookMatch(book, canonical.books) else null)
             ?: return@mapNotNull null
         SourceBookRef(
             url = book.url,

@@ -9,6 +9,7 @@ class TtsSessionStore(
 ) {
     @Synchronized
     fun save(session: TtsSession) {
+        require(session.sessionId.isNotBlank())
         root.mkdirs()
         require(root.isDirectory) { "Cannot create TTS session directory" }
         val target = fileFor(session.sessionId)
@@ -37,6 +38,7 @@ class TtsSessionStore(
 
     @Synchronized
     fun load(sessionId: String): TtsSession? {
+        require(sessionId.isNotBlank())
         val file = fileFor(sessionId)
         if (!file.isFile) return null
         return runCatching {
@@ -73,19 +75,18 @@ class TtsSessionStore(
 
     @Synchronized
     fun delete(sessionId: String): Boolean {
+        require(sessionId.isNotBlank())
         val target = fileFor(sessionId)
         val temp = File(target.parentFile, target.name + ".tmp")
         temp.delete()
         return !target.exists() || target.delete()
     }
 
-    private fun fileFor(sessionId: String): File = File(root, safe(sessionId) + ".properties")
+    private fun fileFor(sessionId: String): File = File(root, TtsStableId.hex(sessionId) + ".properties")
 
     private fun required(props: Properties, key: String): String =
         props.getProperty(key)?.takeIf(String::isNotBlank)
             ?: throw IllegalArgumentException("Missing TTS session field: $key")
-
-    private fun safe(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_")
 
     companion object {
         private const val FORMAT_VERSION = 1

@@ -25,7 +25,6 @@ import androidx.compose.ui.unit.dp
 import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
-import org.audoiboo.tracker.plugin.BookSourceEntity
 import org.audoiboo.tracker.plugin.SeriesMatchDecisionEntity
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
 
@@ -257,7 +256,8 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tags by remember(book.id) { mutableStateOf<List<String>>(emptyList()) }
-    var sources by remember(book.id) { mutableStateOf<List<BookSourceEntity>>(emptyList()) }
+    val sourceFlow = remember(book.id) { SourceMetadataRepository.observeSourcesForBook(context, book.id) }
+    val sources by sourceFlow.collectAsState(initial = emptyList())
     var editTags by remember(book.id) { mutableStateOf(false) }
     var tagText by remember(book.id) { mutableStateOf("") }
     var resolvingArchive by remember(book.id) { mutableStateOf(false) }
@@ -268,7 +268,6 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
 
     LaunchedEffect(book.id, book.updatedAt) {
         tags = LibraryRepository.bookWithTags(context, book.id)?.tags?.map { it.name }.orEmpty()
-        sources = SourceMetadataRepository.sourcesForBook(context, book.id)
     }
 
     fun openPage(url: String) {

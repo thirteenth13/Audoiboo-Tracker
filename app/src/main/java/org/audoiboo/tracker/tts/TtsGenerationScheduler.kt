@@ -14,8 +14,10 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import java.io.File
 import java.util.concurrent.TimeUnit
 import org.audoiboo.tracker.R
+import org.audoiboo.tracker.ebook.BookDocument
 
 /**
  * Persists long-running TTS execution intentions in WorkManager.
@@ -28,6 +30,36 @@ internal object TtsGenerationScheduler {
     private const val KEY_SESSION_ID = "tts_session_id"
     private const val KEY_TITLE = "tts_title"
     private fun workName(sessionId: String) = "audoiboo-tts-${safe(sessionId)}"
+
+    /** Persists all process-death-safe inputs before handing the job to WorkManager. */
+    fun enqueue(
+        context: Context,
+        session: TtsSession,
+        document: BookDocument,
+        model: VoiceModelSpec,
+        outputDir: File,
+    ) {
+        require(session.providerId == "sherpa-onnx") { "Background TTS requires sherpa-onnx session" }
+        require(session.voice.modelId == model.modelId) { "Background TTS model mismatch" }
+        require(session.voice.modelVersion == model.version) { "Background TTS model version mismatch" }
+        val root = File(context.filesDir, "tts")
+        val sessionStore = TtsSessionStore(File(root, "sessions"))
+        val persisted = sessionStore.load(session.sessionId)
+        if (persisted == null) {
+            sessionStore.save(session)
+        } else {
+            require(sameSessionIdentity(persisted, session)) { "Existing TTS checkpoint is incompatible" }
+        }
+        TtsBackgroundJobStore(File(root, "jobs")).save(
+            TtsBackgroundBookJob(
+                sessionId = session.sessionId,
+                document = document,
+                model = model,
+                outputDir = outputDir.absolutePath,
+            ),
+        )
+        enqueue(context, session.sessionId, document.title?.takeIf(String::isNotBlank) ?: "Аудіокнига")
+    }
 
     fun enqueue(context: Context, sessionId: String, title: String) {
         require(sessionId.isNotBlank())
@@ -48,6 +80,13 @@ internal object TtsGenerationScheduler {
 
     internal fun sessionId(worker: CoroutineWorker): String? = worker.inputData.getString(KEY_SESSION_ID)
     internal fun title(worker: CoroutineWorker): String = worker.inputData.getString(KEY_TITLE).orEmpty()
+
+    private fun sameSessionIdentity(a: TtsSession, b: TtsSession): Boolean =
+        a.sessionId == b.sessionId &&
+            a.providerId == b.providerId &&
+            a.documentFingerprint == b.documentFingerprint &&
+            a.voice.stableKey == b.voice.stableKey &&
+            a.speed == b.speed
 
     private fun safe(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_")
 }

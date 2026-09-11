@@ -12,6 +12,25 @@ import org.audoiboo.tracker.plugin.SourceBookReassignment
 import org.audoiboo.tracker.plugin.SourceIdentityMatcher
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
 
+internal object CatalogBookDeduplicationPolicy {
+    fun isCanonicalCatalogBook(book: BookEntity): Boolean =
+        book.url.startsWith("catalog://", ignoreCase = true) && book.url.contains("/book/", ignoreCase = true)
+
+    fun catalogProviderId(seriesUrl: String): String? {
+        if (!seriesUrl.startsWith("catalog://", ignoreCase = true)) return null
+        return seriesUrl.substringAfter("catalog://").substringBefore('/').trim().lowercase().takeIf { it.isNotBlank() }
+    }
+
+    fun anchors(seriesUrl: String, seriesTitle: String, books: List<BookEntity>): List<BookEntity> {
+        val catalogBooks = books.filter(::isCanonicalCatalogBook)
+        return if (catalogProviderId(seriesUrl) == "fantlab") {
+            RoomBookDeduplicationPolicy.authoritativeFantLabAnchors(seriesTitle, catalogBooks)
+        } else {
+            catalogBooks
+        }
+    }
+}
+
 internal object CatalogBookDeduplicationRepair {
     suspend fun repairAll(context: Context): Int {
         val db = AudoibooDatabase.get(context)
@@ -25,12 +44,8 @@ internal object CatalogBookDeduplicationRepair {
     internal suspend fun repair(context: Context, db: AudoibooDatabase, item: SeriesWithBooks): Int {
         if (!item.series.url.startsWith("catalog://", ignoreCase = true)) return 0
         val dao = db.libraryDao()
-        val catalogBooks = item.books.filter(::isCanonicalCatalogBook)
-        if (catalogBooks.isEmpty()) return 0
-        val providerId = catalogProviderId(item.series.url)
-        val anchors = if (providerId == "fantlab") {
-            RoomBookDeduplicationPolicy.authoritativeFantLabAnchors(item.series.name, catalogBooks)
-        } else catalogBooks
+        val providerId = CatalogBookDeduplicationPolicy.catalogProviderId(item.series.url)
+        val anchors = CatalogBookDeduplicationPolicy.anchors(item.series.url, item.series.name, item.books)
         if (anchors.isEmpty()) return 0
 
         val aliasResolver = AuthorAliasResolver.forContext(context)
@@ -45,7 +60,7 @@ internal object CatalogBookDeduplicationRepair {
         val anchorIds = anchors.map { it.id }.toSet()
         val duplicateToWinner = linkedMapOf<String, String>()
 
-        item.books.filterNot(::isCanonicalCatalogBook).forEach { candidate ->
+        item.books.filterNot(CatalogBookDeduplicationPolicy::isCanonicalCatalogBook).forEach { candidate ->
             val candidateAuthors = aliasResolver.expandForMatching(splitAuthors(candidate.author))
             val sourceId = SourceMetadataRepository.sourcesForBook(context, candidate.id).firstOrNull()?.sourceId ?: "room"
             val match = SourceIdentityMatcher.bestBookMatch(
@@ -100,14 +115,6 @@ internal object CatalogBookDeduplicationRepair {
         }
         SeriesDiagnosticLog.i("CatalogBookDeduplicationRepair series=${item.series.name} before=${item.books.size} after=${winners.size} merged=${duplicateToWinner.size} provider=$providerId anchors=${anchors.size}")
         return duplicateToWinner.size
-    }
-
-    internal fun isCanonicalCatalogBook(book: BookEntity): Boolean =
-        book.url.startsWith("catalog://", ignoreCase = true) && book.url.contains("/book/", ignoreCase = true)
-
-    internal fun catalogProviderId(seriesUrl: String): String? {
-        if (!seriesUrl.startsWith("catalog://", ignoreCase = true)) return null
-        return seriesUrl.substringAfter("catalog://").substringBefore('/').trim().lowercase().takeIf { it.isNotBlank() }
     }
 
     private fun splitAuthors(value: String?): List<String> = value

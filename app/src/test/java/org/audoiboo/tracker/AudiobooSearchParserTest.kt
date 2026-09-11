@@ -1,5 +1,6 @@
 package org.audoiboo.tracker
 
+import org.audoiboo.tracker.plugin.audiobooAuthorAliases
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -55,5 +56,14 @@ class AudiobooSearchParserTest {
         val books = AudiobooSearchParser.parse(html, "https://audioboo.org/")
         assertEquals(1, books.size)
         assertEquals("Недотёпа", books.single().title)
+    }
+
+    @Test
+    fun authorFallbackTriesOriginalAndSurnameFirstAliases() {
+        assertEquals(
+            listOf("Сергей Тармашев", "Тармашев Сергей"),
+            audiobooAuthorAliases("  Сергей   Тармашев  ")
+        )
+        assertEquals(listOf("Пелевин"), audiobooAuthorAliases("Пелевин"))
     }
 }

@@ -12,10 +12,9 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
 /**
- * Last-resort transport for provider requests when the Android/system network path cannot resolve
- * or connect to a host. DNS is resolved through Cloudflare DoH while TLS still uses the original
- * hostname, so certificate/SNI validation is preserved. Redirects remain disabled and continue to
- * be validated by PluginSandboxSession one hop at a time.
+ * DNS recovery transport used only when the system resolver cannot resolve a provider host.
+ * DNS is resolved through Cloudflare DoH while TLS still uses the original hostname, preserving
+ * certificate/SNI validation. Redirects stay disabled for sandbox validation.
  */
 internal object DohHttpFallback {
     private const val DOH_HOST = "cloudflare-dns.com"
@@ -31,9 +30,9 @@ internal object DohHttpFallback {
         .dns(bootstrapDns)
         .followRedirects(false)
         .followSslRedirects(false)
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
-        .callTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .callTimeout(6, TimeUnit.SECONDS)
         .build()
 
     private val providerDns = object : Dns {
@@ -44,9 +43,6 @@ internal object DohHttpFallback {
         .dns(providerDns)
         .followRedirects(false)
         .followSslRedirects(false)
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .callTimeout(25, TimeUnit.SECONDS)
         .build()
 
     fun get(
@@ -54,8 +50,15 @@ internal object DohHttpFallback {
         maxResponseBytes: Long,
         userAgent: String,
         origin: String?,
-        cookies: String?
+        cookies: String?,
+        timeoutMs: Int
     ): PluginHttpResponse {
+        val boundedTimeout = timeoutMs.coerceIn(1_000, 20_000)
+        val client = providerClient.newBuilder()
+            .connectTimeout(boundedTimeout.toLong(), TimeUnit.MILLISECONDS)
+            .readTimeout(boundedTimeout.toLong(), TimeUnit.MILLISECONDS)
+            .callTimeout(boundedTimeout.toLong(), TimeUnit.MILLISECONDS)
+            .build()
         val builder = Request.Builder().url(request.url).get()
             .header("User-Agent", userAgent)
             .header("Accept-Language", "ru-RU,ru;q=0.9,uk;q=0.8,en;q=0.6")
@@ -69,7 +72,7 @@ internal object DohHttpFallback {
             builder.header("Cookie", cookies)
         }
 
-        providerClient.newCall(builder.build()).execute().use { response ->
+        client.newCall(builder.build()).execute().use { response ->
             val bytes = response.body?.byteStream()?.use { input ->
                 readLimited(input, maxResponseBytes)
             } ?: ByteArray(0)

@@ -4,7 +4,9 @@ import java.io.File
 import java.nio.file.Files
 import org.audoiboo.tracker.ebook.BookChapter
 import org.audoiboo.tracker.ebook.BookDocument
+import org.audoiboo.tracker.ebook.TtsSynthesisPlanner
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -45,14 +47,35 @@ class TtsPlayerLibraryBridgeTest {
         )
 
         val items = TtsPlayerLibraryBridge.items(document, result)
+        val fingerprint = TtsSynthesisPlanner.fingerprint(document).take(10)
 
         assertEquals(2, items.size)
         assertEquals(listOf("0001 - Початок.wav", "0002 - Далі.wav"), items.map { it.name })
         assertEquals(listOf("Книга: тест", "Книга: тест"), items.map { it.bookTitle })
-        assertTrue(items.all { it.relativePath == "Audoiboo/TTS/Книга_ тест" })
+        assertTrue(items.all { it.relativePath == "Audoiboo/TTS/Книга_ тест [$fingerprint]" })
         assertTrue(items.all { it.series == "Серія" })
         assertTrue(items.all { it.author == "Автор Один, Автор Два" })
         assertTrue(items.all { it.uri.startsWith("file:") })
+    }
+
+    @Test
+    fun sameTitleWithDifferentContentGetsDifferentLibraryPath() {
+        val first = BookDocument(
+            title = "Однакова назва",
+            authors = listOf("Автор"),
+            language = "uk",
+            series = null,
+            seriesNumber = null,
+            chapters = listOf(BookChapter(0, "Розділ", listOf("Перший текст"))),
+        )
+        val second = first.copy(
+            chapters = listOf(BookChapter(0, "Розділ", listOf("Інший текст"))),
+        )
+
+        assertNotEquals(
+            TtsPlayerLibraryBridge.relativePath(first),
+            TtsPlayerLibraryBridge.relativePath(second),
+        )
     }
 
     @Test

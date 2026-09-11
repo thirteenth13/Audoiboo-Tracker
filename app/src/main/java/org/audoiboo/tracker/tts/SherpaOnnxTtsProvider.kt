@@ -22,7 +22,6 @@ class SherpaOnnxTtsProvider(
     override suspend fun getVoices(language: String): List<TtsVoice> =
         voices.filter { voice -> languageMatches(voice.language, language) }
 
-    @Synchronized
     override suspend fun synthesize(request: TtsSynthesisRequest): TtsSynthesisResult {
         require(supportsLanguage(request.language)) { "Unsupported TTS language: ${request.language}" }
         require(languageMatches(request.voice.language, request.language)) { "Voice language does not match request" }

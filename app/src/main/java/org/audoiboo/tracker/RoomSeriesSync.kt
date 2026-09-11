@@ -13,6 +13,7 @@ import org.audoiboo.tracker.plugin.MatchDisposition
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 import org.audoiboo.tracker.plugin.SeriesBookMembershipPolicy
 import org.audoiboo.tracker.plugin.SeriesDecisionPolicy
+import org.audoiboo.tracker.plugin.SeriesDiscoveryFinding
 import org.audoiboo.tracker.plugin.SeriesProvider
 import org.audoiboo.tracker.plugin.SourceBook
 import org.audoiboo.tracker.plugin.SourceBookReassignment
@@ -104,9 +105,6 @@ internal object RoomSeriesSync {
             reviewResolution?.takeIf { !it.accept }?.let { add(it.candidateSeriesId) }
         }
 
-        // A provider URL may already have created a standalone series before catalog federation was
-        // introduced. Prefer an AUTO_ACCEPT catalog canonical even when that direct series exists,
-        // then retire the old duplicate below.
         val catalogMatch = if (mappedSeries == null && forcedAcceptedSeries == null && acceptedDecisionSeries == null) {
             SourceIdentityMatcher.bestSeriesMatch(
                 incoming = resolved,
@@ -261,13 +259,8 @@ internal object RoomSeriesSync {
                 links += CanonicalSourceBookLink(entity.id, source, confidence)
             }
 
-            // Preserve every canonical row that another provider/catalog may know about. A provider
-            // returning 6 books after the catalog supplied 10 must leave all 10 intact.
             dao.upsertBooks(additions)
 
-            // Retire a pre-federation standalone duplicate after its current provider snapshot has
-            // been linked into the preferred canonical series. Exact duplicate books are already
-            // represented by the canonical rows; unmatched legacy books are carried over first.
             duplicateDirectSeries?.let { duplicate ->
                 val currentCanonical = (existingBooks + additions).associateBy { it.id }.toMutableMap()
                 var carryIndex = (currentCanonical.values.maxOfOrNull { it.sortIndex } ?: -1) + 1
@@ -355,7 +348,31 @@ internal object RoomSeriesSync {
         canonical: CanonicalSeriesMatchInput,
         excludeSourceId: String
     ) {
-        val findings = SourceDiscoveryEngine(PluginPackageRuntime.registry).discoverSeries(canonical, excludeSourceId)
+        val registry = PluginPackageRuntime.registry
+        val pinned = SourceMetadataRepository.sourcesForSeries(context, canonicalSeriesId)
+            .filter { it.userVerified && it.sourceId != excludeSourceId }
+            .mapNotNull { source ->
+                val plugin = registry.forUrl(source.url, SourceCapability.SERIES_LOOKUP) ?: return@mapNotNull null
+                val provider = plugin as? SeriesProvider ?: return@mapNotNull null
+                val resolved = runCatching { provider.resolveSeries(source.url) }.getOrNull() ?: return@mapNotNull null
+                if (resolved.sourceId != source.sourceId) return@mapNotNull null
+                val books = runCatching { provider.loadSeriesBooks(resolved) }.getOrDefault(emptyList())
+                    .filter { it.sourceId == source.sourceId }
+                    .distinctBy { SourceKeys.normalizeUrl(it.url) }
+                if (books.isEmpty()) return@mapNotNull null
+                SeriesDiscoveryFinding(
+                    sourceId = source.sourceId,
+                    series = resolved,
+                    books = books,
+                    confidence = source.confidence,
+                    disposition = MatchDisposition.AUTO_ACCEPT,
+                    evidence = listOf("user-verified provider series retained")
+                )
+            }
+        val pinnedSourceIds = pinned.map { it.sourceId }.toSet()
+        val discovered = SourceDiscoveryEngine(registry).discoverSeries(canonical, excludeSourceId)
+            .filterNot { it.sourceId in pinnedSourceIds }
+        val findings = pinned + discovered
         val db = AudoibooDatabase.get(context)
         val dao = db.libraryDao()
 
@@ -416,11 +433,11 @@ internal object RoomSeriesSync {
             }
 
             SourceMetadataRepository.recordSeriesSnapshot(
-                context, canonicalSeriesId, finding.series, links, "SAME_SERIES", finding.confidence, acceptedReview
+                context, canonicalSeriesId, finding.series, links, "SAME_SERIES", finding.confidence, acceptedReview || finding.sourceId in pinnedSourceIds
             )
             SourceMetadataRepository.recordSeriesMatchDecision(
                 context, canonicalSeriesId, finding.series,
-                if (acceptedReview) "USER_ACCEPTED" else "AUTO_ACCEPTED", "SAME_SERIES", finding.confidence
+                if (acceptedReview || finding.sourceId in pinnedSourceIds) "USER_ACCEPTED" else "AUTO_ACCEPTED", "SAME_SERIES", finding.confidence
             )
         }
     }

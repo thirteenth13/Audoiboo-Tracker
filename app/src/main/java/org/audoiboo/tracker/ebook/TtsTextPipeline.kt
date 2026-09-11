@@ -10,6 +10,7 @@ data class TtsTextChunk(
 object TtsTextPipeline {
     const val DEFAULT_TARGET_CHARS = 900
     const val DEFAULT_MAX_CHARS = 1500
+    private const val MIN_CHUNK_CHARS = 100
 
     fun normalize(text: String, language: String?): String {
         val lang = language.orEmpty().lowercase()
@@ -50,8 +51,8 @@ object TtsTextPipeline {
         targetChars: Int = DEFAULT_TARGET_CHARS,
         maxChars: Int = DEFAULT_MAX_CHARS,
     ): List<TtsTextChunk> {
-        require(targetChars in 100..maxChars)
-        require(maxChars >= 200)
+        require(maxChars >= MIN_CHUNK_CHARS) { "maxChars must be at least $MIN_CHUNK_CHARS" }
+        require(targetChars in MIN_CHUNK_CHARS..maxChars) { "targetChars must be between $MIN_CHUNK_CHARS and maxChars" }
         val normalized = normalize(text, language)
         if (normalized.isBlank()) return emptyList()
 

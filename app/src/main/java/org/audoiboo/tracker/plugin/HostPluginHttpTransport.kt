@@ -15,14 +15,14 @@ import java.net.UnknownHostException
  * follows redirects itself; PluginSandboxSession validates every redirect target before another
  * request is made. This keeps undeclared hosts unreachable even through server redirects.
  *
- * When the in-app source browser has already opened a site, reuse its WebView user-agent and
- * cookies. Some sources return a browser-renderable page only after a browser session has been
- * established; without this bridge the visible WebView and the sandbox parser would effectively
- * be two unrelated clients.
+ * Network recovery order is deliberately conservative: system route first, DoH only for actual
+ * name-resolution failures, then an explicitly configured proxy for DNS/IP/route blocks. TLS is
+ * never downgraded and target URLs keep their original host names.
  */
 object HostPluginHttpTransport : PluginHttpTransport {
     private const val DEFAULT_USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Mobile Safari/537.36"
-    private const val TIMEOUT_MS = 20_000
+    private const val DEFAULT_TIMEOUT_MS = 20_000
+    private const val FANTLAB_TIMEOUT_MS = 6_000
 
     @Volatile
     private var browserUserAgent: String? = null
@@ -32,6 +32,8 @@ object HostPluginHttpTransport : PluginHttpTransport {
     }
 
     override fun get(request: PluginHttpRequest, maxResponseBytes: Long): PluginHttpResponse {
+        val requestHost = runCatching { URI(request.url).host }.getOrNull().orEmpty()
+        val timeoutMs = requestTimeoutMs(request.url)
         val origin = runCatching {
             val uri = URI(request.url)
             "${uri.scheme}://${uri.host}/"
@@ -47,7 +49,7 @@ object HostPluginHttpTransport : PluginHttpTransport {
                 .userAgent(userAgent)
                 .header("Accept-Language", "ru-RU,ru;q=0.9,uk;q=0.8,en;q=0.6")
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .timeout(TIMEOUT_MS)
+                .timeout(timeoutMs)
                 .maxBodySize(maxResponseBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
                 .followRedirects(false)
                 .ignoreContentType(true)
@@ -56,9 +58,6 @@ object HostPluginHttpTransport : PluginHttpTransport {
                 .method(Connection.Method.GET)
 
             if (recoveryAttempt) {
-                // A few providers occasionally close a reused/gzip connection before Jsoup has
-                // consumed the full response. Retry once with a fresh, non-compressed connection.
-                // The URL is unchanged, so sandbox redirect/host validation remains intact.
                 if (request.headers.keys.none { it.equals("Connection", ignoreCase = true) }) {
                     connection.header("Connection", "close")
                 }
@@ -74,39 +73,72 @@ object HostPluginHttpTransport : PluginHttpTransport {
             return connection.execute()
         }
 
-        val response = try {
+        val directResult = runCatching {
             try {
                 execute(recoveryAttempt = false)
             } catch (t: Throwable) {
                 if (!shouldRetryTruncatedResponse(t)) throw t
-                val host = runCatching { URI(request.url).host }.getOrNull().orEmpty()
-                SeriesDiagnosticLog.w("NET RETRY truncated-response host=$host url=${request.url}")
+                SeriesDiagnosticLog.w("NET RETRY truncated-response host=$requestHost url=${request.url}")
                 execute(recoveryAttempt = true)
             }
-        } catch (t: Throwable) {
-            if (!shouldRetryWithDoh(t)) throw t
-            val host = runCatching { URI(request.url).host }.getOrNull().orEmpty()
-            SeriesDiagnosticLog.w("NET RETRY doh host=$host reason=${networkFailureName(t)} url=${request.url}")
-            val fallback = DohHttpFallback.get(
+        }
+
+        directResult.getOrNull()?.let { response ->
+            val headers = response.multiHeaders().mapValues { (_, values) -> values.toList() }
+            storeCookies(request.url, headers)
+            return PluginHttpResponse(
+                statusCode = response.statusCode(),
+                finalUrl = response.url().toString(),
+                body = response.body(),
+                headers = headers
+            )
+        }
+
+        val directError = directResult.exceptionOrNull() ?: error("Missing network error")
+        if (!isNetworkFailure(directError)) throw directError
+
+        var lastError: Throwable = directError
+        if (shouldRetryWithDoh(directError)) {
+            SeriesDiagnosticLog.w("NET RETRY doh host=$requestHost reason=${networkFailureName(directError)} url=${request.url}")
+            val dohResult = runCatching {
+                DohHttpFallback.get(
+                    request = request,
+                    maxResponseBytes = maxResponseBytes,
+                    userAgent = userAgent,
+                    origin = origin,
+                    cookies = cookies,
+                    timeoutMs = timeoutMs
+                )
+            }
+            dohResult.getOrNull()?.let { fallback ->
+                storeCookies(request.url, fallback.headers)
+                SeriesDiagnosticLog.i("NET DOH GET ${request.url} -> ${fallback.statusCode}, ${fallback.body.length}b")
+                return fallback
+            }
+            lastError = dohResult.exceptionOrNull() ?: lastError
+        }
+
+        val proxy = NetworkFallbackSettings.current()
+        if (proxy.isUsable && shouldRetryWithProxy(lastError)) {
+            SeriesDiagnosticLog.w(
+                "NET RETRY proxy type=${proxy.type.name} proxy=${proxy.host}:${proxy.port} " +
+                    "target=$requestHost reason=${networkFailureName(lastError)}"
+            )
+            val fallback = ProxyHttpFallback.get(
                 request = request,
                 maxResponseBytes = maxResponseBytes,
                 userAgent = userAgent,
                 origin = origin,
-                cookies = cookies
+                cookies = cookies,
+                config = proxy,
+                timeoutMs = timeoutMs
             )
             storeCookies(request.url, fallback.headers)
-            SeriesDiagnosticLog.i("NET DOH GET ${request.url} -> ${fallback.statusCode}, ${fallback.body.length}b")
+            SeriesDiagnosticLog.i("NET PROXY GET ${request.url} -> ${fallback.statusCode}, ${fallback.body.length}b")
             return fallback
         }
 
-        val headers = response.multiHeaders().mapValues { (_, values) -> values.toList() }
-        storeCookies(request.url, headers)
-        return PluginHttpResponse(
-            statusCode = response.statusCode(),
-            finalUrl = response.url().toString(),
-            body = response.body(),
-            headers = headers
-        )
+        throw lastError
     }
 
     private fun storeCookies(url: String, headers: Map<String, List<String>>) {
@@ -120,10 +152,21 @@ object HostPluginHttpTransport : PluginHttpTransport {
         }
     }
 
+    internal fun requestTimeoutMs(url: String): Int {
+        val host = runCatching { URI(url).host }.getOrNull().orEmpty()
+        return if (host.equals("api.fantlab.ru", ignoreCase = true)) FANTLAB_TIMEOUT_MS else DEFAULT_TIMEOUT_MS
+    }
+
     internal fun shouldRetryTruncatedResponse(error: Throwable): Boolean =
         generateSequence(error) { it.cause }.any { it is EOFException }
 
+    /** DoH changes name resolution only; retrying an already-resolved blocked IP through DoH wastes time. */
     internal fun shouldRetryWithDoh(error: Throwable): Boolean =
+        generateSequence(error) { it.cause }.any { it is UnknownHostException }
+
+    internal fun shouldRetryWithProxy(error: Throwable): Boolean = isNetworkFailure(error)
+
+    internal fun isNetworkFailure(error: Throwable): Boolean =
         generateSequence(error) { it.cause }.any {
             it is UnknownHostException ||
                 it is ConnectException ||

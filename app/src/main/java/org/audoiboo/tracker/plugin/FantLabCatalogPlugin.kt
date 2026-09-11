@@ -178,19 +178,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
         }
     }
 
-    /**
-     * FantLab exposes two hierarchy shapes. Older/synthetic responses may nest `children`, while the
-     * public author bibliography API normally returns one flat children list and describes ancestry
-     * with `work_root_saga` plus `deep`. In either form cycle nodes are metadata, not books.
-     * `seriesTitles.first()` is always the immediate cycle so CatalogSeriesHeuristics groups a
-     * subcycle separately from its parent.
-     */
-    private fun parseCycleChildren(
-        author: CatalogAuthor,
-        children: JSONArray,
-        hierarchy: List<String>,
-        books: MutableMap<String, CatalogBook>
-    ) {
+    private fun parseCycleChildren(author: CatalogAuthor, children: JSONArray, hierarchy: List<String>, books: MutableMap<String, CatalogBook>) {
         val directCounters = linkedMapOf<String, Int>()
         for (childIndex in 0 until children.length()) {
             val child = children.optJSONObject(childIndex) ?: continue
@@ -200,7 +188,6 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
                 parseCycleChildren(author, nestedChildren, listOf(nestedTitle) + hierarchy, books)
                 continue
             }
-
             if (isCycleNode(child)) continue
             val title = firstNonBlank(child, "work_name", "work_name_orig") ?: continue
             val childHierarchy = hierarchyFromRootSaga(child, hierarchy)
@@ -208,12 +195,7 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
             val directBookIndex = (directCounters[immediateKey] ?: 0) + 1
             directCounters[immediateKey] = directBookIndex
             val inferredNumber = CatalogSeriesHeuristics.infer(title)?.number
-            val book = parseWork(
-                author = author,
-                work = child,
-                seriesTitles = childHierarchy,
-                seriesNumber = inferredNumber ?: directBookIndex.toDouble()
-            ) ?: continue
+            val book = parseWork(author, child, childHierarchy, inferredNumber ?: directBookIndex.toDouble()) ?: continue
             books.putIfAbsent(book.remoteId, book)
         }
     }
@@ -223,34 +205,23 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
         val sagaTitles = buildList {
             for (index in 0 until roots.length()) {
                 val root = roots.optJSONObject(index) ?: continue
-                // work_root_saga itself is already an ancestry list. Real FantLab payloads often
-                // omit work_type on these compact root objects, so requiring "цикл" here drops the
-                // nested-cycle name and makes the subseries impossible to reconstruct later.
                 val title = firstNonBlank(root, "work_name", "work_name_orig", "name", "rusname") ?: continue
                 add(title)
             }
         }.distinctBy(SourceIdentityMatcher::normalizeTitle)
         if (sagaTitles.isEmpty()) return fallback
-
         val fallbackKeys = fallback.map(SourceIdentityMatcher::normalizeTitle).toSet()
         val rootOrder = sagaTitles.asReversed()
-        return (rootOrder + fallback)
-            .filter(String::isNotBlank)
-            .distinctBy(SourceIdentityMatcher::normalizeTitle)
-            .let { resolved ->
-                // Some payloads list only the top cycle in work_root_saga. Preserve the known fallback.
-                if (resolved.none { SourceIdentityMatcher.normalizeTitle(it) in fallbackKeys }) resolved + fallback else resolved
-            }
-            .distinctBy(SourceIdentityMatcher::normalizeTitle)
+        return (rootOrder + fallback).filter(String::isNotBlank).distinctBy(SourceIdentityMatcher::normalizeTitle).let { resolved ->
+            if (resolved.none { SourceIdentityMatcher.normalizeTitle(it) in fallbackKeys }) resolved + fallback else resolved
+        }.distinctBy(SourceIdentityMatcher::normalizeTitle)
     }
 
-    private fun isCycleNode(json: JSONObject): Boolean =
-        isCycleLike(json) || json.optInt("position_is_node", 0) == 1
+    private fun isCycleNode(json: JSONObject): Boolean = isCycleLike(json) || json.optInt("position_is_node", 0) == 1
 
-    private fun isCycleLike(json: JSONObject): Boolean =
-        listOf("work_type", "work_type_name", "work_type_in")
-            .map { json.optString(it).trim() }
-            .any { value -> value.contains("цикл", ignoreCase = true) || value.contains("cycle", ignoreCase = true) }
+    private fun isCycleLike(json: JSONObject): Boolean = listOf("work_type", "work_type_name", "work_type_in")
+        .map { json.optString(it).trim() }
+        .any { value -> value.contains("цикл", ignoreCase = true) || value.contains("cycle", ignoreCase = true) }
 
     private fun parseStandalone(author: CatalogAuthor, blocks: JSONObject?, books: MutableMap<String, CatalogBook>) {
         if (blocks == null) return
@@ -273,43 +244,39 @@ object FantLabCatalogPlugin : SourcePlugin, AuthorCatalogProvider, CatalogBookSe
         val authors = work.optJSONArray("authors")?.let { array ->
             (0 until array.length()).mapNotNull { index -> array.optJSONObject(index)?.optString("name")?.trim()?.takeIf(String::isNotBlank) }
         }.orEmpty().ifEmpty { listOf(author.name) }
-        return CatalogBook(
-            providerId = descriptor.id,
-            remoteId = id.toString(),
-            title = title,
-            authors = authors,
-            seriesTitles = seriesTitles,
-            seriesNumber = seriesNumber,
-            firstPublishYear = flexibleInt(work, "work_year")?.takeIf { it > 0 }
-        )
+        return CatalogBook(descriptor.id, id.toString(), title, authors, seriesTitles, seriesNumber, flexibleInt(work, "work_year")?.takeIf { it > 0 })
     }
 
-    private fun splitAuthors(value: String): List<String> = value
-        .replace(Regex("<[^>]+>"), " ")
-        .split(',', ';', '/')
-        .map(String::trim)
-        .filter(String::isNotBlank)
-        .distinct()
+    private fun splitAuthors(value: String): List<String> = value.replace(Regex("<[^>]+>"), " ").split(',', ';', '/').map(String::trim).filter(String::isNotBlank).distinct()
 
-    private suspend fun loadAuthorJson(url: String): JSONObject? =
-        get(url, 10L * 1024 * 1024)?.let { runCatching { JSONObject(it) }.getOrNull() }
+    private suspend fun loadAuthorJson(url: String): JSONObject? = get(url, 10L * 1024 * 1024)?.let { runCatching { JSONObject(it) }.getOrNull() }
 
     private suspend fun get(url: String, maxBytes: Long): String? {
-        val response = HostPluginHttpTransport.get(PluginHttpRequest(url, mapOf("Accept" to "application/json")), maxBytes)
-        if (response.statusCode !in 200..299) return null
-        return response.body
+        val started = System.nanoTime()
+        SeriesDiagnosticLog.i("FANTLAB API -> GET $url")
+        return try {
+            val response = HostPluginHttpTransport.get(PluginHttpRequest(url, mapOf("Accept" to "application/json")), maxBytes)
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            val bodyBytes = response.body.toByteArray(StandardCharsets.UTF_8).size
+            if (response.statusCode !in 200..299) {
+                SeriesDiagnosticLog.w("FANTLAB API <- HTTP ${response.statusCode} ${elapsedMs}ms bytes=$bodyBytes url=$url")
+                null
+            } else {
+                SeriesDiagnosticLog.i("FANTLAB API <- HTTP ${response.statusCode} ${elapsedMs}ms bytes=$bodyBytes url=$url")
+                response.body
+            }
+        } catch (t: Throwable) {
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            SeriesDiagnosticLog.e("FANTLAB API !! ${elapsedMs}ms url=$url", t)
+            throw t
+        }
     }
 
-    private fun firstNonBlank(json: JSONObject, vararg keys: String): String? =
-        keys.firstNotNullOfOrNull { key -> json.optString(key).trim().takeIf(String::isNotBlank) }
+    private fun firstNonBlank(json: JSONObject, vararg keys: String): String? = keys.firstNotNullOfOrNull { key -> json.optString(key).trim().takeIf(String::isNotBlank) }
 
     private fun flexibleInt(json: JSONObject, key: String): Int? {
         val value = json.opt(key) ?: return null
-        return when (value) {
-            is Number -> value.toInt()
-            is String -> value.trim().toIntOrNull()
-            else -> null
-        }
+        return when (value) { is Number -> value.toInt(); is String -> value.trim().toIntOrNull(); else -> null }
     }
 
     private fun authorConfidence(expected: String, candidate: String): Float = when {

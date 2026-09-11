@@ -6,6 +6,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.audoiboo.tracker.plugin.AuthorEnrichedIdentityMatcher
+import org.audoiboo.tracker.plugin.CanonicalBookCreationPolicy
 import org.audoiboo.tracker.plugin.CanonicalBookMatchInput
 import org.audoiboo.tracker.plugin.CanonicalSeriesMatchInput
 import org.audoiboo.tracker.plugin.CanonicalSourceBookLink
@@ -218,18 +219,22 @@ internal object RoomSeriesSync {
             }
 
             val additions = mutableListOf<BookEntity>()
-            sourceBooks.forEachIndexed { sourceIndex, source ->
+            sourceBooks.forEachIndexed sourceLoop@ { sourceIndex, source ->
                 val mapped = mappedBookIds[source]?.let(existingBookById::get)
                 val direct = existingBookByUrl[SourceKeys.normalizeUrl(source.url)]
+                val availableCandidates = existingBooks.filterNot { it.id in usedCanonicalBookIds }.map(::canonicalBookInput)
                 val contentMatch = if (mapped == null && direct == null) {
                     AuthorEnrichedIdentityMatcher.bestBookMatch(
                         context = context,
                         incoming = source,
-                        candidates = existingBooks.filterNot { it.id in usedCanonicalBookIds }.map(::canonicalBookInput)
+                        candidates = availableCandidates
                     )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
                 } else null
                 val contentMatched = contentMatch?.value?.id?.let(existingBookById::get)
                 val canonical = mapped ?: direct ?: contentMatched
+                if (canonical == null && selected != null && !CanonicalBookCreationPolicy.shouldCreateUnmatched(source, availableCandidates)) {
+                    return@sourceLoop
+                }
                 val confidence = when {
                     mapped != null || direct != null -> 1f
                     contentMatch != null -> contentMatch.confidence
@@ -398,13 +403,17 @@ internal object RoomSeriesSync {
                 val now = System.currentTimeMillis()
                 val sourceLinks = mutableListOf<CanonicalSourceBookLink>()
 
-                SeriesBookMembershipPolicy.filter(finding.series, finding.books).forEach { sourceBook ->
+                SeriesBookMembershipPolicy.filter(finding.series, finding.books).forEach sourceLoop@ { sourceBook ->
+                    val availableCandidates = canonicalBooks.filterNot { it.id in usedIds }.map(::canonicalBookInput)
                     val match = AuthorEnrichedIdentityMatcher.bestBookMatch(
                         context = context,
                         incoming = sourceBook,
-                        candidates = canonicalBooks.filterNot { it.id in usedIds }.map(::canonicalBookInput)
+                        candidates = availableCandidates
                     )?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
                     val existing = match?.value?.id?.let { id -> canonicalBooks.firstOrNull { it.id == id } }
+                    if (existing == null && !CanonicalBookCreationPolicy.shouldCreateUnmatched(sourceBook, availableCandidates)) {
+                        return@sourceLoop
+                    }
                     val entity = if (existing != null) {
                         usedIds += existing.id
                         existing.copy(

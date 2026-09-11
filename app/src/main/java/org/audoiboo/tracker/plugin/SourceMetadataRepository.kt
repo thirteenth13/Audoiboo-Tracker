@@ -2,6 +2,7 @@ package org.audoiboo.tracker.plugin
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import org.audoiboo.tracker.AudoibooDatabase
 
@@ -115,20 +116,6 @@ object SourceMetadataRepository {
                     lastCheckedAt = now
                 )
             )
-        }
-
-        // Source metadata lives in a separate Room database from the library. Touch only canonical
-        // books whose source links changed so the library Flow invalidates and RoomBookCard reloads
-        // its source badges without requiring the screen to be recreated.
-        val touchedBookIds = books.map { it.canonicalBookId }.toSet()
-        if (touchedBookIds.isNotEmpty()) {
-            val libraryDao = AudoibooDatabase.get(context).libraryDao()
-            val refreshedBooks = libraryDao.seriesWithBooks(canonicalSeriesId)
-                ?.books
-                .orEmpty()
-                .filter { it.id in touchedBookIds }
-                .map { it.copy(updatedAt = now) }
-            if (refreshedBooks.isNotEmpty()) libraryDao.upsertBooks(refreshedBooks)
         }
     }
 
@@ -263,6 +250,9 @@ object SourceMetadataRepository {
             }
         }
     }
+
+    fun observeSourcesForBook(context: Context, canonicalBookId: String): Flow<List<BookSourceEntity>> =
+        SourceMetadataDatabase.get(context.applicationContext).dao().observeBookSources(canonicalBookId)
 
     suspend fun sourcesForBook(context: Context, canonicalBookId: String): List<BookSourceEntity> = withContext(Dispatchers.IO) {
         SourceMetadataDatabase.get(context).dao().bookSources(canonicalBookId)

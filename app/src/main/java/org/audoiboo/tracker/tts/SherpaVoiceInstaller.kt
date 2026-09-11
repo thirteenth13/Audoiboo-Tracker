@@ -29,7 +29,7 @@ class SherpaVoiceInstaller(
         if (!manifestFile.isFile || !modelFile.isFile || !tokens.isFile) return null
 
         val manifest = Properties().apply {
-            manifestFile.inputStream().buffered().use(::load)
+            manifestFile.inputStream().buffered().use { input -> load(input) }
         }
         if (manifest.getProperty("modelId") != pkg.modelId ||
             manifest.getProperty("version") != pkg.version ||

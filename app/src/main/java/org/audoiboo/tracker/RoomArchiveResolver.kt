@@ -11,7 +11,11 @@ import org.audoiboo.tracker.plugin.SourceKeys
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
 
 internal object RoomArchiveResolver {
-    suspend fun resolveAll(context: Context, book: BookEntity): List<String> = withContext(Dispatchers.IO) {
+    suspend fun resolveAll(
+        context: Context,
+        book: BookEntity,
+        sourceId: String? = null
+    ): List<String> = withContext(Dispatchers.IO) {
         PluginPackageRuntime.initialize(context.filesDir)
 
         val primaryPlugin = PluginPackageRuntime.registry.forUrl(book.url)
@@ -40,6 +44,9 @@ internal object RoomArchiveResolver {
             if (primary != null) add(primary)
             addAll(mapped)
         }
+            .distinctBy { it.sourceId to SourceKeys.normalizeUrl(it.url) }
+            .let { all -> sourceId?.let { selected -> all.filter { it.sourceId == selected } } ?: all }
+
         val resolved = DownloadResolutionPlanner(PluginPackageRuntime.registry).resolveAll(sources)
         if (resolved.isEmpty()) return@withContext emptyList()
 
@@ -61,6 +68,6 @@ internal object RoomArchiveResolver {
         resolved.map { it.candidate.url }.distinct()
     }
 
-    suspend fun resolve(context: Context, book: BookEntity): String? =
-        resolveAll(context, book).firstOrNull()
+    suspend fun resolve(context: Context, book: BookEntity, sourceId: String? = null): String? =
+        resolveAll(context, book, sourceId).firstOrNull()
 }

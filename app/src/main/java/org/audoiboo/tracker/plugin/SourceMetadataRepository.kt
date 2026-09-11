@@ -84,13 +84,17 @@ object SourceMetadataRepository {
         val dao = SourceMetadataDatabase.get(context).dao()
         val decision = review.decision
         val source = dao.bookSource(decision.sourceId, decision.remoteKey) ?: return@withContext false
-        val targetBookId = decision.candidateCanonicalBookId
-        if (accept && targetBookId.isNullOrBlank()) return@withContext false
+        val resolution = PendingBookReviewResolutionPolicy.resolve(
+            existingCanonicalBookId = source.canonicalBookId,
+            candidateCanonicalBookId = decision.candidateCanonicalBookId,
+            accept = accept
+        )
+        if (!resolution.canResolve) return@withContext false
         val now = System.currentTimeMillis()
         if (accept) {
             dao.upsertBookSource(
                 source.copy(
-                    canonicalBookId = targetBookId,
+                    canonicalBookId = resolution.canonicalBookId,
                     canonicalSeriesId = decision.canonicalSeriesId,
                     confidence = (decision.confidence ?: source.confidence).coerceIn(0f, 1f),
                     lastSeenAt = now,
@@ -100,7 +104,7 @@ object SourceMetadataRepository {
         }
         dao.upsertBookMatchDecision(
             decision.copy(
-                decision = if (accept) "USER_ACCEPTED" else "USER_REJECTED",
+                decision = resolution.decision,
                 decidedAt = now
             )
         )
@@ -118,8 +122,6 @@ object SourceMetadataRepository {
         val now = System.currentTimeMillis()
         val remoteKey = SourceKeys.remoteKey(book.remoteId, book.url)
         val priorDecision = dao.bookMatchDecision(canonicalSeriesId, book.sourceId, remoteKey)
-        // A user's explicit rejection is sticky. Discovery may refresh the observation,
-        // but must not silently turn the same source book back into REVIEW_PENDING.
         val keepRejected = priorDecision?.decision == "USER_REJECTED"
         val existing = dao.bookSource(book.sourceId, remoteKey) ?: dao.bookSourceByUrl(book.sourceId, book.url)
         val key = existing?.key ?: SourceKeys.bookSourceKey(book.sourceId, remoteKey)
@@ -155,199 +157,72 @@ object SourceMetadataRepository {
         }
     }
 
-    suspend fun clearPendingBookReview(
-        context: Context,
-        canonicalSeriesId: String,
-        book: SourceBook
-    ) = withContext(Dispatchers.IO) {
+    suspend fun clearPendingBookReview(context: Context, canonicalSeriesId: String, book: SourceBook) = withContext(Dispatchers.IO) {
         val remoteKey = SourceKeys.remoteKey(book.remoteId, book.url)
         SourceMetadataDatabase.get(context).dao().clearBookMatchDecision(canonicalSeriesId, book.sourceId, remoteKey)
     }
 
     suspend fun recordSeriesSnapshot(
-        context: Context,
-        canonicalSeriesId: String,
-        series: SourceSeries,
-        books: List<CanonicalSourceBookLink>,
-        relationship: String = "SAME_SERIES",
-        confidence: Float = 1f,
-        userVerified: Boolean = true
+        context: Context, canonicalSeriesId: String, series: SourceSeries, books: List<CanonicalSourceBookLink>,
+        relationship: String = "SAME_SERIES", confidence: Float = 1f, userVerified: Boolean = true
     ) = withContext(Dispatchers.IO) {
         val dao = SourceMetadataDatabase.get(context).dao()
         val now = System.currentTimeMillis()
         val seriesRemoteKey = SourceKeys.remoteKey(series.remoteId, series.url)
-        val existingSeries = dao.seriesSource(series.sourceId, seriesRemoteKey)
-            ?: dao.seriesSourceByUrl(series.sourceId, series.url)
-        dao.upsertSeriesSource(
-            SeriesSourceEntity(
-                canonicalSeriesId = canonicalSeriesId,
-                sourceId = series.sourceId,
-                remoteKey = seriesRemoteKey,
-                url = series.url,
-                remoteTitle = series.title,
-                relationship = existingSeries?.relationship ?: relationship,
-                confidence = existingSeries?.confidence ?: confidence.coerceIn(0f, 1f),
-                userVerified = SourceMetadataMergePolicy.userVerified(existingSeries?.userVerified, userVerified),
-                firstSeenAt = existingSeries?.firstSeenAt ?: now,
-                lastSeenAt = now,
-                lastCheckedAt = now
-            )
-        )
-
+        val existingSeries = dao.seriesSource(series.sourceId, seriesRemoteKey) ?: dao.seriesSourceByUrl(series.sourceId, series.url)
+        dao.upsertSeriesSource(SeriesSourceEntity(canonicalSeriesId, series.sourceId, seriesRemoteKey, series.url, series.title,
+            existingSeries?.relationship ?: relationship, existingSeries?.confidence ?: confidence.coerceIn(0f, 1f),
+            SourceMetadataMergePolicy.userVerified(existingSeries?.userVerified, userVerified), existingSeries?.firstSeenAt ?: now, now, now))
         books.forEach { link ->
             val book = link.book
             val remoteKey = SourceKeys.remoteKey(book.remoteId, book.url)
-            val existing = dao.bookSource(book.sourceId, remoteKey)
-                ?: dao.bookSourceByUrl(book.sourceId, book.url)
+            val existing = dao.bookSource(book.sourceId, remoteKey) ?: dao.bookSourceByUrl(book.sourceId, book.url)
             val key = existing?.key ?: SourceKeys.bookSourceKey(book.sourceId, remoteKey)
-            dao.upsertBookSource(
-                BookSourceEntity(
-                    key = key,
-                    canonicalBookId = link.canonicalBookId,
-                    canonicalSeriesId = canonicalSeriesId,
-                    sourceId = book.sourceId,
-                    remoteKey = remoteKey,
-                    url = book.url,
-                    remoteTitle = book.title,
-                    remoteAuthor = book.authors.joinToString(", ") { it.name }.takeIf { it.isNotBlank() },
-                    remoteOrder = book.seriesNumber,
-                    confidence = existing?.confidence ?: link.confidence.coerceIn(0f, 1f),
-                    firstSeenAt = existing?.firstSeenAt ?: now,
-                    lastSeenAt = now,
-                    lastCheckedAt = now
-                )
-            )
+            dao.upsertBookSource(BookSourceEntity(key, link.canonicalBookId, canonicalSeriesId, book.sourceId, remoteKey, book.url,
+                book.title, book.authors.joinToString(", ") { it.name }.takeIf { it.isNotBlank() }, book.seriesNumber,
+                existing?.confidence ?: link.confidence.coerceIn(0f, 1f), existing?.firstSeenAt ?: now, now, now))
             dao.clearBookMatchDecision(canonicalSeriesId, book.sourceId, remoteKey)
         }
     }
 
-    suspend fun recordSeriesMatchDecision(
-        context: Context,
-        canonicalSeriesId: String,
-        series: SourceSeries,
-        decision: String,
-        relationship: String,
-        confidence: Float
-    ) = withContext(Dispatchers.IO) {
+    suspend fun recordSeriesMatchDecision(context: Context, canonicalSeriesId: String, series: SourceSeries, decision: String, relationship: String, confidence: Float) = withContext(Dispatchers.IO) {
         val remoteKey = SourceKeys.remoteKey(series.remoteId, series.url)
-        SourceMetadataDatabase.get(context).dao().upsertMatchDecision(
-            SeriesMatchDecisionEntity(
-                canonicalSeriesId = canonicalSeriesId,
-                sourceId = series.sourceId,
-                remoteKey = remoteKey,
-                decision = decision,
-                relationship = relationship,
-                confidence = confidence.coerceIn(0f, 1f)
-            )
-        )
+        SourceMetadataDatabase.get(context).dao().upsertMatchDecision(SeriesMatchDecisionEntity(canonicalSeriesId, series.sourceId, remoteKey, decision, relationship, confidence.coerceIn(0f, 1f)))
     }
 
-    suspend fun recordAvailability(
-        context: Context,
-        canonicalBookId: String,
-        sourceId: String,
-        bookUrl: String,
-        candidate: DownloadCandidate
-    ) = withContext(Dispatchers.IO) {
+    suspend fun recordAvailability(context: Context, canonicalBookId: String, sourceId: String, bookUrl: String, candidate: DownloadCandidate) = withContext(Dispatchers.IO) {
         val dao = SourceMetadataDatabase.get(context).dao()
         val now = System.currentTimeMillis()
         val remoteKey = SourceKeys.remoteKey(null, bookUrl)
-        val existingBook = dao.bookSource(sourceId, remoteKey)
-            ?: dao.bookSourceByUrl(sourceId, bookUrl)
+        val existingBook = dao.bookSource(sourceId, remoteKey) ?: dao.bookSourceByUrl(sourceId, bookUrl)
         val key = existingBook?.key ?: SourceKeys.bookSourceKey(sourceId, remoteKey)
-        dao.upsertBookSource(
-            BookSourceEntity(
-                key = key,
-                canonicalBookId = canonicalBookId,
-                canonicalSeriesId = existingBook?.canonicalSeriesId,
-                sourceId = sourceId,
-                remoteKey = existingBook?.remoteKey ?: remoteKey,
-                url = bookUrl,
-                remoteTitle = existingBook?.remoteTitle,
-                remoteAuthor = existingBook?.remoteAuthor,
-                remoteOrder = existingBook?.remoteOrder,
-                confidence = existingBook?.confidence ?: 1f,
-                firstSeenAt = existingBook?.firstSeenAt ?: now,
-                lastSeenAt = now,
-                lastCheckedAt = now
-            )
-        )
+        dao.upsertBookSource(BookSourceEntity(key, canonicalBookId, existingBook?.canonicalSeriesId, sourceId, existingBook?.remoteKey ?: remoteKey,
+            bookUrl, existingBook?.remoteTitle, existingBook?.remoteAuthor, existingBook?.remoteOrder, existingBook?.confidence ?: 1f,
+            existingBook?.firstSeenAt ?: now, now, now))
         val existingAvailability = dao.availability(key).firstOrNull { it.type == candidate.type.name }
-        dao.upsertAvailability(
-            SourceAvailabilityEntity(
-                bookSourceKey = key,
-                sourceId = sourceId,
-                type = candidate.type.name,
-                status = "AVAILABLE",
-                uri = candidate.url,
-                firstSeenAt = existingAvailability?.firstSeenAt ?: now,
-                lastSeenAt = now,
-                lastCheckedAt = now
-            )
-        )
+        dao.upsertAvailability(SourceAvailabilityEntity(key, sourceId, candidate.type.name, "AVAILABLE", candidate.url,
+            existingAvailability?.firstSeenAt ?: now, now, now))
     }
 
     suspend fun backfillAudiobooMappings(context: Context) = withContext(Dispatchers.IO) {
         val library = AudoibooDatabase.get(context).libraryDao().library()
         val dao = SourceMetadataDatabase.get(context).dao()
         val now = System.currentTimeMillis()
-
         library.forEach { item ->
             val seriesRemoteKey = SourceKeys.remoteKey(null, item.series.url)
-            val existingSeries = dao.seriesSource(AUDIOBOO_SOURCE_ID, seriesRemoteKey)
-                ?: dao.seriesSourceByUrl(AUDIOBOO_SOURCE_ID, item.series.url)
-            dao.upsertSeriesSource(
-                SeriesSourceEntity(
-                    canonicalSeriesId = item.series.id,
-                    sourceId = AUDIOBOO_SOURCE_ID,
-                    remoteKey = seriesRemoteKey,
-                    url = item.series.url,
-                    remoteTitle = item.series.name,
-                    relationship = "SAME_SERIES",
-                    confidence = 1f,
-                    userVerified = existingSeries?.userVerified ?: true,
-                    firstSeenAt = existingSeries?.firstSeenAt ?: now,
-                    lastSeenAt = now,
-                    lastCheckedAt = existingSeries?.lastCheckedAt
-                )
-            )
-
+            val existingSeries = dao.seriesSource(AUDIOBOO_SOURCE_ID, seriesRemoteKey) ?: dao.seriesSourceByUrl(AUDIOBOO_SOURCE_ID, item.series.url)
+            dao.upsertSeriesSource(SeriesSourceEntity(item.series.id, AUDIOBOO_SOURCE_ID, seriesRemoteKey, item.series.url, item.series.name,
+                "SAME_SERIES", 1f, existingSeries?.userVerified ?: true, existingSeries?.firstSeenAt ?: now, now, existingSeries?.lastCheckedAt))
             item.books.forEach { book ->
                 val remoteKey = SourceKeys.remoteKey(null, book.url)
-                val existingBook = dao.bookSource(AUDIOBOO_SOURCE_ID, remoteKey)
-                    ?: dao.bookSourceByUrl(AUDIOBOO_SOURCE_ID, book.url)
+                val existingBook = dao.bookSource(AUDIOBOO_SOURCE_ID, remoteKey) ?: dao.bookSourceByUrl(AUDIOBOO_SOURCE_ID, book.url)
                 val key = existingBook?.key ?: SourceKeys.bookSourceKey(AUDIOBOO_SOURCE_ID, remoteKey)
-                dao.upsertBookSource(
-                    BookSourceEntity(
-                        key = key,
-                        canonicalBookId = book.id,
-                        canonicalSeriesId = item.series.id,
-                        sourceId = AUDIOBOO_SOURCE_ID,
-                        remoteKey = remoteKey,
-                        url = book.url,
-                        remoteTitle = book.title,
-                        remoteAuthor = book.author,
-                        confidence = 1f,
-                        firstSeenAt = existingBook?.firstSeenAt ?: now,
-                        lastSeenAt = now,
-                        lastCheckedAt = existingBook?.lastCheckedAt
-                    )
-                )
-
+                dao.upsertBookSource(BookSourceEntity(key, book.id, item.series.id, AUDIOBOO_SOURCE_ID, remoteKey, book.url, book.title,
+                    book.author, null, 1f, existingBook?.firstSeenAt ?: now, now, existingBook?.lastCheckedAt))
                 book.archiveUrl?.takeIf { it.isNotBlank() }?.let { archiveUrl ->
                     val existingAvailability = dao.availability(key).firstOrNull { it.type == DownloadType.ARCHIVE.name }
-                    dao.upsertAvailability(
-                        SourceAvailabilityEntity(
-                            bookSourceKey = key,
-                            sourceId = AUDIOBOO_SOURCE_ID,
-                            type = DownloadType.ARCHIVE.name,
-                            status = "AVAILABLE",
-                            uri = archiveUrl,
-                            firstSeenAt = existingAvailability?.firstSeenAt ?: now,
-                            lastSeenAt = now,
-                            lastCheckedAt = now
-                        )
-                    )
+                    dao.upsertAvailability(SourceAvailabilityEntity(key, AUDIOBOO_SOURCE_ID, DownloadType.ARCHIVE.name, "AVAILABLE", archiveUrl,
+                        existingAvailability?.firstSeenAt ?: now, now, now))
                 }
             }
         }

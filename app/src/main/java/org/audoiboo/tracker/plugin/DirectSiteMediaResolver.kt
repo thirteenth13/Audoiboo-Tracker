@@ -29,9 +29,11 @@ object DirectSiteMediaResolver {
         if (!hostAllowed(playlistUrl, manifest.permissions.effectiveDownloadHosts + setOf("redirectto.cc"))) return null
         val playlist = get(playlistUrl) ?: return null
         if (playlist.statusCode !in 200..299) return null
-        val urls = extractJsonMedia(playlist.body, playlist.finalUrl)
-            .filter { isHttpMedia(it) && hostAllowed(it, manifest.permissions.effectiveDownloadHosts) }
-            .distinct()
+        val urls = BazaPlaylistPolicy.extract(
+            responseBody = playlist.body,
+            baseUrl = playlist.finalUrl,
+            allowedHosts = manifest.permissions.effectiveDownloadHosts
+        )
         if (urls.isEmpty()) return null
         return Result(urls, listOf(
             "baza-playlist-url=${playlistUrl.take(500)}",

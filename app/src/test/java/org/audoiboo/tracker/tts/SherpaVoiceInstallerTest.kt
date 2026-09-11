@@ -9,6 +9,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -18,11 +19,7 @@ class SherpaVoiceInstallerTest {
         val root = Files.createTempDirectory("voice-installer").toFile()
         try {
             val model = byteArrayOf(1, 2, 3, 4, 5)
-            val archive = archiveOf(
-                "vits-piper-test/model.int8.onnx" to model,
-                "vits-piper-test/tokens.txt" to "a\nb\n".toByteArray(),
-                "vits-piper-test/espeak-ng-data/readme" to "data".toByteArray(),
-            )
+            val archive = validArchive(model)
             val pkg = testPackage(archive)
             val manager = VoiceModelManager(root)
             val installer = SherpaVoiceInstaller(manager) { ByteArrayInputStream(archive) }
@@ -42,10 +39,7 @@ class SherpaVoiceInstallerTest {
     fun rejectsArchiveChecksumMismatchWithoutPublishingModel() {
         val root = Files.createTempDirectory("voice-installer-bad-sha").toFile()
         try {
-            val archive = archiveOf(
-                "vits-piper-test/model.int8.onnx" to byteArrayOf(1),
-                "vits-piper-test/tokens.txt" to byteArrayOf(2),
-            )
+            val archive = validArchive(byteArrayOf(1))
             val pkg = testPackage(archive).copy(archiveSha256 = "0".repeat(64))
             val manager = VoiceModelManager(root)
             val installer = SherpaVoiceInstaller(manager) { ByteArrayInputStream(archive) }
@@ -65,6 +59,7 @@ class SherpaVoiceInstallerTest {
                 "../outside" to "bad".toByteArray(),
                 "vits-piper-test/model.int8.onnx" to byteArrayOf(1),
                 "vits-piper-test/tokens.txt" to byteArrayOf(2),
+                "vits-piper-test/espeak-ng-data/readme" to byteArrayOf(3),
             )
             val pkg = testPackage(archive)
             val manager = VoiceModelManager(root)
@@ -77,6 +72,80 @@ class SherpaVoiceInstallerTest {
             root.deleteRecursively()
         }
     }
+
+    @Test
+    fun rejectsPackageWithoutModel() {
+        assertMissingRuntimeAsset(
+            archiveOf(
+                "vits-piper-test/tokens.txt" to byteArrayOf(2),
+                "vits-piper-test/espeak-ng-data/readme" to byteArrayOf(3),
+            )
+        )
+    }
+
+    @Test
+    fun rejectsPackageWithoutTokens() {
+        assertMissingRuntimeAsset(
+            archiveOf(
+                "vits-piper-test/model.int8.onnx" to byteArrayOf(1),
+                "vits-piper-test/espeak-ng-data/readme" to byteArrayOf(3),
+            )
+        )
+    }
+
+    @Test
+    fun rejectsPackageWithoutEspeakData() {
+        assertMissingRuntimeAsset(
+            archiveOf(
+                "vits-piper-test/model.int8.onnx" to byteArrayOf(1),
+                "vits-piper-test/tokens.txt" to byteArrayOf(2),
+            )
+        )
+    }
+
+    @Test
+    fun failedReplacementKeepsPreviouslyVerifiedInstall() {
+        val root = Files.createTempDirectory("voice-installer-rollback").toFile()
+        try {
+            val oldModel = byteArrayOf(7, 8, 9)
+            val goodArchive = validArchive(oldModel)
+            val goodPackage = testPackage(goodArchive)
+            val manager = VoiceModelManager(root)
+            SherpaVoiceInstaller(manager) { ByteArrayInputStream(goodArchive) }.install(goodPackage).getOrThrow()
+
+            val badArchive = archiveOf(
+                "vits-piper-test/model.int8.onnx" to byteArrayOf(9, 9, 9),
+                "vits-piper-test/tokens.txt" to byteArrayOf(2),
+            )
+            val badPackage = testPackage(badArchive)
+            val badInstaller = SherpaVoiceInstaller(manager) { ByteArrayInputStream(badArchive) }
+
+            assertTrue(badInstaller.install(badPackage).isFailure)
+            assertNotNull(SherpaVoiceInstaller(manager) { error("must not download") }.installedSpec(goodPackage))
+            assertArrayEquals(oldModel, File(manager.modelDir(goodPackage.modelId, goodPackage.version), goodPackage.modelFileName).readBytes())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    private fun assertMissingRuntimeAsset(archive: ByteArray) {
+        val root = Files.createTempDirectory("voice-installer-required").toFile()
+        try {
+            val pkg = testPackage(archive)
+            val manager = VoiceModelManager(root)
+            val installer = SherpaVoiceInstaller(manager) { ByteArrayInputStream(archive) }
+            assertTrue(installer.install(pkg).isFailure)
+            assertFalse(manager.modelDir(pkg.modelId, pkg.version).exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    private fun validArchive(model: ByteArray): ByteArray = archiveOf(
+        "vits-piper-test/model.int8.onnx" to model,
+        "vits-piper-test/tokens.txt" to "a\nb\n".toByteArray(),
+        "vits-piper-test/espeak-ng-data/readme" to "data".toByteArray(),
+    )
 
     private fun testPackage(archive: ByteArray): SherpaVoicePackage {
         val archiveFile = Files.createTempFile("voice", ".tar.bz2").toFile()

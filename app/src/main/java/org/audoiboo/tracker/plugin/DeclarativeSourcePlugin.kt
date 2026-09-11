@@ -78,10 +78,10 @@ class DeclarativeSourcePlugin(
                     mergeResolvedWithFallback(resolved, fallback, series, ref)
                 }
 
-            // Some catalog pages lag behind the site's search index. When a declarative source can
-            // both search and resolve books, use matching search hits as a conservative completeness
-            // pass. Besides the plain series title, ask explicitly for the next likely volume.
-            val canSearchForMissing = canLookup &&
+            // Baza's public search currently returns a repeated unrelated front-page result set.
+            // Its author-directory discovery is authoritative, so do not use generic search to
+            // supplement or manufacture Baza candidates until the site search is reliable again.
+            val canSearchForMissing = manifest.id != "baza-knig" && canLookup &&
                 SourceCapability.SERIES_SEARCH in manifest.capabilities &&
                 manifest.entrypoints.containsKey("seriesSearch")
             val supplemental = if (canSearchForMissing) {
@@ -122,6 +122,7 @@ class DeclarativeSourcePlugin(
 
     override suspend fun searchSeries(query: SeriesSearchQuery): List<SeriesCandidate> {
         if (SourceCapability.SERIES_SEARCH !in manifest.capabilities) return emptyList()
+        if (manifest.id == "baza-knig") return emptyList()
         return guarded {
             runtime.searchSeries(manifest, packageDir, query).map { candidate ->
                 candidate.copy(series = sanitizeSeries(candidate.series))

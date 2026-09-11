@@ -150,12 +150,18 @@ object CatalogSeriesHeuristics {
             (if (book.authors.isNotEmpty()) 1 else 0)
 }
 
+private data class CatalogProviderAttempt(
+    val providerId: String,
+    val results: List<CatalogDiscoveryResult>,
+    val failed: Boolean
+)
+
 /** Searches all enabled bibliographic providers and returns normalized author/series catalogs. */
 class CatalogDiscoveryEngine(
     private val registry: SourcePluginRegistry,
     private val maxAuthorsPerProvider: Int = 3,
     private val maxBooksPerAuthor: Int = 200,
-    private val providerTimeoutMs: Long = 7_000L
+    private val providerTimeoutMs: Long = 22_000L
 ) {
     init {
         require(maxAuthorsPerProvider in 1..10)
@@ -165,15 +171,30 @@ class CatalogDiscoveryEngine(
 
     suspend fun discoverByAuthor(authorQuery: String): List<CatalogDiscoveryResult> {
         if (authorQuery.isBlank()) return emptyList()
-        val results = supervisorScope {
+        val attempts = supervisorScope {
             registry.withCapability(SourceCapability.AUTHOR_CATALOG).mapNotNull { plugin ->
                 val provider = plugin as? AuthorCatalogProvider ?: return@mapNotNull null
                 async {
-                    withTimeoutOrNull(providerTimeoutMs) {
-                        discoverProvider(plugin, provider, authorQuery)
-                    }.orEmpty()
+                    val completed = withTimeoutOrNull(providerTimeoutMs) {
+                        try {
+                            CatalogProviderAttempt(
+                                providerId = plugin.descriptor.id,
+                                results = discoverProvider(plugin, provider, authorQuery),
+                                failed = false
+                            )
+                        } catch (t: Throwable) {
+                            if (t is CancellationException) throw t
+                            CatalogProviderAttempt(plugin.descriptor.id, emptyList(), failed = true)
+                        }
+                    }
+                    completed ?: CatalogProviderAttempt(plugin.descriptor.id, emptyList(), failed = true)
                 }
-            }.awaitAll().flatten()
+            }.awaitAll()
+        }
+        val results = attempts.flatMap { it.results }
+        if (results.isEmpty() && attempts.isNotEmpty() && attempts.all { it.failed }) {
+            val providers = attempts.joinToString { it.providerId }
+            error("Каталог тимчасово недоступний ($providers). Перевірте мережу та повторіть пошук.")
         }
         return results.sortedWith(
             compareByDescending<CatalogDiscoveryResult> { it.author.confidence }
@@ -187,15 +208,14 @@ class CatalogDiscoveryEngine(
         provider: AuthorCatalogProvider,
         authorQuery: String
     ): List<CatalogDiscoveryResult> {
-        val authors = try {
-            withContext(Dispatchers.IO) {
-                provider.searchAuthors(authorQuery, maxAuthorsPerProvider)
-            }
-        } catch (t: Throwable) {
-            if (t is CancellationException) throw t
-            return emptyList()
+        val authors = withContext(Dispatchers.IO) {
+            provider.searchAuthors(authorQuery, maxAuthorsPerProvider)
         }
-        return supervisorScope {
+        if (authors.isEmpty()) return emptyList()
+
+        var loadFailure: Throwable? = null
+        var successfulLoads = 0
+        val discovered = supervisorScope {
             authors.take(maxAuthorsPerProvider).mapNotNull { author ->
                 if (author.providerId != plugin.descriptor.id) return@mapNotNull null
                 async {
@@ -203,13 +223,17 @@ class CatalogDiscoveryEngine(
                         val catalog = withContext(Dispatchers.IO) {
                             provider.loadAuthorCatalog(author, maxBooksPerAuthor)
                         }
+                        successfulLoads++
                         CatalogSeriesHeuristics.group(catalog)
                     } catch (t: Throwable) {
                         if (t is CancellationException) throw t
+                        loadFailure = t
                         null
                     }
                 }
             }.awaitAll().filterNotNull()
         }
+        if (discovered.isEmpty() && successfulLoads == 0 && loadFailure != null) throw loadFailure as Throwable
+        return discovered
     }
 }

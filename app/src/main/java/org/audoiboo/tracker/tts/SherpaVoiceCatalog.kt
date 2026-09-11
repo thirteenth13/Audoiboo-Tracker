@@ -39,8 +39,8 @@ object SherpaVoiceCatalog {
         language = "ru",
         displayName = "Русский — Ruslan",
         archiveUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ru_RU-ruslan-medium-int8.tar.bz2",
-        archiveSha256 = "64fc4cfe9f4e9701a2a67d1ef17f2c0b8353cf4b36dd1eb0207ccafad9a2d8c7",
-        archiveSizeBytes = 22_031_578L,
+        archiveSha256 = "93b9c97e1a7c503b42d3d3983b9a8f76a1ff751d27575f79c9ad9a46a5ad73ac",
+        archiveSizeBytes = 21_127_907L,
         modelFileName = "ru_RU-ruslan-medium.int8.onnx",
     )
 

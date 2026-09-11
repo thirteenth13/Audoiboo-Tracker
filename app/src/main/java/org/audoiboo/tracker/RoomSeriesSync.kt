@@ -10,6 +10,7 @@ import org.audoiboo.tracker.plugin.CanonicalBookCreationPolicy
 import org.audoiboo.tracker.plugin.CanonicalBookMatchInput
 import org.audoiboo.tracker.plugin.CanonicalSeriesMatchInput
 import org.audoiboo.tracker.plugin.CanonicalSourceBookLink
+import org.audoiboo.tracker.plugin.ExistingSourceBookMappingPolicy
 import org.audoiboo.tracker.plugin.MatchDisposition
 import org.audoiboo.tracker.plugin.PinnedSeriesDiscoveryPolicy
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
@@ -420,24 +421,38 @@ internal object RoomSeriesSync {
             if (finding.disposition != MatchDisposition.AUTO_ACCEPT && !acceptedReview) return@forEach
             if (!SeriesDecisionPolicy.allowsAutomaticLink(canonicalSeriesId, decisions)) return@forEach
 
+            val filteredBooks = SeriesBookMembershipPolicy.filter(finding.series, finding.books)
+            val mappedBookIds = filteredBooks.associateWith { sourceBook ->
+                SourceMetadataRepository.canonicalBookIdForSource(context, sourceBook)
+            }
             val pendingBookReviews = mutableListOf<PendingBookReview>()
             val links = db.withTransaction {
                 val snapshot = dao.seriesWithBooks(canonicalSeriesId) ?: return@withTransaction emptyList()
                 val canonicalBooks = snapshot.books.sortedBy { it.sortIndex }.toMutableList()
+                val canonicalBookIds = canonicalBooks.mapTo(linkedSetOf()) { it.id }
                 val usedIds = linkedSetOf<String>()
                 var nextSortIndex = (canonicalBooks.maxOfOrNull { it.sortIndex } ?: -1) + 1
                 val now = System.currentTimeMillis()
                 val sourceLinks = mutableListOf<CanonicalSourceBookLink>()
 
-                SeriesBookMembershipPolicy.filter(finding.series, finding.books).forEach sourceLoop@ { sourceBook ->
-                    val availableCandidates = canonicalBooks.filterNot { it.id in usedIds }.map(::canonicalBookInput)
-                    val identityMatch = AuthorEnrichedIdentityMatcher.bestBookMatch(
-                        context = context,
-                        incoming = sourceBook,
-                        candidates = availableCandidates
+                filteredBooks.forEach sourceLoop@ { sourceBook ->
+                    val mappedId = ExistingSourceBookMappingPolicy.resolve(
+                        mappedCanonicalBookId = mappedBookIds[sourceBook],
+                        canonicalBookIds = canonicalBookIds,
+                        usedCanonicalBookIds = usedIds
                     )
+                    val mappedExisting = mappedId?.let { id -> canonicalBooks.firstOrNull { it.id == id } }
+                    val availableCandidates = canonicalBooks.filterNot { it.id in usedIds }.map(::canonicalBookInput)
+                    val identityMatch = if (mappedExisting == null) {
+                        AuthorEnrichedIdentityMatcher.bestBookMatch(
+                            context = context,
+                            incoming = sourceBook,
+                            candidates = availableCandidates
+                        )
+                    } else null
                     val match = identityMatch?.takeIf { it.disposition == MatchDisposition.AUTO_ACCEPT }
-                    val existing = match?.value?.id?.let { id -> canonicalBooks.firstOrNull { it.id == id } }
+                    val matchedExisting = match?.value?.id?.let { id -> canonicalBooks.firstOrNull { it.id == id } }
+                    val existing = mappedExisting ?: matchedExisting
                     if (existing == null) {
                         val blockedByOccupiedVolume = !CanonicalBookCreationPolicy.shouldCreateUnmatched(sourceBook, availableCandidates)
                         if (identityMatch?.disposition == MatchDisposition.REVIEW || blockedByOccupiedVolume) {
@@ -466,7 +481,11 @@ internal object RoomSeriesSync {
                     dao.upsertBooks(listOf(entity))
                     canonicalBooks.removeAll { it.id == entity.id }
                     canonicalBooks += entity
-                    sourceLinks += CanonicalSourceBookLink(entity.id, sourceBook, match?.confidence ?: 1f)
+                    sourceLinks += CanonicalSourceBookLink(
+                        entity.id,
+                        sourceBook,
+                        if (mappedExisting != null) 1f else match?.confidence ?: 1f
+                    )
                 }
                 sourceLinks
             }

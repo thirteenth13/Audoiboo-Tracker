@@ -83,6 +83,9 @@ class AudoibooApp : Application() {
             runCatching { CatalogCanonicalUrlRepair.repair(this@AudoibooApp) }
             // Merge only strong provider duplicates into authoritative catalog book anchors.
             runCatching { CatalogBookDeduplicationRepair.repairAll(this@AudoibooApp) }
+            // Source rows survive canonical dedupe/deletion by design. Drop only stale canonical ids;
+            // keep the observations themselves so discovery/manual review can safely relink them.
+            runCatching { LegacySourceMetadataRepair.repair(this@AudoibooApp) }
             // Rebind stale MediaStore/SAF URIs after reboot, provider changes or an app restore.
             runCatching { LibraryUriRecovery.recover(this@AudoibooApp) }
             runCatching { RoomCoverSync.enqueueAll(this@AudoibooApp) }

@@ -9,7 +9,6 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import org.json.JSONArray
 import java.net.URI
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicBoolean
@@ -74,22 +73,13 @@ class PoleknigPlayerCapture(private val context: Context) {
 
             fun parsePlaylist(raw: String?) {
                 val text = raw?.trim()?.takeIf { it.isNotBlank() } ?: return
-                runCatching {
-                    val arr = JSONArray(text)
-                    diagnostics += "pole-playlist-items=${arr.length()}"
-                    for (i in 0 until arr.length()) {
-                        val item = arr.optJSONObject(i) ?: continue
-                        val title = item.optString("title", (i + 1).toString())
-                        val file = item.optString("file").replace("\\/", "/")
-                        // Some entries contain two equivalent signed resolver URLs separated by " or ".
-                        // One valid URL is enough; prefer the first exactly as supplied by Poleknig.
-                        val url = file.split(Regex("\\s+or\\s+"), limit = 2).firstOrNull()?.trim().orEmpty()
-                        if (url.isNotBlank()) {
-                            diagnostics += "pole-playlist-track:$title"
-                            remember(url, "playlist")
-                        }
-                    }
-                }.onFailure { diagnostics += "pole-playlist-parse-error:${it.javaClass.simpleName}" }
+                val urls = PoleknigPlaylistPolicy.extract(text, pageUrl)
+                diagnostics += "pole-playlist-items=${urls.size}"
+                if (urls.isEmpty()) diagnostics += "pole-playlist-parse-empty"
+                urls.forEachIndexed { index, url ->
+                    diagnostics += "pole-playlist-track:${index + 1}"
+                    remember(url, "playlist")
+                }
             }
 
             fun fetchPlaylist() {

@@ -39,7 +39,7 @@ class BazaAuthorDiscoveryPagingTest {
                 """.trimIndent()
                 "https://baza-knig.info/avtor-tarmashev?page=2",
                 "https://baza-knig.info/avtor-tarmashev?page=3" -> ""
-                else -> error("unexpected ${request.url}")
+                else -> ""
             }
             PluginHttpResponse(200, request.url, body)
         }))

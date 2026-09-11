@@ -1,7 +1,6 @@
 package org.audoiboo.tracker
 
 import android.content.Context
-import android.net.Uri
 import org.audoiboo.tracker.plugin.CatalogAudioSourceSelector
 import org.audoiboo.tracker.plugin.CatalogSourceMatch
 import org.audoiboo.tracker.plugin.MatchDisposition
@@ -52,7 +51,7 @@ internal object CatalogLibraryImport {
     ): CatalogLibraryImportResult.Added {
         val dao = AudoibooDatabase.get(context).libraryDao()
         val seriesId = "catalog::${match.canonical.id}"
-        val seriesUrl = "catalog://${match.catalogProviderId}/series/${Uri.encode(match.canonical.id)}"
+        val seriesUrl = requireNotNull(CatalogCanonicalUrlPolicy.seriesUrl(match.catalogProviderId, match.canonical.id))
         val previous = dao.seriesWithBooks(seriesId)
         val previousBooks = previous?.books.orEmpty().associateBy { it.id }
         val now = System.currentTimeMillis()
@@ -73,7 +72,7 @@ internal object CatalogLibraryImport {
                 id = bookId,
                 seriesId = seriesId,
                 title = book.title,
-                url = "catalog://${book.providerId}/book/${Uri.encode(book.remoteId)}",
+                url = requireNotNull(CatalogCanonicalUrlPolicy.bookUrl(book.providerId, book.remoteId)),
                 author = book.authors.takeIf { it.isNotEmpty() }?.joinToString() ?: match.author.name.takeIf { it.isNotBlank() },
                 coverUrl = book.coverUrl ?: old?.coverUrl,
                 status = old?.status ?: "NEW",

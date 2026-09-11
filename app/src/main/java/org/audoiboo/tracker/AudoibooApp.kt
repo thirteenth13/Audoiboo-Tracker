@@ -10,6 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.audoiboo.tracker.plugin.CatalogLibrarySourcePlugin
 import org.audoiboo.tracker.plugin.DeviceWebViewResolutionRuntime
+import org.audoiboo.tracker.plugin.NetworkFallbackSettings
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
 
 class AudoibooApp : Application() {
@@ -50,6 +51,7 @@ class AudoibooApp : Application() {
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
         AppSettingsStore.initialize(this)
+        NetworkFallbackSettings.initialize(this)
         ManagedDownloads.initialize(this)
         DownloadScheduler.recover(this)
         WebDavSync.schedule(this)

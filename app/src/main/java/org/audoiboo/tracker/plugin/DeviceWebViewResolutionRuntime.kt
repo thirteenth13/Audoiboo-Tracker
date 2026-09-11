@@ -23,7 +23,7 @@ object DeviceWebViewResolutionRuntime {
         val relative = manifest.entrypoints["mediaCapture"] ?: return emptyList()
         val rule = runCatching { PluginMediaCaptureRule.load(File(packageDir, relative)) }.getOrNull() ?: return emptyList()
         val result = capture(manifest, rule, book.url) ?: return emptyList()
-        return result.mediaUrls.distinct().mapIndexed { index, url ->
+        val rawCandidates = result.mediaUrls.distinct().mapIndexed { index, url ->
             DownloadCandidate(
                 type = rule.downloadType,
                 url = url,
@@ -32,6 +32,7 @@ object DeviceWebViewResolutionRuntime {
                 priority = 500 - index
             )
         }
+        return DownloadCandidateSelectionPolicy.preferredWithinSource(rawCandidates)
     }
 
     suspend fun captureDiagnostics(url: String): PluginMediaCaptureResult? {

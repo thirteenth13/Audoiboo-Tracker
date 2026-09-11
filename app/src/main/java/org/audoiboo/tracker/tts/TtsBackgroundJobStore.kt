@@ -33,6 +33,7 @@ internal class TtsBackgroundJobStore(private val root: File) {
 
     @Synchronized
     fun load(sessionId: String): TtsBackgroundBookJob? {
+        require(sessionId.isNotBlank())
         val file = fileFor(sessionId)
         if (!file.isFile) return null
         return runCatching { decode(JSONObject(file.readText(Charsets.UTF_8)), sessionId) }.getOrNull()
@@ -40,6 +41,7 @@ internal class TtsBackgroundJobStore(private val root: File) {
 
     @Synchronized
     fun delete(sessionId: String): Boolean {
+        require(sessionId.isNotBlank())
         val target = fileFor(sessionId)
         File(target.parentFile, target.name + ".tmp").delete()
         return !target.exists() || target.delete()
@@ -112,8 +114,7 @@ internal class TtsBackgroundJobStore(private val root: File) {
     private fun nullableString(root: JSONObject, key: String): String? =
         if (!root.has(key) || root.isNull(key)) null else root.getString(key)
 
-    private fun fileFor(sessionId: String): File = File(root, safe(sessionId) + ".json")
-    private fun safe(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_")
+    private fun fileFor(sessionId: String): File = File(root, TtsStableId.hex(sessionId) + ".json")
 
     companion object {
         private const val FORMAT_VERSION = 1

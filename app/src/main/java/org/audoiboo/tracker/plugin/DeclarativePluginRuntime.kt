@@ -92,26 +92,11 @@ class DeclarativePluginRuntime(private val sandbox:PluginSandbox,private val dec
     resolvedAuthorUrl=exactAuthorUrl(firstDoc,author,"a[href*='/avtor-']")
     val maxPage=firstDoc.select("a[href]").mapNotNull{Regex("[?&](?:page|p)=(\\d+)").find(it.attr("href"))?.groupValues?.getOrNull(1)?.toIntOrNull()}.maxOrNull()?.coerceAtMost(28)?:1
     if(resolvedAuthorUrl==null&&maxPage>1){
-     var low=2
-     var high=maxPage
-     val target=authorSortKey(author)
-     var probes=0
-     while(resolvedAuthorUrl==null&&low<=high&&probes++<8){
-      val page=(low+high)/2
+     for(page in 2..maxPage){
       val response=session.httpGet(pageUrl(page))
-      if(response.statusCode !in 200..299){low=page+1;continue}
-      val doc=Jsoup.parse(response.body,response.finalUrl)
-      resolvedAuthorUrl=exactAuthorUrl(doc,author,"a[href*='/avtor-']")
+      if(response.statusCode !in 200..299)continue
+      resolvedAuthorUrl=exactAuthorUrl(Jsoup.parse(response.body,response.finalUrl),author,"a[href*='/avtor-']")
       if(resolvedAuthorUrl!=null)break
-      val keys=doc.select("a[href*='/avtor-']").map{authorSortKey(it.text())}.filter{it.isNotBlank()}
-      val firstKey=keys.minOrNull()
-      val lastKey=keys.maxOrNull()
-      when{
-       firstKey==null||lastKey==null->low=page+1
-       target<firstKey->high=page-1
-       target>lastKey->low=page+1
-       else->break
-      }
      }
     }
    }

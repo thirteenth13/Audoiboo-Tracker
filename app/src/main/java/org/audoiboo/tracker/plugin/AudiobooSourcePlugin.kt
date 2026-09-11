@@ -2,6 +2,7 @@ package org.audoiboo.tracker.plugin
 
 import android.util.Log
 import org.audoiboo.tracker.AudiobooFastParser
+import org.audoiboo.tracker.AudiobooSearchParser
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -123,7 +124,7 @@ object AudiobooSourcePlugin : SourcePlugin, SeriesProvider, SeriesDiscoveryProvi
 
             routes.forEach { (name, url) ->
                 diagnostic("provider audioboo SEARCH_FALLBACK query='$query' route=$name url=$url")
-                val books = AudiobooFastParser.parseSeries(url).orEmpty()
+                val books = AudiobooSearchParser.fetch(url)
                 val refs = canonicalRefs(books, author, canonical)
                 diagnostic("PROBE_SUMMARY id=audioboo query='$query' route=$name parsedBooks=${books.size} canonicalRefs=${refs.size}")
                 if (refs.isNotEmpty()) {

@@ -60,7 +60,9 @@ class FantLabCatalogPluginTest {
     fun cycleMembersStayInsideLimitForProlificAuthor() {
         val author = CatalogAuthor("fantlab", "60", "Сергей Лукьяненко")
         val standalone = (1..205).joinToString(",") { index ->
-            """{"work_id":${1000 + index},"work_name":"Отдельное произведение $index","work_year":2000,"authors":[{"name":"Сергей Лукьяненко"}]}"""
+            // Keep the ordinal away from the suffix: titles ending in a bare number are intentionally
+            // interpreted by CatalogSeriesHeuristics as an inferred numbered series.
+            """{"work_id":${1000 + index},"work_name":"Отдельное $index произведение","work_year":2000,"authors":[{"name":"Сергей Лукьяненко"}]}"""
         }
         val json = JSONObject("""{
           "cycles_blocks":{"1":{"list":[{"work_id":60,"work_name":"Дозоры","children":[

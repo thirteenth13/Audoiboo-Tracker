@@ -21,12 +21,18 @@ internal object SourceObservationPreference {
     )
 }
 
+internal data class RoomResolvedDownload(
+    val url: String,
+    val sourcePageUrl: String,
+    val sourceId: String
+)
+
 internal object RoomArchiveResolver {
-    suspend fun resolveAll(
+    suspend fun resolveDownloads(
         context: Context,
         book: BookEntity,
         sourceId: String? = null
-    ): List<String> = withContext(Dispatchers.IO) {
+    ): List<RoomResolvedDownload> = withContext(Dispatchers.IO) {
         PluginPackageRuntime.initialize(context.filesDir)
 
         val primaryPlugin = PluginPackageRuntime.registry.forUrl(book.url)
@@ -78,8 +84,20 @@ internal object RoomArchiveResolver {
                 candidate = item.candidate
             )
         }
-        resolved.map { it.candidate.url }.distinct()
+        resolved.map {
+            RoomResolvedDownload(
+                url = it.candidate.url,
+                sourcePageUrl = it.book.url,
+                sourceId = it.book.sourceId
+            )
+        }.distinctBy { it.sourceId to it.url }
     }
+
+    suspend fun resolveAll(
+        context: Context,
+        book: BookEntity,
+        sourceId: String? = null
+    ): List<String> = resolveDownloads(context, book, sourceId).map { it.url }.distinct()
 
     suspend fun resolve(context: Context, book: BookEntity, sourceId: String? = null): String? =
         resolveAll(context, book, sourceId).firstOrNull()

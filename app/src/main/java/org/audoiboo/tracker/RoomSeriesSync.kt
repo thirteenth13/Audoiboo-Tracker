@@ -407,9 +407,7 @@ internal object RoomSeriesSync {
                     val existing = match?.value?.id?.let { id -> canonicalBooks.firstOrNull { it.id == id } }
                     val entity = if (existing != null) {
                         usedIds += existing.id
-                        val replaceCatalogUrl = existing.url.startsWith("catalog://", ignoreCase = true)
                         existing.copy(
-                            url = if (replaceCatalogUrl) sourceBook.url else existing.url,
                             author = sourceAuthor(sourceBook) ?: existing.author,
                             coverUrl = sourceBook.coverUrl ?: existing.coverUrl,
                             updatedAt = now

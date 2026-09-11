@@ -57,18 +57,38 @@ class PoleknigPlayerCapture(private val context: Context) {
                 return if (rule.sortTrackNumber) selected.sortedWith(compareBy({ PluginWebViewMediaCaptureRuntime.trackNumber(it) ?: Int.MAX_VALUE }, { it })) else selected
             }
 
-            fun finish(reason: String) {
-                if (!finished.compareAndSet(false, true)) return
+            fun destroyWebView() {
                 handler.removeCallbacksAndMessages(null)
-                val media = snapshot()
-                diagnostics += reason
-                diagnostics += "pole-requests=$requests"
-                diagnostics += "media=${media.size}"
                 runCatching {
                     webView.stopLoading(); webView.loadUrl("about:blank")
                     webView.removeJavascriptInterface(BRIDGE); webView.destroy()
                 }
-                onComplete(PluginMediaCaptureResult(pageUrl, media, diagnostics.toList()))
+            }
+
+            fun finish(reason: String) {
+                if (!finished.compareAndSet(false, true)) return
+                val media = snapshot()
+                diagnostics += reason
+                diagnostics += "pole-requests=$requests"
+                diagnostics += "media=${media.size}"
+                destroyWebView()
+                if (media.isNotEmpty()) {
+                    onComplete(PluginMediaCaptureResult(pageUrl, media, diagnostics.toList()))
+                    return
+                }
+
+                // playlist.txt is a fast path, not the only player path. Poleknig can deny or omit
+                // that endpoint while the interactive player still exposes /files/<id> requests.
+                val fastDiagnostics = diagnostics.toList() + "pole-fallback=interactive-webview"
+                PoleknigWebViewMediaCapture(context).capture(pageUrl, rule.timeoutMs) { fallback ->
+                    onComplete(
+                        PluginMediaCaptureResult(
+                            fallback.pageUrl,
+                            fallback.mediaUrls,
+                            fastDiagnostics + fallback.diagnostics.map { "fallback:$it" }
+                        )
+                    )
+                }
             }
 
             fun parsePlaylist(raw: String?) {

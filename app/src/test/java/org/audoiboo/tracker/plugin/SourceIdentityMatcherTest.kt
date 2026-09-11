@@ -79,6 +79,28 @@ class SourceIdentityMatcherTest {
     }
 
     @Test
+    fun providerAudiobookNoiseStillAutoLinksWhenBookAuthorIsMissing() {
+        val incoming = SourceBook(
+            sourceId = "audioboo",
+            url = "https://audioboo.example/stellar-9",
+            title = "Стеллар 9 — Прометей аудиокнига слушать онлайн",
+            authors = emptyList(),
+            seriesTitle = "Стеллар",
+            seriesNumber = 9.0
+        )
+        val candidate = CanonicalBookMatchInput(
+            id = "stellar-9",
+            title = "Прометей",
+            authors = listOf("Роман Прокофьев"),
+            number = 9.0
+        )
+        val match = SourceIdentityMatcher.bestBookMatch(incoming, listOf(candidate))!!
+        assertEquals("stellar-9", match.value.id)
+        assertEquals(MatchDisposition.AUTO_ACCEPT, match.disposition)
+        assertTrue(match.evidence.contains("decorated provider title resolves to canonical title"))
+    }
+
+    @Test
     fun volumeNumberAloneDoesNotAutoLinkUnrelatedProviderTitle() {
         val incoming = SourceBook(
             sourceId = "provider",

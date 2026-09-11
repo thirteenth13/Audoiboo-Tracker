@@ -7,14 +7,27 @@ import java.nio.charset.StandardCharsets
 internal object CatalogCanonicalUrlPolicy {
     private const val SERIES_PREFIX = "catalog::"
 
+    fun seriesUrl(providerId: String, canonicalId: String): String? {
+        val provider = providerId.trim()
+        val canonical = canonicalId.trim()
+        if (provider.isBlank() || canonical.isBlank()) return null
+        return "catalog://$provider/series/${encodePathSegment(canonical)}"
+    }
+
+    fun bookUrl(providerId: String, remoteId: String): String? {
+        val provider = providerId.trim()
+        val remote = remoteId.trim()
+        if (provider.isBlank() || remote.isBlank()) return null
+        return "catalog://$provider/book/${encodePathSegment(remote)}"
+    }
+
     fun canonicalSeriesUrl(seriesId: String): String? {
         if (!seriesId.startsWith(SERIES_PREFIX)) return null
         val canonicalId = seriesId.removePrefix(SERIES_PREFIX)
         val separator = canonicalId.indexOf(':')
         if (separator <= 0 || separator == canonicalId.lastIndex) return null
         val providerId = canonicalId.substring(0, separator).trim()
-        if (providerId.isBlank()) return null
-        return "catalog://$providerId/series/${encodePathSegment(canonicalId)}"
+        return seriesUrl(providerId, canonicalId)
     }
 
     fun canonicalBookUrl(seriesId: String, bookId: String): String? {
@@ -26,8 +39,7 @@ internal object CatalogCanonicalUrlPolicy {
         if (separator <= 0 || separator == sourceIdentity.lastIndex) return null
         val providerId = sourceIdentity.substring(0, separator).trim()
         val remoteId = sourceIdentity.substring(separator + 1).trim()
-        if (providerId.isBlank() || remoteId.isBlank()) return null
-        return "catalog://$providerId/book/${encodePathSegment(remoteId)}"
+        return bookUrl(providerId, remoteId)
     }
 
     private fun encodePathSegment(value: String): String =

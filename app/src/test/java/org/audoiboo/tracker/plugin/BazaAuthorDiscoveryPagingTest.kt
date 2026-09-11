@@ -21,7 +21,7 @@ class BazaAuthorDiscoveryPagingTest {
             requested += request.url
             val body = when (request.url) {
                 "https://baza-knig.info/index.php?do=search&subaction=search&story=%D0%A1%D0%B5%D1%80%D0%B3%D0%B5%D0%B9+%D0%A2%D0%B0%D1%80%D0%BC%D0%B0%D1%88%D0%B5%D0%B2" ->
-                    return@PluginHttpTransport PluginHttpResponse(301, request.url, "")
+                    return@PluginHttpTransport PluginHttpResponse(404, request.url, "")
                 "https://baza-knig.info/authors/let-%D0%A2" -> """
                     <a href='/avtor-other-1'>Т Д</a>
                     <a href='?page=2'>2</a><a href='?page=3'>3</a><a href='?page=4'>4</a>
@@ -39,7 +39,7 @@ class BazaAuthorDiscoveryPagingTest {
                 """.trimIndent()
                 "https://baza-knig.info/avtor-tarmashev?page=2",
                 "https://baza-knig.info/avtor-tarmashev?page=3" -> ""
-                else -> ""
+                else -> error("unexpected ${request.url}")
             }
             PluginHttpResponse(200, request.url, body)
         }))

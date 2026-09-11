@@ -56,7 +56,20 @@ object DeviceWebViewResolutionRuntime {
         // the existing WebView/sequential engines below remain compatibility fallbacks.
         val direct = withContext(Dispatchers.IO) { DirectSiteMediaResolver.resolve(manifest, url) }
         if (direct != null) {
-            return PluginMediaCaptureResult(url, direct.mediaUrls, direct.diagnostics + "direct-playlist")
+            if (manifest.id == "knigavuhe") {
+                val scoped = KnigavuheMediaScopePolicy.sanitize(direct.mediaUrls)
+                if (!scoped.mixedBooks) {
+                    return PluginMediaCaptureResult(
+                        url,
+                        scoped.mediaUrls,
+                        direct.diagnostics + "knigavuhe-book-ids=${scoped.bookIds.joinToString(",")}" + "direct-playlist"
+                    )
+                }
+                // A cycle/omnibus page may expose several audiobook ids at once. Do not pass that
+                // through as one book; continue to the interactive fallback in case it can scope it.
+            } else {
+                return PluginMediaCaptureResult(url, direct.mediaUrls, direct.diagnostics + "direct-playlist")
+            }
         }
 
         return suspendCancellableCoroutine { continuation ->
@@ -71,9 +84,20 @@ object DeviceWebViewResolutionRuntime {
             continuation.invokeOnCancellation { restoreAudio() }
             val complete: (PluginMediaCaptureResult) -> Unit = { result ->
                 restoreAudio()
-                if (continuation.isActive) continuation.resume(
-                    result.copy(diagnostics = result.diagnostics + "direct-playlist-fallback")
-                )
+                if (continuation.isActive) {
+                    val scopedResult = if (manifest.id == "knigavuhe") {
+                        val scoped = KnigavuheMediaScopePolicy.sanitize(result.mediaUrls)
+                        result.copy(
+                            mediaUrls = scoped.mediaUrls,
+                            diagnostics = result.diagnostics +
+                                "knigavuhe-book-ids=${scoped.bookIds.joinToString(",")}" +
+                                if (scoped.mixedBooks) "knigavuhe-mixed-books-rejected" else "knigavuhe-single-book"
+                        )
+                    } else result
+                    continuation.resume(
+                        scopedResult.copy(diagnostics = scopedResult.diagnostics + "direct-playlist-fallback")
+                    )
+                }
             }
 
             when {

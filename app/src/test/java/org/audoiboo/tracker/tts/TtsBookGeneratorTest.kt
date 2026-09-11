@@ -55,14 +55,12 @@ class TtsBookGeneratorTest {
 
     @Test fun returnsOnlyCommittedChaptersWhenGenerationFails() = runBlocking {
         val root = Files.createTempDirectory("tts-book-fail").toFile()
-        var calls = 0
         val provider = object : TtsProvider {
             override val id = "fake"
             override val supportedLanguages = setOf("uk")
             override suspend fun getVoices(language: String) = emptyList<TtsVoice>()
             override suspend fun synthesize(request: TtsSynthesisRequest): TtsSynthesisResult {
-                calls++
-                if (calls > 2) error("synthetic failure")
+                if (request.text.contains("Друге речення")) error("synthetic failure")
                 val file = File(request.outputPath)
                 Pcm16Wav.write(SherpaAudio(FloatArray(2400) { 0.1f }, 24000), file)
                 return TtsSynthesisResult(file.absolutePath, 24000, 100)
@@ -81,7 +79,8 @@ class TtsBookGeneratorTest {
         val result = generator.generate(doc, session, File(root, "out"))
 
         assertEquals(TtsSessionState.FAILED, result.session.state)
-        assertTrue(result.chapters.size <= 1)
-        assertTrue(result.chapters.all { it.chapterIndex in result.session.completedChapterIndexes })
+        assertEquals(listOf(0), result.chapters.map { it.chapterIndex })
+        assertEquals(setOf(0), result.session.completedChapterIndexes)
+        assertTrue(result.chapters.all { it.audioFile.isFile && it.audioFile.length() > 44L })
     }
 }

@@ -50,6 +50,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
     var addUrl by remember { mutableStateOf("") }
     var syncing by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var showTopMenu by remember { mutableStateOf(false) }
     var pendingReview by remember { mutableStateOf<PendingSeriesReview?>(null) }
     var discoveryReviews by remember { mutableStateOf<List<SeriesMatchDecisionEntity>>(emptyList()) }
     var bookReviews by remember { mutableStateOf<List<PendingBookReview>>(emptyList()) }
@@ -117,15 +118,35 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
 
     Scaffold(
         topBar = { TopAppBar(
-            title = { Text(if (series != null) series.series.name else when (tab) { RoomLibraryTab.DOWNLOADS -> "Завантаження"; else -> "Audoiboo Tracker" }) },
-            navigationIcon = { if (series != null) IconButton(onClick = { selectedSeries = null }) { Icon(Icons.Filled.ArrowBack, "Назад") } },
+            title = {
+                Text(
+                    if (series != null) series.series.name else when (tab) { RoomLibraryTab.DOWNLOADS -> "Завантаження"; else -> "Audoiboo Tracker" },
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
+            navigationIcon = { if (series != null) IconButton(onClick = { showTopMenu = false; selectedSeries = null }) { Icon(Icons.Filled.ArrowBack, "Назад") } },
             actions = {
-                if (series != null) { IconButton(onClick = { syncUrl(series.series.url, false) }, enabled = !syncing) { Icon(Icons.Filled.Refresh, "Оновити") }; IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Filled.Delete, "Видалити серію") } }
-                else if (tab == RoomLibraryTab.SERIES) IconButton(onClick = { addUrl = ""; showAdd = true }) { Icon(Icons.Filled.Add, "Додати серію") }
-                IconButton(onClick = { activity.startActivity(Intent(activity, PlayerActivity::class.java)) }) { Icon(Icons.Filled.Headphones, "Плеєр") }
-                IconButton(onClick = { openSourceBrowser() }) { Icon(Icons.Filled.Public, "Браузер джерел") }
-                IconButton(onClick = { activity.startActivity(Intent(activity, CatalogDiscoveryActivity::class.java)) }) { Icon(Icons.Filled.Search, "Каталог авторів") }
-                IconButton(onClick = { activity.startActivity(Intent(activity, SettingsActivity::class.java)) }) { Icon(Icons.Filled.Settings, "Налаштування") }
+                if (series != null) {
+                    IconButton(onClick = { syncUrl(series.series.url, false) }, enabled = !syncing) { Icon(Icons.Filled.Refresh, "Оновити") }
+                    Box {
+                        IconButton(onClick = { showTopMenu = true }) { Icon(Icons.Filled.MoreVert, "Ще") }
+                        DropdownMenu(expanded = showTopMenu, onDismissRequest = { showTopMenu = false }) {
+                            DropdownMenuItem(text = { Text("Плеєр") }, leadingIcon = { Icon(Icons.Filled.Headphones, null) }, onClick = { showTopMenu = false; activity.startActivity(Intent(activity, PlayerActivity::class.java)) })
+                            DropdownMenuItem(text = { Text("Браузер джерел") }, leadingIcon = { Icon(Icons.Filled.Public, null) }, onClick = { showTopMenu = false; openSourceBrowser() })
+                            DropdownMenuItem(text = { Text("Каталог авторів") }, leadingIcon = { Icon(Icons.Filled.Search, null) }, onClick = { showTopMenu = false; activity.startActivity(Intent(activity, CatalogDiscoveryActivity::class.java)) })
+                            DropdownMenuItem(text = { Text("Налаштування") }, leadingIcon = { Icon(Icons.Filled.Settings, null) }, onClick = { showTopMenu = false; activity.startActivity(Intent(activity, SettingsActivity::class.java)) })
+                            HorizontalDivider()
+                            DropdownMenuItem(text = { Text("Видалити серію") }, leadingIcon = { Icon(Icons.Filled.Delete, null) }, onClick = { showTopMenu = false; confirmDelete = true })
+                        }
+                    }
+                } else {
+                    if (tab == RoomLibraryTab.SERIES) IconButton(onClick = { addUrl = ""; showAdd = true }) { Icon(Icons.Filled.Add, "Додати серію") }
+                    IconButton(onClick = { activity.startActivity(Intent(activity, PlayerActivity::class.java)) }) { Icon(Icons.Filled.Headphones, "Плеєр") }
+                    IconButton(onClick = { openSourceBrowser() }) { Icon(Icons.Filled.Public, "Браузер джерел") }
+                    IconButton(onClick = { activity.startActivity(Intent(activity, CatalogDiscoveryActivity::class.java)) }) { Icon(Icons.Filled.Search, "Каталог авторів") }
+                    IconButton(onClick = { activity.startActivity(Intent(activity, SettingsActivity::class.java)) }) { Icon(Icons.Filled.Settings, "Налаштування") }
+                }
             }
         ) },
         bottomBar = { if (series == null) NavigationBar {
@@ -235,12 +256,25 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
         if (resolvingArchive) return
         scope.launch {
             resolvingArchive = true
-            val resolvedUrls = runCatching { RoomArchiveResolver.resolveAll(context, book, sourceId) }.getOrDefault(emptyList())
-            val urls = if (resolvedUrls.isNotEmpty()) resolvedUrls else if (sourceId == null) listOfNotNull(book.archiveUrl) else emptyList()
+            val resolved = runCatching { RoomArchiveResolver.resolveDownloads(context, book, sourceId) }.getOrDefault(emptyList())
+            val downloads = if (resolved.isNotEmpty()) resolved else if (sourceId == null) {
+                listOfNotNull(book.archiveUrl?.let { RoomResolvedDownload(it, book.url, "legacy") })
+            } else emptyList()
             resolvingArchive = false
-            if (urls.isNotEmpty()) {
-                urls.distinct().forEach { url -> ManagedDownloads.enqueue(context = context, title = book.title, series = seriesName ?: "Без серії", author = book.author, bookUrl = book.url, archiveUrl = url, fileNameHint = url) }
-                Toast.makeText(context, if (urls.size == 1) "Додано до завантажень" else "Додано треків: ${urls.distinct().size}", Toast.LENGTH_SHORT).show()
+            if (downloads.isNotEmpty()) {
+                val distinct = downloads.distinctBy { it.url }
+                distinct.forEach { item ->
+                    ManagedDownloads.enqueue(
+                        context = context,
+                        title = book.title,
+                        series = seriesName ?: "Без серії",
+                        author = book.author,
+                        bookUrl = item.sourcePageUrl,
+                        archiveUrl = item.url,
+                        fileNameHint = item.url
+                    )
+                }
+                Toast.makeText(context, if (distinct.size == 1) "Додано до завантажень" else "Додано треків: ${distinct.size}", Toast.LENGTH_SHORT).show()
             } else if (sourceId != null) Toast.makeText(context, "${roomSourceLabel(sourceId)}: аудіо не знайдено", Toast.LENGTH_LONG).show()
             else { Toast.makeText(context, "Плагін не знайшов аудіо — відкриваю браузер джерел", Toast.LENGTH_LONG).show(); context.startActivity(Intent(context, MainActivity::class.java).putExtra(MainActivity.EXTRA_URL, book.url)) }
         }

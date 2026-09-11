@@ -46,8 +46,6 @@ class DownloadResolutionPlanner(
                 if (DeviceWebViewResolutionRuntime.supports(book.url)) {
                     val deviceCandidates = try {
                         DeviceWebViewResolutionRuntime.resolve(book)
-                            .distinctBy { SourceKeys.normalizeUrl(it.url) }
-                            .sortedByDescending { it.priority }
                     } catch (t: Throwable) {
                         if (t is CancellationException) throw t
                         emptyList()
@@ -66,28 +64,16 @@ class DownloadResolutionPlanner(
                 val resolver = plugin as? DownloadResolver ?: return@forEachIndexed
                 val candidates = try {
                     resolver.resolveDownloads(book)
-                        .filter { it.type == DownloadType.ARCHIVE || it.type == DownloadType.DIRECT_FILE }
-                        .distinctBy { SourceKeys.normalizeUrl(it.url) }
                 } catch (t: Throwable) {
                     if (t is CancellationException) throw t
                     emptyList()
                 }
-                if (candidates.isNotEmpty()) {
-                    // Any archive represents the complete book and therefore outranks a direct-file
-                    // playlist from the same source. Otherwise retain every direct track.
-                    val bestArchive = candidates
-                        .filter { it.type == DownloadType.ARCHIVE }
-                        .maxByOrNull { it.priority }
-                    val selected = bestArchive?.let(::listOf)
-                        ?: candidates
-                            .filter { it.type == DownloadType.DIRECT_FILE }
-                            .sortedByDescending { it.priority }
-                    if (selected.isNotEmpty()) {
-                        options += SourceResolution(
-                            resolved = selected.map { ResolvedDownloadCandidate(book, it) },
-                            sourceOrder = sourceOrder
-                        )
-                    }
+                val selected = DownloadCandidateSelectionPolicy.preferredWithinSource(candidates)
+                if (selected.isNotEmpty()) {
+                    options += SourceResolution(
+                        resolved = selected.map { ResolvedDownloadCandidate(book, it) },
+                        sourceOrder = sourceOrder
+                    )
                 }
             }
 

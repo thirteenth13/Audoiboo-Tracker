@@ -306,8 +306,9 @@ private fun SourceBrowserScreen(activity: ComponentActivity, initialUrl: String)
 
 internal fun isFlibustaBookUrl(url: String): Boolean = runCatching {
     val uri = URI(url)
+    val scheme = uri.scheme?.lowercase() ?: return@runCatching false
+    if (scheme != "http" && scheme != "https") return@runCatching false
     val host = uri.host?.lowercase() ?: return@runCatching false
-    val supportedHost = host == "flibusta.site" || host == "flibusta.one" || host == "flibusta.name" ||
-        host.endsWith(".flibusta.site") || host.endsWith(".flibusta.one") || host.endsWith(".flibusta.name")
+    val supportedHost = host == "flibusta.site" || host == "flibusta.one" || host == "flibusta.name"
     supportedHost && Regex("^/b/[^/]+/?$").matches(uri.path.orEmpty())
 }.getOrDefault(false)

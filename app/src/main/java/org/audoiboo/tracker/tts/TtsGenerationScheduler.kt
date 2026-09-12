@@ -18,6 +18,7 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 import org.audoiboo.tracker.R
 import org.audoiboo.tracker.ebook.BookDocument
+import org.audoiboo.tracker.ebook.TtsSynthesisPlanner
 
 /**
  * Persists long-running TTS execution intentions in WorkManager.
@@ -90,12 +91,15 @@ internal object TtsGenerationScheduler {
         val job = requireNotNull(backgroundJobStore(context).load(sessionId)) {
             "TTS background job is missing or invalid"
         }
-        require(job.sessionId == current.sessionId) { "TTS background job session mismatch" }
-        require(job.model.modelId == current.voice.modelId) { "TTS background job model mismatch" }
-        require(job.model.version == current.voice.modelVersion) { "TTS background job model version mismatch" }
+        validateResumeJob(current, job)
         val queued = current.queueForResume()
         store.save(queued)
-        enqueue(context, sessionId, title)
+        try {
+            enqueue(context, sessionId, title)
+        } catch (error: Throwable) {
+            store.save(current)
+            throw error
+        }
     }
 
     fun cancel(context: Context, sessionId: String) {
@@ -104,6 +108,20 @@ internal object TtsGenerationScheduler {
 
     internal fun sessionId(worker: CoroutineWorker): String? = worker.inputData.getString(KEY_SESSION_ID)
     internal fun title(worker: CoroutineWorker): String = worker.inputData.getString(KEY_TITLE).orEmpty()
+
+    internal fun validateResumeJob(current: TtsSession, job: TtsBackgroundBookJob) {
+        require(current.providerId == "sherpa-onnx") { "Background TTS requires sherpa-onnx session" }
+        require(job.sessionId == current.sessionId) { "TTS background job session mismatch" }
+        require(job.model.modelId == current.voice.modelId) { "TTS background job model mismatch" }
+        require(job.model.version == current.voice.modelVersion) { "TTS background job model version mismatch" }
+        require(job.model.language.equals(current.voice.language, ignoreCase = true)) {
+            "TTS background job language mismatch"
+        }
+        require(TtsSynthesisPlanner.fingerprint(job.document) == current.documentFingerprint) {
+            "TTS background job document mismatch"
+        }
+        require(File(job.outputDir).isAbsolute) { "TTS background output directory must be absolute" }
+    }
 
     private fun sessionStore(context: Context): TtsSessionStore =
         TtsSessionStore(File(context.applicationContext.filesDir, "tts/sessions"))

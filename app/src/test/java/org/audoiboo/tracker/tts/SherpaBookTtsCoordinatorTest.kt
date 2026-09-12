@@ -21,6 +21,7 @@ class SherpaBookTtsCoordinatorTest {
             val archive = archiveOf(
                 "vits-piper-test/model.int8.onnx" to byteArrayOf(1, 2, 3),
                 "vits-piper-test/tokens.txt" to "a\nb\n".toByteArray(),
+                "vits-piper-test/espeak-ng-data/readme" to "data".toByteArray(),
             )
             val archiveFile = Files.createTempFile("sherpa-book", ".tar.bz2").toFile()
             val sha = try {

@@ -5,7 +5,6 @@ import java.io.File
 import org.audoiboo.tracker.ebook.BookDocument
 import org.audoiboo.tracker.ebook.EbookImportException
 import org.audoiboo.tracker.ebook.Fb2Importer
-import org.audoiboo.tracker.ebook.TtsSynthesisPlanner
 import org.audoiboo.tracker.plugin.flibusta.FlibustaDownloadResolver
 import org.audoiboo.tracker.plugin.flibusta.FlibustaResolveResult
 
@@ -80,7 +79,7 @@ class FlibustaBookTtsFlow(
             session = prepared.tts.session,
             title = title,
             relativeDir = TtsPlayerLibraryBridge.relativePath(prepared.document),
-            chunkCount = TtsSynthesisPlanner.build(prepared.document).chunkCount,
+            chunkCount = prepared.tts.chunkCount,
         )
     }
 

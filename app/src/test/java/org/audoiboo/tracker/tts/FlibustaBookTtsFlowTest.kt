@@ -38,6 +38,7 @@ class FlibustaBookTtsFlowTest {
         assertEquals("42.fb2", result.fileName)
         assertEquals("https://flibusta.site/b/42/fb2", result.sourceUrl)
         assertEquals(1.15f, result.tts.session.speed)
+        assertEquals(1, result.tts.chunkCount)
         assertEquals("Перший розділ", result.document.chapters.single().title)
     }
 
@@ -125,7 +126,7 @@ class FlibustaBookTtsFlowTest {
             documentFingerprint = "f".repeat(64),
             speed = speed,
         )
-        return PreparedSherpaBookTts(model, voice, session)
+        return PreparedSherpaBookTts(model, voice, session, chunkCount = 1)
     }
 
     private fun validFb2(language: String): ByteArray = """

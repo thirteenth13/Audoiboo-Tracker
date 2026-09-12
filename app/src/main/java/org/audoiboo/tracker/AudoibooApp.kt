@@ -12,6 +12,8 @@ import org.audoiboo.tracker.plugin.CatalogLibrarySourcePlugin
 import org.audoiboo.tracker.plugin.DeviceWebViewResolutionRuntime
 import org.audoiboo.tracker.plugin.NetworkFallbackSettings
 import org.audoiboo.tracker.plugin.PluginPackageRuntime
+import org.audoiboo.tracker.tts.SherpaAndroidAdapter
+import org.audoiboo.tracker.tts.SherpaBackgroundRuntimeInstaller
 
 class AudoibooApp : Application() {
     private var trackerBridge: LegacyTrackerBridge? = null
@@ -65,6 +67,10 @@ class AudoibooApp : Application() {
         PlayerStateStore.initialize(this)
         DeviceWebViewResolutionRuntime.initialize(this)
         CatalogLibrarySourcePlugin.initialize(this)
+
+        // Reinstall the process-local worker runtime after every process start. The concrete native
+        // engine and model are still created lazily only when a persisted TTS job actually runs.
+        SherpaBackgroundRuntimeInstaller.install(SherpaAndroidAdapter.factory())
 
         // Source discovery must see enabled package plugins from the first Activity frame.
         // initialize() is idempotent, so later callers remain safe and cheap.

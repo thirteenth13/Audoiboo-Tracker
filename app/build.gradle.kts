@@ -83,6 +83,8 @@ dependencies {
     implementation(libs.guava)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.jsoup)
+    implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:v1.13.7")
+    implementation("org.apache.commons:commons-compress:1.28.0")
 
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)

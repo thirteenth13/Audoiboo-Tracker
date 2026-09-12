@@ -1,6 +1,8 @@
 package org.audoiboo.tracker.tts
 
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import org.audoiboo.tracker.ebook.BookChapter
 import org.audoiboo.tracker.ebook.BookDocument
 import org.json.JSONArray
@@ -27,8 +29,14 @@ internal class TtsBackgroundJobStore(private val root: File) {
         val target = fileFor(job.sessionId)
         val temp = File(target.parentFile, target.name + ".tmp")
         temp.writeText(encode(job).toString(), Charsets.UTF_8)
-        if (target.exists()) require(target.delete()) { "Cannot replace TTS background job" }
-        require(temp.renameTo(target)) { "Cannot commit TTS background job" }
+        runCatching {
+            Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        }.recoverCatching {
+            Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }.getOrElse { error ->
+            temp.delete()
+            throw IllegalStateException("Cannot commit TTS background job", error)
+        }
     }
 
     @Synchronized

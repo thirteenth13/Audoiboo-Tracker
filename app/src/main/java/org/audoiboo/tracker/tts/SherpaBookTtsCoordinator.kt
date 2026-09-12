@@ -11,6 +11,7 @@ data class PreparedSherpaBookTts(
     val model: VoiceModelSpec,
     val voice: TtsVoice,
     val session: TtsSession,
+    val chunkCount: Int,
 )
 
 /**
@@ -51,7 +52,12 @@ class SherpaBookTtsCoordinator(
             documentFingerprint = plan.documentFingerprint,
             speed = speed,
         )
-        PreparedSherpaBookTts(model = model, voice = voice, session = session)
+        PreparedSherpaBookTts(
+            model = model,
+            voice = voice,
+            session = session,
+            chunkCount = plan.chunkCount,
+        )
     }
 
     fun enqueue(

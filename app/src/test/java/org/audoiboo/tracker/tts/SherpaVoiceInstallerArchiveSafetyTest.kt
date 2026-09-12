@@ -52,7 +52,7 @@ class SherpaVoiceInstallerArchiveSafetyTest {
                 version = "test-v1",
                 language = "uk",
                 displayName = "Test voice",
-                archiveUrl = "https://example.invalid/test.tar.bz2",
+                archiveUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/test.tar.bz2",
                 archiveSha256 = VoiceModelManager.digest(archiveFile),
                 archiveSizeBytes = archive.size.toLong(),
                 modelFileName = "model.int8.onnx",

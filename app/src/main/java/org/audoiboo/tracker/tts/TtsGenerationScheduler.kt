@@ -87,6 +87,12 @@ internal object TtsGenerationScheduler {
         require(sessionId.isNotBlank())
         val store = sessionStore(context)
         val current = requireNotNull(store.load(sessionId)) { "TTS session checkpoint is missing" }
+        val job = requireNotNull(backgroundJobStore(context).load(sessionId)) {
+            "TTS background job is missing or invalid"
+        }
+        require(job.sessionId == current.sessionId) { "TTS background job session mismatch" }
+        require(job.model.modelId == current.voice.modelId) { "TTS background job model mismatch" }
+        require(job.model.version == current.voice.modelVersion) { "TTS background job model version mismatch" }
         val queued = current.queueForResume()
         store.save(queued)
         enqueue(context, sessionId, title)
@@ -101,6 +107,9 @@ internal object TtsGenerationScheduler {
 
     private fun sessionStore(context: Context): TtsSessionStore =
         TtsSessionStore(File(context.applicationContext.filesDir, "tts/sessions"))
+
+    private fun backgroundJobStore(context: Context): TtsBackgroundJobStore =
+        TtsBackgroundJobStore(File(context.applicationContext.filesDir, "tts/jobs"))
 
     private fun sameSessionIdentity(a: TtsSession, b: TtsSession): Boolean =
         a.sessionId == b.sessionId &&

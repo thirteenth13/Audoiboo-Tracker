@@ -35,8 +35,12 @@ internal class TtsBookPlayerGenerator private constructor(
             ?: initialSession
 
         val checkpoint: (TtsSession) -> Unit = { session ->
-            sessionStore?.save(session)
-            onCheckpoint(session)
+            val durable = preservePause(
+                persisted = sessionStore?.load(session.sessionId),
+                incoming = session,
+            )
+            sessionStore?.save(durable)
+            onCheckpoint(durable)
         }
 
         val result = bookGenerator.generate(
@@ -51,6 +55,13 @@ internal class TtsBookPlayerGenerator private constructor(
         }
         return result
     }
+
+    internal fun preservePause(persisted: TtsSession?, incoming: TtsSession): TtsSession =
+        if (persisted?.state == TtsSessionState.PAUSED && incoming.state != TtsSessionState.COMPLETED) {
+            incoming.pause()
+        } else {
+            incoming
+        }
 
     private fun canResume(persisted: TtsSession, requested: TtsSession): Boolean =
         persisted.state != TtsSessionState.COMPLETED &&

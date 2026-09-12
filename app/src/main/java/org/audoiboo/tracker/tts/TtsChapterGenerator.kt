@@ -56,7 +56,10 @@ class TtsChapterGenerator(
                 onCheckpoint(session)
                 chapterWork.deleteRecursively()
             }
-            session.complete().also(onCheckpoint)
+            val completed = session.complete()
+            onCheckpoint(completed)
+            sessionWork.deleteRecursively()
+            completed
         } catch (t: Throwable) {
             session.fail(t.message?.takeIf { it.isNotBlank() } ?: t::class.java.simpleName).also(onCheckpoint)
         }

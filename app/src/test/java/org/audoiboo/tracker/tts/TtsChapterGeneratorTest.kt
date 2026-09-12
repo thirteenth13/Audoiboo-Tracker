@@ -7,6 +7,7 @@ import org.audoiboo.tracker.ebook.TtsChapterPlan
 import org.audoiboo.tracker.ebook.TtsPlannedChunk
 import org.audoiboo.tracker.ebook.TtsSynthesisPlan
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -14,6 +15,8 @@ class TtsChapterGeneratorTest {
     @Test fun resumesFromChunkCheckpointAndBuildsChapterWav() = runBlocking {
         val root = Files.createTempDirectory("tts-generation").toFile()
         val output = File(root, "output")
+        val workRoot = File(root, "work")
+        val sessionWork = File(workRoot, "session")
         val voice = TtsVoice("ru", "Russian", "ru", "model", "1", 0)
         val plan = TtsSynthesisPlan(
             documentFingerprint = "fingerprint",
@@ -30,13 +33,14 @@ class TtsChapterGeneratorTest {
             ),
         )
         val provider = FakeProvider(voice).apply { failText = "two" }
-        val generator = TtsChapterGenerator(provider, File(root, "work"))
+        val generator = TtsChapterGenerator(provider, workRoot)
         val initial = TtsSession("session", provider.id, voice, plan.documentFingerprint, 1f)
 
         val failed = generator.generate(plan, initial, output)
         assertEquals(TtsSessionState.FAILED, failed.state)
         assertEquals(1, failed.nextGlobalChunkIndex)
         assertEquals(listOf("one", "two"), provider.calls)
+        assertTrue(sessionWork.isDirectory)
 
         provider.failText = null
         provider.calls.clear()
@@ -45,6 +49,7 @@ class TtsChapterGeneratorTest {
         assertEquals(2, completed.nextGlobalChunkIndex)
         assertTrue(0 in completed.completedChapterIndexes)
         assertEquals(listOf("two"), provider.calls)
+        assertFalse(sessionWork.exists())
 
         val chapter = File(output, "chapter-0000.wav")
         assertTrue(chapter.isFile)

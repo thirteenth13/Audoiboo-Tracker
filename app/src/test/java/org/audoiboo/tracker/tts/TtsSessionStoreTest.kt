@@ -21,6 +21,25 @@ class TtsSessionStoreTest {
     }
 
     @Test
+    fun replacesExistingCheckpointWithoutLosingSession() {
+        val root = Files.createTempDirectory("tts-session-replace").toFile()
+        val store = TtsSessionStore(root)
+        val initial = sampleSession("replace-me")
+        val updated = initial.copy(
+            state = TtsSessionState.PAUSED,
+            nextGlobalChunkIndex = initial.nextGlobalChunkIndex + 3,
+            completedChapterIndexes = initial.completedChapterIndexes + 7,
+            lastError = null,
+        )
+
+        store.save(initial)
+        store.save(updated)
+
+        assertEquals(updated, store.load(updated.sessionId))
+        assertEquals(1, root.listFiles { file -> file.extension == "properties" }?.size)
+    }
+
+    @Test
     fun previouslyAmbiguousSessionIdsDoNotOverwriteEachOther() {
         val root = Files.createTempDirectory("tts-session-collision").toFile()
         val store = TtsSessionStore(root)

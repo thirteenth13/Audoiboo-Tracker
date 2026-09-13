@@ -16,6 +16,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import org.audoiboo.tracker.R
 import org.audoiboo.tracker.ebook.BookDocument
 import org.audoiboo.tracker.ebook.TtsSynthesisPlanner
@@ -167,17 +168,17 @@ internal class TtsGenerationWorker(
         setForeground(foregroundInfo(sessionId, title))
 
         val runtime = TtsBackgroundRuntimeRegistry.current() ?: return Result.retry()
-        return runCatching { runtime.run(applicationContext, sessionId) }
-            .fold(
-                onSuccess = { state ->
-                    when (state) {
-                        TtsSessionState.COMPLETED -> Result.success()
-                        TtsSessionState.FAILED -> Result.failure()
-                        else -> Result.retry()
-                    }
-                },
-                onFailure = { Result.retry() },
-            )
+        return try {
+            when (runtime.run(applicationContext, sessionId)) {
+                TtsSessionState.COMPLETED -> Result.success()
+                TtsSessionState.FAILED -> Result.failure()
+                else -> Result.retry()
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            Result.retry()
+        }
     }
 
     private fun foregroundInfo(sessionId: String, title: String): ForegroundInfo {

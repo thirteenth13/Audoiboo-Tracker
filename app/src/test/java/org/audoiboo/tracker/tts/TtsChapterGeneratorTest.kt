@@ -2,6 +2,7 @@ package org.audoiboo.tracker.tts
 
 import java.io.File
 import java.nio.file.Files
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.audoiboo.tracker.ebook.TtsChapterPlan
 import org.audoiboo.tracker.ebook.TtsPlannedChunk
@@ -100,6 +101,45 @@ class TtsChapterGeneratorTest {
         assertTrue(result.lastError.orEmpty().contains("no synthesizable text"))
         assertTrue(result.completedChapterIndexes.isEmpty())
         assertTrue(provider.calls.isEmpty())
+    }
+
+    @Test fun propagatesCancellationWithoutFailingSession() = runBlocking {
+        val root = Files.createTempDirectory("tts-generation-cancel").toFile()
+        val output = File(root, "output")
+        val workRoot = File(root, "work")
+        val sessionWork = File(workRoot, "session-cancel")
+        val voice = TtsVoice("ru", "Russian", "ru", "model", "1", 0)
+        val plan = TtsSynthesisPlan(
+            documentFingerprint = "fingerprint",
+            language = "ru",
+            chapters = listOf(
+                TtsChapterPlan(
+                    chapterIndex = 0,
+                    title = "Chapter",
+                    chunks = listOf(
+                        TtsPlannedChunk(0, 0, 0, "Chapter", "one", "fingerprint:0:0"),
+                    ),
+                ),
+            ),
+        )
+        val provider = object : TtsProvider {
+            override val id = "fake"
+            override val supportedLanguages = setOf("ru")
+            override suspend fun getVoices(language: String): List<TtsVoice> = listOf(voice)
+            override suspend fun synthesize(request: TtsSynthesisRequest): TtsSynthesisResult {
+                throw CancellationException("cancelled")
+            }
+        }
+        val initial = TtsSession("session-cancel", provider.id, voice, plan.documentFingerprint, 1f)
+        val checkpoints = mutableListOf<TtsSession>()
+
+        val error = runCatching {
+            TtsChapterGenerator(provider, workRoot).generate(plan, initial, output, checkpoints::add)
+        }.exceptionOrNull()
+
+        assertTrue(error is CancellationException)
+        assertTrue(checkpoints.none { it.state == TtsSessionState.FAILED })
+        assertTrue(sessionWork.isDirectory)
     }
 
     private class FakeProvider(private val voice: TtsVoice) : TtsProvider {

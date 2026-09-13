@@ -56,6 +56,52 @@ class TtsChapterGeneratorTest {
         assertEquals(8, Pcm16Wav.info(chapter).dataSize)
     }
 
+    @Test fun skipsEmptyChapterWithoutClaimingAudioCompletion() = runBlocking {
+        val root = Files.createTempDirectory("tts-empty-chapter").toFile()
+        val voice = TtsVoice("ru", "Russian", "ru", "model", "1", 0)
+        val provider = FakeProvider(voice)
+        val plan = TtsSynthesisPlan(
+            documentFingerprint = "fingerprint",
+            language = "ru",
+            chapters = listOf(
+                TtsChapterPlan(0, "Empty", emptyList()),
+                TtsChapterPlan(
+                    1,
+                    "Spoken",
+                    listOf(TtsPlannedChunk(0, 1, 0, "Spoken", "text", "fingerprint:1:0")),
+                ),
+            ),
+        )
+        val session = TtsSession("session-empty", provider.id, voice, plan.documentFingerprint, 1f)
+        val result = TtsChapterGenerator(provider, File(root, "work"))
+            .generate(plan, session, File(root, "out"))
+
+        assertEquals(TtsSessionState.COMPLETED, result.state)
+        assertFalse(0 in result.completedChapterIndexes)
+        assertTrue(1 in result.completedChapterIndexes)
+        assertFalse(File(root, "out/chapter-0000.wav").exists())
+        assertTrue(File(root, "out/chapter-0001.wav").isFile)
+    }
+
+    @Test fun failsPlanWithNoSynthesizableText() = runBlocking {
+        val root = Files.createTempDirectory("tts-empty-plan").toFile()
+        val voice = TtsVoice("ru", "Russian", "ru", "model", "1", 0)
+        val provider = FakeProvider(voice)
+        val plan = TtsSynthesisPlan(
+            documentFingerprint = "fingerprint",
+            language = "ru",
+            chapters = listOf(TtsChapterPlan(0, "Empty", emptyList())),
+        )
+        val session = TtsSession("session-empty-plan", provider.id, voice, plan.documentFingerprint, 1f)
+        val result = TtsChapterGenerator(provider, File(root, "work"))
+            .generate(plan, session, File(root, "out"))
+
+        assertEquals(TtsSessionState.FAILED, result.state)
+        assertTrue(result.lastError.orEmpty().contains("no synthesizable text"))
+        assertTrue(result.completedChapterIndexes.isEmpty())
+        assertTrue(provider.calls.isEmpty())
+    }
+
     private class FakeProvider(private val voice: TtsVoice) : TtsProvider {
         override val id: String = "fake"
         override val supportedLanguages: Set<String> = setOf("ru")

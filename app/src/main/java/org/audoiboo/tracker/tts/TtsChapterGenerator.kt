@@ -39,18 +39,22 @@ class TtsChapterGenerator(
                     val chunkFile = File(chapterWork, "chunk-%06d.wav".format(chunk.chapterChunkIndex))
                     val tempFile = File(chapterWork, chunkFile.name + ".tmp")
                     tempFile.delete()
-                    provider.synthesize(
-                        TtsSynthesisRequest(
-                            text = chunk.text,
-                            language = language,
-                            voice = session.voice,
-                            speed = session.speed,
-                            outputPath = tempFile.absolutePath,
+                    try {
+                        provider.synthesize(
+                            TtsSynthesisRequest(
+                                text = chunk.text,
+                                language = language,
+                                voice = session.voice,
+                                speed = session.speed,
+                                outputPath = tempFile.absolutePath,
+                            )
                         )
-                    )
-                    require(tempFile.isFile && tempFile.length() > 44L) { "TTS provider produced an invalid WAV chunk" }
-                    if (chunkFile.exists()) chunkFile.delete()
-                    require(tempFile.renameTo(chunkFile)) { "Cannot commit synthesized chunk" }
+                        require(tempFile.isFile && tempFile.length() > 44L) { "TTS provider produced an invalid WAV chunk" }
+                        commitTempFile(tempFile, chunkFile, "Cannot commit synthesized chunk")
+                    } catch (t: Throwable) {
+                        tempFile.delete()
+                        throw t
+                    }
                     session = session.advance(chunk.globalIndex + 1)
                     onCheckpoint(session)
                 }
@@ -75,14 +79,35 @@ class TtsChapterGenerator(
         val output = File(outputDir, "chapter-%04d.wav".format(chapter.chapterIndex))
         val tempOutput = File(outputDir, output.name + ".tmp")
         tempOutput.delete()
-        for (chunk in chapter.chunks) {
-            val chunkFile = File(chapterWork, "chunk-%06d.wav".format(chunk.chapterChunkIndex))
-            require(chunkFile.isFile) { "Missing synthesized chunk ${chunk.globalIndex}" }
-            Pcm16Wav.append(chunkFile, tempOutput)
+        try {
+            for (chunk in chapter.chunks) {
+                val chunkFile = File(chapterWork, "chunk-%06d.wav".format(chunk.chapterChunkIndex))
+                require(chunkFile.isFile) { "Missing synthesized chunk ${chunk.globalIndex}" }
+                Pcm16Wav.append(chunkFile, tempOutput)
+            }
+            require(tempOutput.isFile && tempOutput.length() > 44L) { "Generated chapter WAV is empty" }
+            commitTempFile(tempOutput, output, "Cannot commit generated chapter")
+        } catch (t: Throwable) {
+            tempOutput.delete()
+            throw t
         }
-        require(tempOutput.isFile && tempOutput.length() > 44L) { "Generated chapter WAV is empty" }
-        if (output.exists()) output.delete()
-        require(tempOutput.renameTo(output)) { "Cannot commit generated chapter" }
+    }
+
+    private fun commitTempFile(temp: File, target: File, errorMessage: String) {
+        if (temp.renameTo(target)) return
+        if (!target.exists()) error(errorMessage)
+
+        val backup = File(target.parentFile, target.name + ".bak")
+        backup.delete()
+        require(target.renameTo(backup)) { errorMessage }
+        try {
+            require(temp.renameTo(target)) { errorMessage }
+            backup.delete()
+        } catch (t: Throwable) {
+            target.delete()
+            backup.renameTo(target)
+            throw t
+        }
     }
 
     private fun safe(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_")

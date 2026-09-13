@@ -1,6 +1,7 @@
 package org.audoiboo.tracker.tts
 
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import org.audoiboo.tracker.ebook.TtsChapterPlan
 import org.audoiboo.tracker.ebook.TtsSynthesisPlan
 
@@ -63,6 +64,8 @@ class TtsChapterGenerator(
             onCheckpoint(completed)
             sessionWork.deleteRecursively()
             completed
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (t: Throwable) {
             session.fail(t.message?.takeIf { it.isNotBlank() } ?: t::class.java.simpleName).also(onCheckpoint)
         }

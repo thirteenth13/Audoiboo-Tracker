@@ -200,7 +200,7 @@ class SherpaVoiceInstaller(
         require(File(destination, pkg.modelFileName).isFile) { "Voice package model file is missing" }
     }
 
-    private fun safeRelativePath(rawName: String): String? {
+    internal fun safeRelativePath(rawName: String): String? {
         val normalized = rawName.replace('\\', '/').trimStart('/')
         require(!rawName.startsWith('/') && !rawName.startsWith('\\')) { "Absolute archive paths are not allowed" }
         val parts = normalized.split('/').filter { it.isNotBlank() && it != "." }

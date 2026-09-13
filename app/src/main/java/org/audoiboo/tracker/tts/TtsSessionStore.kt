@@ -32,8 +32,10 @@ class TtsSessionStore(
             session.lastError?.let { setProperty("lastError", it) }
         }
         temp.outputStream().buffered().use { props.store(it, null) }
-        if (target.exists()) require(target.delete()) { "Cannot replace TTS session checkpoint" }
-        require(temp.renameTo(target)) { "Cannot commit TTS session checkpoint" }
+        require(temp.renameTo(target)) {
+            temp.delete()
+            "Cannot commit TTS session checkpoint"
+        }
     }
 
     @Synchronized

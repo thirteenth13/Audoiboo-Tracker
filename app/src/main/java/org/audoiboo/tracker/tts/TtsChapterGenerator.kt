@@ -26,7 +26,10 @@ class TtsChapterGenerator(
         onCheckpoint(session)
 
         return try {
+            require(plan.chapters.any { it.chunks.isNotEmpty() }) { "TTS plan contains no synthesizable text" }
+
             for (chapter in plan.chapters) {
+                if (chapter.chunks.isEmpty()) continue
                 if (chapter.chapterIndex in session.completedChapterIndexes) continue
                 val chapterWork = File(sessionWork, "chapter-${chapter.chapterIndex}").apply { mkdirs() }
 
@@ -66,7 +69,6 @@ class TtsChapterGenerator(
     }
 
     private fun assembleChapter(chapter: TtsChapterPlan, chapterWork: File, outputDir: File) {
-        if (chapter.chunks.isEmpty()) return
         val output = File(outputDir, "chapter-%04d.wav".format(chapter.chapterIndex))
         val tempOutput = File(outputDir, output.name + ".tmp")
         tempOutput.delete()

@@ -14,12 +14,15 @@ import org.junit.Test
 class SherpaVoiceInstallerArchiveSafetyTest {
     @Test
     fun rejectsAbsoluteArchivePath() {
-        assertRejected(
-            archive {
-                file("/absolute.txt", byteArrayOf(1))
-                runtimeFiles()
-            }
-        )
+        val root = Files.createTempDirectory("voice-archive-path").toFile()
+        try {
+            val manager = VoiceModelManager(root)
+            val installer = SherpaVoiceInstaller(manager) { error("must not download") }
+            assertTrue(runCatching { installer.safeRelativePath("/absolute.txt") }.isFailure)
+            assertTrue(runCatching { installer.safeRelativePath("\\absolute.txt") }.isFailure)
+        } finally {
+            root.deleteRecursively()
+        }
     }
 
     @Test

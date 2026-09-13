@@ -142,6 +142,41 @@ class TtsChapterGeneratorTest {
         assertTrue(sessionWork.isDirectory)
     }
 
+    @Test fun removesPartialTempChunkAfterProviderFailure() = runBlocking {
+        val root = Files.createTempDirectory("tts-generation-partial").toFile()
+        val output = File(root, "output")
+        val workRoot = File(root, "work")
+        val voice = TtsVoice("ru", "Russian", "ru", "model", "1", 0)
+        val plan = TtsSynthesisPlan(
+            documentFingerprint = "fingerprint",
+            language = "ru",
+            chapters = listOf(
+                TtsChapterPlan(
+                    chapterIndex = 0,
+                    title = "Chapter",
+                    chunks = listOf(TtsPlannedChunk(0, 0, 0, "Chapter", "broken", "fingerprint:0:0")),
+                ),
+            ),
+        )
+        val provider = object : TtsProvider {
+            override val id = "fake"
+            override val supportedLanguages = setOf("ru")
+            override suspend fun getVoices(language: String): List<TtsVoice> = listOf(voice)
+            override suspend fun synthesize(request: TtsSynthesisRequest): TtsSynthesisResult {
+                File(request.outputPath).writeBytes(byteArrayOf(1, 2, 3, 4))
+                error("provider failed after partial write")
+            }
+        }
+        val initial = TtsSession("session-partial", provider.id, voice, plan.documentFingerprint, 1f)
+        val result = TtsChapterGenerator(provider, workRoot).generate(plan, initial, output)
+
+        assertEquals(TtsSessionState.FAILED, result.state)
+        val chapterWork = File(workRoot, "session-partial/chapter-0")
+        assertTrue(chapterWork.isDirectory)
+        assertFalse(File(chapterWork, "chunk-000000.wav.tmp").exists())
+        assertFalse(File(chapterWork, "chunk-000000.wav").exists())
+    }
+
     private class FakeProvider(private val voice: TtsVoice) : TtsProvider {
         override val id: String = "fake"
         override val supportedLanguages: Set<String> = setOf("ru")

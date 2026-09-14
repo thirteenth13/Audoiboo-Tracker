@@ -31,10 +31,16 @@ internal class SherpaAndroidAdapter private constructor(
          */
         fun factory(numThreads: Int = 4): SherpaAdapterFactory {
             require(numThreads > 0)
-            return SherpaAdapterFactory { modelFile -> create(modelFile, numThreads) }
+            return SherpaAdapterFactory { modelFile ->
+                if (SupertonicAndroidAdapter.isModel(modelFile)) {
+                    SupertonicAndroidAdapter.create(modelFile, numThreads)
+                } else {
+                    createVits(modelFile, numThreads)
+                }
+            }
         }
 
-        private fun create(modelFile: File, numThreads: Int): SherpaAndroidAdapter {
+        private fun createVits(modelFile: File, numThreads: Int): SherpaAndroidAdapter {
             require(modelFile.isFile) { "Sherpa model file is missing: ${modelFile.absolutePath}" }
             val modelDir = requireNotNull(modelFile.parentFile) { "Sherpa model has no parent directory" }
             val tokens = File(modelDir, "tokens.txt")

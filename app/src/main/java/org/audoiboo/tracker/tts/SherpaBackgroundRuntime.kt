@@ -17,6 +17,7 @@ internal class SherpaBackgroundRuntime(
         require(session.providerId == PROVIDER_ID) { "Background TTS provider mismatch" }
         require(session.voice.modelId == job.model.modelId) { "Background TTS model mismatch" }
         require(session.voice.modelVersion == job.model.version) { "Background TTS model version mismatch" }
+        TtsGenerationScheduler.validateResumeJob(session, job)
 
         val provider = SherpaOnnxTtsProvider(
             modelManager = VoiceModelManager(File(filesRoot, "models")),
@@ -32,21 +33,16 @@ internal class SherpaBackgroundRuntime(
                 initialSession = session,
                 outputDir = File(job.outputDir),
             )
-            if (result.session.state == TtsSessionState.COMPLETED) {
-                jobStore.delete(sessionId)
-            }
+            if (result.session.state == TtsSessionState.COMPLETED) jobStore.delete(sessionId)
             result.session.state
         } finally {
             provider.close()
         }
     }
 
-    companion object {
-        private const val PROVIDER_ID = "sherpa-onnx"
-    }
+    companion object { private const val PROVIDER_ID = "sherpa-onnx" }
 }
 
-/** Installs the concrete background runtime once a native Sherpa adapter factory is available. */
 internal object SherpaBackgroundRuntimeInstaller {
     fun install(adapterFactory: SherpaAdapterFactory) {
         TtsBackgroundRuntimeRegistry.install(SherpaBackgroundRuntime(adapterFactory))

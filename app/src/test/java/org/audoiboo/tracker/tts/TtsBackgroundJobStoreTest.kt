@@ -26,13 +26,42 @@ class TtsBackgroundJobStoreTest {
         assertEquals(1, documentFiles(root, job.sessionId).size)
     }
 
+    @Test fun highQualityJobRoundTripPreservesQualityAndEngine() {
+        val root = Files.createTempDirectory("tts-background-job-supertonic").toFile()
+        val store = TtsBackgroundJobStore(root)
+        val job = sampleJob(root, "supertonic-job").copy(
+            quality = TtsQuality.HIGH_QUALITY,
+            engineFamily = TtsEngineFamily.SUPERTONIC,
+            model = VoiceModelSpec("supertonic-3", "2026-05-11", "uk", "b".repeat(64), SupertonicAndroidAdapter.DURATION_PREDICTOR),
+        )
+        store.save(job)
+        val restored = store.load(job.sessionId)
+        assertEquals(job, restored)
+        assertEquals(TtsQuality.HIGH_QUALITY, restored?.quality)
+        assertEquals(TtsEngineFamily.SUPERTONIC, restored?.engineFamily)
+    }
+
+    @Test fun versionOneJobDefaultsToFastPiper() {
+        val root = Files.createTempDirectory("tts-background-job-v1").toFile()
+        val store = TtsBackgroundJobStore(root)
+        val job = sampleJob(root, "legacy-v1")
+        store.save(job)
+        val metadata = metadataFile(root, job.sessionId)
+        val json = JSONObject(metadata.readText(Charsets.UTF_8))
+        json.put("version", 1)
+        json.remove("quality")
+        json.remove("engineFamily")
+        metadata.writeText(json.toString(), Charsets.UTF_8)
+        val restored = store.load(job.sessionId)
+        assertEquals(TtsQuality.FAST, restored?.quality)
+        assertEquals(TtsEngineFamily.PIPER_VITS, restored?.engineFamily)
+    }
+
     @Test fun splitJobSurvivesStoreRecreation() {
         val root = Files.createTempDirectory("tts-background-job-restart").toFile()
         val job = sampleJob(root, "restart-job")
         TtsBackgroundJobStore(root).save(job)
-
         val restored = TtsBackgroundJobStore(root).load(job.sessionId)
-
         assertEquals(job, restored)
         assertEquals(1, documentFiles(root, job.sessionId).size)
         assertTrue(metadataFile(root, job.sessionId).isFile)
@@ -54,13 +83,8 @@ class TtsBackgroundJobStoreTest {
         val root = Files.createTempDirectory("tts-background-job-replace").toFile()
         val store = TtsBackgroundJobStore(root)
         val initial = sampleJob(root, "replace-job")
-        val updatedDocument = initial.document.copy(
-            chapters = initial.document.chapters + BookChapter(2, "Third", listOf("New text")),
-        )
-        val updated = initial.copy(
-            document = updatedDocument,
-            chunkCount = TtsSynthesisPlanner.build(updatedDocument).chunkCount,
-        )
+        val updatedDocument = initial.document.copy(chapters = initial.document.chapters + BookChapter(2, "Third", listOf("New text")))
+        val updated = initial.copy(document = updatedDocument, chunkCount = TtsSynthesisPlanner.build(updatedDocument).chunkCount)
         store.save(initial)
         val first = documentFiles(root, initial.sessionId).single()
         store.save(updated)
@@ -88,10 +112,7 @@ class TtsBackgroundJobStoreTest {
         val store = TtsBackgroundJobStore(root)
         val job = sampleJob(root, "tampered-job")
         store.save(job)
-
-        val document = documentFiles(root, job.sessionId).single()
-        document.appendText(" ", Charsets.UTF_8)
-
+        documentFiles(root, job.sessionId).single().appendText(" ", Charsets.UTF_8)
         assertNull(store.load(job.sessionId))
     }
 
@@ -103,9 +124,7 @@ class TtsBackgroundJobStoreTest {
         val document = documentFiles(root, job.sessionId).single()
         document.writeText("corrupt", Charsets.UTF_8)
         assertNull(store.load(job.sessionId))
-
         store.save(job)
-
         assertEquals(job, store.load(job.sessionId))
         assertEquals(1, documentFiles(root, job.sessionId).size)
         assertFalse(File(document.parentFile, document.name + ".tmp").exists())
@@ -117,14 +136,11 @@ class TtsBackgroundJobStoreTest {
         val store = TtsBackgroundJobStore(root)
         val first = sampleJob(root, "first-job")
         val second = sampleJob(root, "second-job")
-        store.save(first)
-        store.save(second)
-
+        store.save(first); store.save(second)
         val firstMetadata = metadataFile(root, first.sessionId)
         val json = JSONObject(firstMetadata.readText(Charsets.UTF_8))
         json.put("documentFile", documentFiles(root, second.sessionId).single().name)
         firstMetadata.writeText(json.toString(), Charsets.UTF_8)
-
         assertNull(store.load(first.sessionId))
         assertEquals(second, store.load(second.sessionId))
     }
@@ -134,8 +150,7 @@ class TtsBackgroundJobStoreTest {
         val store = TtsBackgroundJobStore(root)
         val colon = sampleJob(root, "a:b")
         val slash = sampleJob(root, "a/b")
-        store.save(colon)
-        store.save(slash)
+        store.save(colon); store.save(slash)
         assertEquals(colon, store.load(colon.sessionId))
         assertEquals(slash, store.load(slash.sessionId))
         assertEquals(2, root.listFiles { f -> f.extension == "json" && !f.name.endsWith(".document.json") }?.size)
@@ -161,10 +176,7 @@ class TtsBackgroundJobStoreTest {
             language = "uk",
             series = "Series",
             seriesNumber = 3,
-            chapters = listOf(
-                BookChapter(0, "First", listOf("Paragraph 1", "Paragraph 2")),
-                BookChapter(1, "Second", listOf("Text")),
-            ),
+            chapters = listOf(BookChapter(0, "First", listOf("Paragraph 1", "Paragraph 2")), BookChapter(1, "Second", listOf("Text"))),
         ),
         model = VoiceModelSpec("uk-model", "2", "uk", "a".repeat(64), "model.onnx"),
         outputDir = File(root, "output").absolutePath,

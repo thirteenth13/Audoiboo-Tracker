@@ -48,7 +48,9 @@ class SherpaBookTtsCoordinatorTest {
             }
             val coordinator = SherpaBookTtsCoordinator(
                 installer = installer,
-                packageResolver = { language -> pkg.takeIf { language.startsWith("uk", ignoreCase = true) } },
+                packageResolver = { language, quality ->
+                    pkg.takeIf { language.startsWith("uk", ignoreCase = true) && quality == TtsQuality.FAST }
+                },
                 sessionIdFactory = { "session-1" },
             )
             val document = BookDocument(
@@ -68,12 +70,45 @@ class SherpaBookTtsCoordinatorTest {
             assertEquals("session-1", prepared.session.sessionId)
             assertEquals(TtsSessionState.QUEUED, prepared.session.state)
             assertEquals(1.1f, prepared.session.speed)
+            assertEquals(TtsQuality.FAST, prepared.quality)
+            assertEquals(TtsEngineFamily.PIPER_VITS, prepared.engineFamily)
             assertEquals(pkg.modelId, prepared.voice.modelId)
             assertEquals(pkg.version, prepared.voice.modelVersion)
             assertEquals("uk", prepared.voice.language)
             assertEquals(TtsSynthesisPlanner.fingerprint(document), prepared.session.documentFingerprint)
             assertTrue(manager.isInstalled(prepared.model))
             assertEquals(prepared.model.sha256, preparedAgain.model.sha256)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun highQualitySelectionIsExplicitAndDoesNotFallBackToFast() {
+        val root = Files.createTempDirectory("sherpa-book-quality").toFile()
+        try {
+            var requestedQuality: TtsQuality? = null
+            val coordinator = SherpaBookTtsCoordinator(
+                installer = SherpaVoiceInstaller(VoiceModelManager(root)) {
+                    error("High-quality package must not silently download a FAST model")
+                },
+                packageResolver = { _, quality ->
+                    requestedQuality = quality
+                    null
+                },
+                sessionIdFactory = { "session-quality" },
+            )
+            val document = BookDocument(
+                title = "Книга",
+                authors = emptyList(),
+                language = "uk",
+                series = null,
+                seriesNumber = null,
+                chapters = listOf(BookChapter(0, "Розділ", listOf("Текст"))),
+            )
+
+            assertTrue(coordinator.prepare(document, quality = TtsQuality.HIGH_QUALITY).isFailure)
+            assertEquals(TtsQuality.HIGH_QUALITY, requestedQuality)
         } finally {
             root.deleteRecursively()
         }
@@ -89,7 +124,7 @@ class SherpaBookTtsCoordinatorTest {
                     downloads++
                     ByteArrayInputStream(byteArrayOf())
                 },
-                packageResolver = { null },
+                packageResolver = { _, _ -> null },
                 sessionIdFactory = { "session-2" },
             )
             val document = BookDocument(

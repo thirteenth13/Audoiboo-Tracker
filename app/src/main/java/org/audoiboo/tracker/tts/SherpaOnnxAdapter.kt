@@ -11,6 +11,14 @@ data class SherpaAudio(
 
 interface SherpaOnnxAdapter : AutoCloseable {
     fun synthesize(text: String, speakerId: Int, speed: Float): SherpaAudio
+
+    /**
+     * Language-aware hook used by multilingual engines such as Supertonic.
+     * Existing single-language adapters remain source-compatible through the default delegation.
+     */
+    fun synthesize(text: String, speakerId: Int, speed: Float, language: String): SherpaAudio =
+        synthesize(text, speakerId, speed)
+
     override fun close() = Unit
 }
 

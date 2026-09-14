@@ -4,13 +4,15 @@ import java.io.File
 import java.nio.file.Files
 import org.audoiboo.tracker.ebook.BookChapter
 import org.audoiboo.tracker.ebook.BookDocument
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TtsBackgroundJobStoreTest {
     @Test
-    fun roundTripPreservesBookAndModel() {
+    fun roundTripPreservesBookModelAndChunkCount() {
         val root = Files.createTempDirectory("tts-background-job").toFile()
         val store = TtsBackgroundJobStore(root)
         val job = sampleJob(root, "job-1")
@@ -18,7 +20,23 @@ class TtsBackgroundJobStoreTest {
         store.save(job)
         val loaded = store.load(job.sessionId)
 
+        assertTrue(job.chunkCount > 0)
         assertEquals(job, loaded)
+    }
+
+    @Test
+    fun legacyJobWithoutChunkCountDerivesItFromDocument() {
+        val root = Files.createTempDirectory("tts-background-job-legacy").toFile()
+        val store = TtsBackgroundJobStore(root)
+        val job = sampleJob(root, "legacy-job")
+        store.save(job)
+
+        val file = requireNotNull(root.listFiles { candidate -> candidate.extension == "json" }?.singleOrNull())
+        val json = JSONObject(file.readText(Charsets.UTF_8))
+        json.remove("chunkCount")
+        file.writeText(json.toString(), Charsets.UTF_8)
+
+        assertEquals(job, store.load(job.sessionId))
     }
 
     @Test

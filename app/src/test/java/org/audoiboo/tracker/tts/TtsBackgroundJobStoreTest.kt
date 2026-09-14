@@ -48,15 +48,23 @@ class TtsBackgroundJobStoreTest {
         assertEquals(updated, store.load(updated.sessionId))
         assertFalse(first.exists())
         assertEquals(1, documentFiles(root, updated.sessionId).size)
+        assertFalse(File(root, metadataFile(root, updated.sessionId).name + ".tmp").exists())
+        assertFalse(File(root, metadataFile(root, updated.sessionId).name + ".bak").exists())
     }
 
-    @Test fun deleteRemovesMetadataAndDocument() {
+    @Test fun deleteRemovesMetadataDocumentAndStaleCommitFiles() {
         val root = Files.createTempDirectory("tts-background-job-delete").toFile()
         val store = TtsBackgroundJobStore(root)
         val job = sampleJob(root, "delete-job")
         store.save(job)
+        val metadata = metadataFile(root, job.sessionId)
+        File(root, metadata.name + ".tmp").writeText("stale", Charsets.UTF_8)
+        File(root, metadata.name + ".bak").writeText("stale", Charsets.UTF_8)
+
         assertTrue(store.delete(job.sessionId))
-        assertFalse(metadataFile(root, job.sessionId).exists())
+        assertFalse(metadata.exists())
+        assertFalse(File(root, metadata.name + ".tmp").exists())
+        assertFalse(File(root, metadata.name + ".bak").exists())
         assertTrue(documentFiles(root, job.sessionId).isEmpty())
     }
 

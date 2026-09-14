@@ -30,6 +30,12 @@ class SherpaVoiceInstaller(
             manifest.getProperty("modelFileName") != pkg.modelFileName ||
             manifest.getProperty("engineFamily", TtsEngineFamily.PIPER_VITS.name) != pkg.engineFamily.name) return null
         val modelSha = manifest.getProperty("modelSha256")?.takeIf { it.matches(SHA256) } ?: return null
+        if (pkg.engineFamily == TtsEngineFamily.SUPERTONIC) {
+            for (name in SUPERTONIC_RUNTIME_FILES) {
+                val expected = manifest.getProperty(runtimeHashKey(name))?.takeIf { it.matches(SHA256) } ?: return null
+                if (!VoiceModelManager.digest(File(dir, name)).equals(expected, ignoreCase = true)) return null
+            }
+        }
         val spec = VoiceModelSpec(pkg.modelId, pkg.version, pkg.language, modelSha, pkg.modelFileName)
         modelManager.verify(spec).getOrThrow()
         spec
@@ -70,15 +76,18 @@ class SherpaVoiceInstaller(
     private fun hasRequiredRuntimeFiles(dir: File, pkg: SherpaVoicePackage): Boolean = when (pkg.engineFamily) {
         TtsEngineFamily.PIPER_VITS -> {
             val model = File(dir, pkg.modelFileName); val tokens = File(dir, "tokens.txt"); val espeak = File(dir, "espeak-ng-data")
-            model.isFile && tokens.isFile && espeak.isDirectory && espeak.walkTopDown().any { it.isFile }
+            model.isFile && model.length() > 0L && tokens.isFile && tokens.length() > 0L && espeak.isDirectory && espeak.walkTopDown().any { it.isFile && it.length() > 0L }
         }
-        TtsEngineFamily.SUPERTONIC -> SUPERTONIC_RUNTIME_FILES.all { File(dir, it).isFile }
+        TtsEngineFamily.SUPERTONIC -> SUPERTONIC_RUNTIME_FILES.all { name -> File(dir, name).let { it.isFile && it.length() > 0L } }
     }
 
     private fun writeInstallManifest(dir: File, pkg: SherpaVoicePackage, spec: VoiceModelSpec) {
         val properties = Properties().apply {
             setProperty("modelId", pkg.modelId); setProperty("version", pkg.version); setProperty("archiveSha256", pkg.archiveSha256.lowercase())
             setProperty("modelFileName", pkg.modelFileName); setProperty("modelSha256", spec.sha256.lowercase()); setProperty("engineFamily", pkg.engineFamily.name)
+            if (pkg.engineFamily == TtsEngineFamily.SUPERTONIC) {
+                SUPERTONIC_RUNTIME_FILES.forEach { name -> setProperty(runtimeHashKey(name), VoiceModelManager.digest(File(dir, name)).lowercase()) }
+            }
         }
         File(dir, INSTALL_MANIFEST).outputStream().buffered().use { properties.store(it, "Audoiboo verified Sherpa voice installation") }
     }
@@ -119,6 +128,7 @@ class SherpaVoiceInstaller(
         private const val INSTALL_MANIFEST = ".audoiboo-model.properties"
         private val SHA256 = Regex("[0-9a-fA-F]{64}")
         internal val SUPERTONIC_RUNTIME_FILES = listOf("duration_predictor.int8.onnx", "text_encoder.int8.onnx", "vector_estimator.int8.onnx", "vocoder.int8.onnx", "tts.json", "unicode_indexer.bin", "voice.bin")
+        private fun runtimeHashKey(name: String): String = "runtimeSha256.${name.replace('.', '_')}"
         private const val MAX_ENTRIES = 512; private const val MAX_SINGLE_FILE_BYTES = 128L * 1024 * 1024; private const val MAX_EXTRACTED_BYTES = 256L * 1024 * 1024
         private fun openHttpStream(url: String): InputStream {
             val connection = URL(url).openConnection() as HttpURLConnection; connection.connectTimeout = 20_000; connection.readTimeout = 60_000; connection.instanceFollowRedirects = true; connection.setRequestProperty("User-Agent", "Audoiboo-Tracker")

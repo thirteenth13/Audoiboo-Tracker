@@ -9,6 +9,7 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -34,6 +35,24 @@ class SherpaSupertonicInstallerTest {
             assertEquals("ru", ruSpec.language)
             assertEquals(ukSpec.modelId, ruSpec.modelId)
             assertEquals(ukSpec.version, ruSpec.version)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `rejects tampered Supertonic sibling runtime file`() {
+        val root = Files.createTempDirectory("supertonic-tampered").toFile()
+        try {
+            val archive = supertonicArchive()
+            val pkg = testPackage(archive, "uk")
+            val manager = VoiceModelManager(root)
+            val installer = SherpaVoiceInstaller(manager) { ByteArrayInputStream(archive) }
+            val spec = installer.install(pkg).getOrThrow()
+
+            java.io.File(manager.modelDir(spec), "voice.bin").appendText("tampered")
+
+            assertNull(installer.installedSpec(pkg))
         } finally {
             root.deleteRecursively()
         }

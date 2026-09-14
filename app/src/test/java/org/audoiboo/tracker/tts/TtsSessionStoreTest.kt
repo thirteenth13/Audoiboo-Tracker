@@ -40,6 +40,23 @@ class TtsSessionStoreTest {
     }
 
     @Test
+    fun pausedCheckpointSurvivesProcessRestart() {
+        val root = Files.createTempDirectory("tts-session-pause-restart").toFile()
+        val initial = sampleSession("pause-restart")
+        val paused = initial.pause()
+
+        TtsSessionStore(root).save(initial)
+        TtsSessionStore(root).save(paused)
+
+        val restored = TtsSessionStore(root).load(initial.sessionId)
+        assertEquals(paused, restored)
+        assertEquals(TtsSessionState.PAUSED, restored?.state)
+        assertEquals(initial.nextGlobalChunkIndex, restored?.nextGlobalChunkIndex)
+        assertEquals(initial.completedChapterIndexes, restored?.completedChapterIndexes)
+        assertNull(restored?.lastError)
+    }
+
+    @Test
     fun previouslyAmbiguousSessionIdsDoNotOverwriteEachOther() {
         val root = Files.createTempDirectory("tts-session-collision").toFile()
         val store = TtsSessionStore(root)

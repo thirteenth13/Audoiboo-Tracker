@@ -32,21 +32,23 @@ internal class TtsBackgroundJobStore(private val root: File) {
         val documentJson = encodeDocument(job.document)
         val documentText = documentJson.toString()
         val documentFile = documentFileFor(job.sessionId, documentText)
+        var createdDocument = false
         if (!documentFile.isFile) {
             val documentTemp = File(documentFile.parentFile, documentFile.name + ".tmp")
             documentTemp.writeText(documentText, Charsets.UTF_8)
-            require(documentTemp.renameTo(documentFile)) {
-                documentTemp.delete()
-                "Cannot commit TTS background document"
-            }
+            commitTempFile(documentTemp, documentFile, "Cannot commit TTS background document")
+            createdDocument = true
         }
 
         val target = fileFor(job.sessionId)
         val temp = File(target.parentFile, target.name + ".tmp")
         temp.writeText(encode(job, documentFile.name).toString(), Charsets.UTF_8)
-        require(temp.renameTo(target)) {
+        try {
+            commitTempFile(temp, target, "Cannot commit TTS background job")
+        } catch (error: Throwable) {
             temp.delete()
-            "Cannot commit TTS background job"
+            if (createdDocument) documentFile.delete()
+            throw error
         }
         cleanupDocuments(job.sessionId, keep = documentFile)
     }
@@ -64,8 +66,9 @@ internal class TtsBackgroundJobStore(private val root: File) {
         require(sessionId.isNotBlank())
         val target = fileFor(sessionId)
         File(target.parentFile, target.name + ".tmp").delete()
-        cleanupDocuments(sessionId, keep = null)
-        return !target.exists() || target.delete()
+        File(target.parentFile, target.name + ".bak").delete()
+        if (target.exists() && !target.delete()) return false
+        return cleanupDocuments(sessionId, keep = null)
     }
 
     private fun encode(job: TtsBackgroundBookJob, documentFileName: String): JSONObject = JSONObject()
@@ -161,16 +164,38 @@ internal class TtsBackgroundJobStore(private val root: File) {
             .digest(documentText.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
 
-    private fun cleanupDocuments(sessionId: String, keep: File?) {
+    private fun commitTempFile(temp: File, target: File, errorMessage: String) {
+        val backup = File(target.parentFile, target.name + ".bak")
+        require(!backup.exists() || backup.delete()) { "$errorMessage: cannot clear stale backup" }
+        if (temp.renameTo(target)) return
+        if (!target.exists()) {
+            temp.delete()
+            error(errorMessage)
+        }
+
+        require(target.renameTo(backup)) { errorMessage }
+        try {
+            require(temp.renameTo(target)) { errorMessage }
+            backup.delete()
+        } catch (error: Throwable) {
+            target.delete()
+            backup.renameTo(target)
+            throw error
+        }
+    }
+
+    private fun cleanupDocuments(sessionId: String, keep: File?): Boolean {
         val prefix = TtsStableId.hex(sessionId) + "."
+        var success = true
         rootDir().listFiles()?.forEach { file ->
             if (file.name.startsWith(prefix) &&
                 (file.name.endsWith(DOCUMENT_SUFFIX) || file.name.endsWith(DOCUMENT_SUFFIX + ".tmp")) &&
                 file.absolutePath != keep?.absolutePath
             ) {
-                file.delete()
+                success = file.delete() && success
             }
         }
+        return success
     }
 
     private fun strings(array: JSONArray): List<String> =

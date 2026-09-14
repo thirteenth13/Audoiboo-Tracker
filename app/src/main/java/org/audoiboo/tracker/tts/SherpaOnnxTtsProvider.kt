@@ -31,7 +31,12 @@ class SherpaOnnxTtsProvider(
 
         val modelFile = modelManager.verify(spec).getOrThrow()
         val adapter = adapterFor(request.voice.stableKey, modelFile)
-        val audio = adapter.synthesize(request.text, request.voice.speakerId ?: 0, request.speed)
+        val audio = adapter.synthesize(
+            text = request.text,
+            speakerId = request.voice.speakerId ?: 0,
+            speed = request.speed,
+            language = request.language,
+        )
         val output = File(request.outputPath)
         output.parentFile?.mkdirs()
         audioWriter(audio, output)

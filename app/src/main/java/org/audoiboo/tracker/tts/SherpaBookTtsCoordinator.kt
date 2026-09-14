@@ -57,6 +57,8 @@ class SherpaBookTtsCoordinator(
             voice = voice,
             documentFingerprint = plan.documentFingerprint,
             speed = speed,
+            quality = quality,
+            engineFamily = pkg.engineFamily,
         )
         PreparedSherpaBookTts(
             model = model,

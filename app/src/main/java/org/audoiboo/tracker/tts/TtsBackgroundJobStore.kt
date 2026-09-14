@@ -104,9 +104,14 @@ internal class TtsBackgroundJobStore(private val root: File) {
         val documentJson = if (root.has("documentFile") && !root.isNull("documentFile")) {
             val name = root.getString("documentFile")
             require(DOCUMENT_FILE_NAME.matches(name)) { "Invalid TTS background document path" }
+            val expectedPrefix = TtsStableId.hex(sessionId) + "."
+            require(name.startsWith(expectedPrefix)) { "TTS background document session mismatch" }
+            val expectedDigest = name.removePrefix(expectedPrefix).removeSuffix(DOCUMENT_SUFFIX)
             val file = File(rootDir(), name)
             require(file.isFile) { "TTS background document is missing" }
-            JSONObject(file.readText(Charsets.UTF_8))
+            val documentText = file.readText(Charsets.UTF_8)
+            require(documentDigest(documentText) == expectedDigest) { "TTS background document checksum mismatch" }
+            JSONObject(documentText)
         } else {
             // Backward compatibility with jobs persisted before documents were split from metadata.
             root.getJSONObject("document")
@@ -148,18 +153,19 @@ internal class TtsBackgroundJobStore(private val root: File) {
         )
     }
 
-    private fun documentFileFor(sessionId: String, documentText: String): File {
-        val digest = MessageDigest.getInstance("SHA-256")
+    private fun documentFileFor(sessionId: String, documentText: String): File =
+        File(rootDir(), "${TtsStableId.hex(sessionId)}.${documentDigest(documentText)}$DOCUMENT_SUFFIX")
+
+    private fun documentDigest(documentText: String): String =
+        MessageDigest.getInstance("SHA-256")
             .digest(documentText.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
-        return File(rootDir(), "${TtsStableId.hex(sessionId)}.$digest.document.json")
-    }
 
     private fun cleanupDocuments(sessionId: String, keep: File?) {
         val prefix = TtsStableId.hex(sessionId) + "."
         rootDir().listFiles()?.forEach { file ->
             if (file.name.startsWith(prefix) &&
-                (file.name.endsWith(".document.json") || file.name.endsWith(".document.json.tmp")) &&
+                (file.name.endsWith(DOCUMENT_SUFFIX) || file.name.endsWith(DOCUMENT_SUFFIX + ".tmp")) &&
                 file.absolutePath != keep?.absolutePath
             ) {
                 file.delete()
@@ -178,6 +184,7 @@ internal class TtsBackgroundJobStore(private val root: File) {
 
     companion object {
         private const val FORMAT_VERSION = 1
+        private const val DOCUMENT_SUFFIX = ".document.json"
         private val DOCUMENT_FILE_NAME = Regex("^[0-9a-f]{64}\\.[0-9a-f]{64}\\.document\\.json$")
     }
 }

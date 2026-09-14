@@ -204,7 +204,7 @@ internal class TtsGenerationWorker(
         val sessionStore = TtsSessionStore(File(filesRoot, "sessions"))
         val totalChunks = TtsBackgroundJobStore(File(filesRoot, "jobs"))
             .load(sessionId)
-            ?.let { TtsSynthesisPlanner.build(it.document).chunkCount }
+            ?.chunkCount
             ?.coerceAtLeast(0)
             ?: 0
 

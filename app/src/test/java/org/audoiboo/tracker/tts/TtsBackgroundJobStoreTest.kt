@@ -4,6 +4,7 @@ import java.io.File
 import java.nio.file.Files
 import org.audoiboo.tracker.ebook.BookChapter
 import org.audoiboo.tracker.ebook.BookDocument
+import org.audoiboo.tracker.ebook.TtsSynthesisPlanner
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -53,7 +54,13 @@ class TtsBackgroundJobStoreTest {
         val root = Files.createTempDirectory("tts-background-job-replace").toFile()
         val store = TtsBackgroundJobStore(root)
         val initial = sampleJob(root, "replace-job")
-        val updated = initial.copy(document = initial.document.copy(chapters = initial.document.chapters + BookChapter(2, "Third", listOf("New text"))))
+        val updatedDocument = initial.document.copy(
+            chapters = initial.document.chapters + BookChapter(2, "Third", listOf("New text")),
+        )
+        val updated = initial.copy(
+            document = updatedDocument,
+            chunkCount = TtsSynthesisPlanner.build(updatedDocument).chunkCount,
+        )
         store.save(initial)
         val first = documentFiles(root, initial.sessionId).single()
         store.save(updated)
@@ -86,6 +93,23 @@ class TtsBackgroundJobStoreTest {
         document.appendText(" ", Charsets.UTF_8)
 
         assertNull(store.load(job.sessionId))
+    }
+
+    @Test fun savingAgainRepairsTamperedDocument() {
+        val root = Files.createTempDirectory("tts-background-job-repair").toFile()
+        val store = TtsBackgroundJobStore(root)
+        val job = sampleJob(root, "repair-job")
+        store.save(job)
+        val document = documentFiles(root, job.sessionId).single()
+        document.writeText("corrupt", Charsets.UTF_8)
+        assertNull(store.load(job.sessionId))
+
+        store.save(job)
+
+        assertEquals(job, store.load(job.sessionId))
+        assertEquals(1, documentFiles(root, job.sessionId).size)
+        assertFalse(File(document.parentFile, document.name + ".tmp").exists())
+        assertFalse(File(document.parentFile, document.name + ".bak").exists())
     }
 
     @Test fun metadataCannotReferenceAnotherSessionsDocument() {

@@ -28,6 +28,8 @@ data class TtsSession(
     val voice: TtsVoice,
     val documentFingerprint: String,
     val speed: Float,
+    val quality: TtsQuality = TtsQuality.FAST,
+    val engineFamily: TtsEngineFamily = TtsEngineFamily.PIPER_VITS,
     val state: TtsSessionState = TtsSessionState.QUEUED,
     val nextGlobalChunkIndex: Int = 0,
     val completedChapterIndexes: Set<Int> = emptySet(),
@@ -40,6 +42,9 @@ data class TtsSession(
         require(speed in 0.5f..2.0f)
         require(nextGlobalChunkIndex >= 0)
         require(completedChapterIndexes.all { it >= 0 })
+        require(
+            quality != TtsQuality.HIGH_QUALITY || engineFamily == TtsEngineFamily.SUPERTONIC
+        ) { "High-quality TTS sessions must use the Supertonic engine" }
     }
 
     fun checkpoint(): TtsSessionCheckpoint = TtsSessionCheckpoint(

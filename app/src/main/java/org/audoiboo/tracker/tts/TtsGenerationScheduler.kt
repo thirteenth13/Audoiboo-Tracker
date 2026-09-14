@@ -43,7 +43,16 @@ internal object TtsGenerationScheduler {
         val persisted = sessionStore.load(session.sessionId)
         if (persisted == null) sessionStore.save(session)
         else require(sameSessionIdentity(persisted, session)) { "Existing TTS checkpoint is incompatible" }
-        TtsBackgroundJobStore(File(root, "jobs")).save(TtsBackgroundBookJob(session.sessionId, document, model, outputDir.absolutePath))
+        TtsBackgroundJobStore(File(root, "jobs")).save(
+            TtsBackgroundBookJob(
+                sessionId = session.sessionId,
+                document = document,
+                model = model,
+                outputDir = outputDir.absolutePath,
+                quality = session.quality,
+                engineFamily = session.engineFamily,
+            ),
+        )
         enqueue(context, session.sessionId, document.title?.takeIf(String::isNotBlank) ?: "Аудіокнига")
     }
 
@@ -87,14 +96,10 @@ internal object TtsGenerationScheduler {
         require(job.model.modelId == current.voice.modelId) { "TTS background job model mismatch" }
         require(job.model.version == current.voice.modelVersion) { "TTS background job model version mismatch" }
         require(job.model.language.equals(current.voice.language, ignoreCase = true)) { "TTS background job language mismatch" }
+        require(job.quality == current.quality) { "TTS background job quality mismatch" }
+        require(job.engineFamily == current.engineFamily) { "TTS background job engine mismatch" }
         require(TtsSynthesisPlanner.fingerprint(job.document) == current.documentFingerprint) { "TTS background job document mismatch" }
         require(File(job.outputDir).isAbsolute) { "TTS background output directory must be absolute" }
-        require(engineMatchesModel(current.engineFamily, job.model)) { "TTS background job engine mismatch" }
-    }
-
-    private fun engineMatchesModel(engine: TtsEngineFamily, model: VoiceModelSpec): Boolean = when (engine) {
-        TtsEngineFamily.PIPER_VITS -> !model.fileName.equals(SupertonicAndroidAdapter.DURATION_PREDICTOR, ignoreCase = true)
-        TtsEngineFamily.SUPERTONIC -> model.fileName.equals(SupertonicAndroidAdapter.DURATION_PREDICTOR, ignoreCase = true)
     }
 
     private fun sessionStore(context: Context) = TtsSessionStore(File(context.applicationContext.filesDir, "tts/sessions"))

@@ -86,10 +86,16 @@ internal object TtsGenerationScheduler {
 
     fun pause(context: Context, sessionId: String) {
         require(sessionId.isNotBlank())
-        WorkManager.getInstance(context.applicationContext).cancelUniqueWork(workName(sessionId))
         val store = sessionStore(context)
-        store.load(sessionId)?.let { current ->
-            if (current.state != TtsSessionState.COMPLETED) store.save(current.pause())
+        val current = store.load(sessionId)
+        if (current == null || current.state == TtsSessionState.COMPLETED) return
+
+        store.save(current.pause())
+        try {
+            WorkManager.getInstance(context.applicationContext).cancelUniqueWork(workName(sessionId))
+        } catch (error: Throwable) {
+            store.save(current)
+            throw error
         }
     }
 

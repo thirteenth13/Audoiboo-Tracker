@@ -7,6 +7,7 @@ import org.audoiboo.tracker.ebook.BookChapter
 import org.audoiboo.tracker.ebook.BookDocument
 import org.audoiboo.tracker.ebook.TtsSynthesisPlanner
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -57,6 +58,7 @@ class TtsBookPlayerGeneratorTest {
         assertEquals(result, published.single())
         assertEquals(2, result.chapters.size)
         assertTrue(result.chapters.all { it.audioFile.isFile })
+        assertFalse(File(root, "work/player-book").exists())
     }
 
     @Test
@@ -83,6 +85,9 @@ class TtsBookPlayerGeneratorTest {
         assertEquals(TtsSessionState.FAILED, result.session.state)
         assertEquals(0, publishCount)
         assertEquals(listOf(0), result.chapters.map { it.chapterIndex })
+        val retainedWork = File(root, "work/player-book")
+        assertTrue(retainedWork.isDirectory)
+        assertTrue(retainedWork.walkTopDown().none { it.name.endsWith(".tmp") })
     }
 
     @Test
@@ -133,5 +138,6 @@ class TtsBookPlayerGeneratorTest {
         assertTrue(synthesizedTexts.isNotEmpty())
         assertTrue(synthesizedTexts.all { it.contains("Друге речення") })
         assertNull(store.load(initial.sessionId))
+        assertFalse(File(root, "work/player-book").exists())
     }
 }

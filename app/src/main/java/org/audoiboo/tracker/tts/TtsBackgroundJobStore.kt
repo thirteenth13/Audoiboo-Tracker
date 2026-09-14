@@ -3,6 +3,7 @@ package org.audoiboo.tracker.tts
 import java.io.File
 import org.audoiboo.tracker.ebook.BookChapter
 import org.audoiboo.tracker.ebook.BookDocument
+import org.audoiboo.tracker.ebook.TtsSynthesisPlanner
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -12,10 +13,12 @@ internal data class TtsBackgroundBookJob(
     val document: BookDocument,
     val model: VoiceModelSpec,
     val outputDir: String,
+    val chunkCount: Int = TtsSynthesisPlanner.build(document).chunkCount,
 ) {
     init {
         require(sessionId.isNotBlank())
         require(outputDir.isNotBlank())
+        require(chunkCount >= 0)
     }
 }
 
@@ -53,6 +56,7 @@ internal class TtsBackgroundJobStore(private val root: File) {
         .put("version", FORMAT_VERSION)
         .put("sessionId", job.sessionId)
         .put("outputDir", job.outputDir)
+        .put("chunkCount", job.chunkCount)
         .put("model", JSONObject()
             .put("modelId", job.model.modelId)
             .put("version", job.model.version)
@@ -89,16 +93,18 @@ internal class TtsBackgroundJobStore(private val root: File) {
                 blocks = strings(chapter.getJSONArray("blocks")),
             )
         }
+        val document = BookDocument(
+            title = nullableString(documentJson, "title"),
+            authors = strings(documentJson.getJSONArray("authors")),
+            language = nullableString(documentJson, "language"),
+            series = nullableString(documentJson, "series"),
+            seriesNumber = if (documentJson.isNull("seriesNumber")) null else documentJson.getInt("seriesNumber"),
+            chapters = chapters,
+        )
+        val persistedChunkCount = root.optInt("chunkCount", -1)
         return TtsBackgroundBookJob(
             sessionId = sessionId,
-            document = BookDocument(
-                title = nullableString(documentJson, "title"),
-                authors = strings(documentJson.getJSONArray("authors")),
-                language = nullableString(documentJson, "language"),
-                series = nullableString(documentJson, "series"),
-                seriesNumber = if (documentJson.isNull("seriesNumber")) null else documentJson.getInt("seriesNumber"),
-                chapters = chapters,
-            ),
+            document = document,
             model = VoiceModelSpec(
                 modelId = modelJson.getString("modelId"),
                 version = modelJson.getString("version"),
@@ -107,6 +113,7 @@ internal class TtsBackgroundJobStore(private val root: File) {
                 fileName = modelJson.getString("fileName"),
             ),
             outputDir = root.getString("outputDir"),
+            chunkCount = if (persistedChunkCount >= 0) persistedChunkCount else TtsSynthesisPlanner.build(document).chunkCount,
         )
     }
 

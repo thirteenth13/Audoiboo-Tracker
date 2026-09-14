@@ -12,7 +12,7 @@ import java.util.UUID
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 
-/** Downloads, verifies and safely installs a pinned Sherpa/Piper voice package. */
+/** Downloads, verifies and safely installs pinned Sherpa voice/runtime packages. */
 class SherpaVoiceInstaller(
     private val modelManager: VoiceModelManager,
     private val openStream: (String) -> InputStream = ::openHttpStream,
@@ -32,7 +32,8 @@ class SherpaVoiceInstaller(
         if (manifest.getProperty("modelId") != pkg.modelId ||
             manifest.getProperty("version") != pkg.version ||
             manifest.getProperty("archiveSha256")?.equals(pkg.archiveSha256, ignoreCase = true) != true ||
-            manifest.getProperty("modelFileName") != pkg.modelFileName
+            manifest.getProperty("modelFileName") != pkg.modelFileName ||
+            manifest.getProperty("engineFamily", TtsEngineFamily.PIPER_VITS.name) != pkg.engineFamily.name
         ) return null
 
         val modelSha = manifest.getProperty("modelSha256")?.takeIf { it.matches(SHA256) } ?: return null
@@ -66,7 +67,7 @@ class SherpaVoiceInstaller(
             check(staging.mkdirs()) { "Cannot create voice model staging directory" }
             extract(pkg, archive, staging)
             require(hasRequiredRuntimeFiles(staging, pkg)) {
-                "Voice package is missing model, tokens.txt, or espeak-ng-data"
+                "Voice package is missing required ${pkg.engineFamily.name.lowercase()} runtime files"
             }
 
             val stagedModel = File(staging, pkg.modelFileName)
@@ -106,13 +107,17 @@ class SherpaVoiceInstaller(
         }
     }
 
-    private fun hasRequiredRuntimeFiles(dir: File, pkg: SherpaVoicePackage): Boolean {
-        val model = File(dir, pkg.modelFileName)
-        val tokens = File(dir, "tokens.txt")
-        val espeak = File(dir, "espeak-ng-data")
-        return model.isFile && tokens.isFile && espeak.isDirectory &&
-            espeak.walkTopDown().any { it.isFile }
-    }
+    private fun hasRequiredRuntimeFiles(dir: File, pkg: SherpaVoicePackage): Boolean =
+        when (pkg.engineFamily) {
+            TtsEngineFamily.PIPER_VITS -> {
+                val model = File(dir, pkg.modelFileName)
+                val tokens = File(dir, "tokens.txt")
+                val espeak = File(dir, "espeak-ng-data")
+                model.isFile && tokens.isFile && espeak.isDirectory &&
+                    espeak.walkTopDown().any { it.isFile }
+            }
+            TtsEngineFamily.SUPERTONIC -> SUPERTONIC_RUNTIME_FILES.all { File(dir, it).isFile }
+        }
 
     private fun writeInstallManifest(dir: File, pkg: SherpaVoicePackage, spec: VoiceModelSpec) {
         val properties = Properties().apply {
@@ -121,6 +126,7 @@ class SherpaVoiceInstaller(
             setProperty("archiveSha256", pkg.archiveSha256.lowercase())
             setProperty("modelFileName", pkg.modelFileName)
             setProperty("modelSha256", spec.sha256.lowercase())
+            setProperty("engineFamily", pkg.engineFamily.name)
         }
         File(dir, INSTALL_MANIFEST).outputStream().buffered().use { output ->
             properties.store(output, "Audoiboo verified Sherpa voice installation")
@@ -207,11 +213,10 @@ class SherpaVoiceInstaller(
         require(parts.none { it == ".." }) { "Voice package path traversal detected" }
         if (parts.isEmpty()) return null
 
-        val stripped = if (parts.first().startsWith("vits-piper-") && parts.size > 1) {
-            parts.drop(1)
-        } else {
-            parts
-        }
+        val first = parts.first()
+        val hasKnownPackageRoot = first.startsWith("vits-piper-") ||
+            first.startsWith("sherpa-onnx-supertonic-")
+        val stripped = if (hasKnownPackageRoot && parts.size > 1) parts.drop(1) else parts
         if (stripped.isEmpty()) return null
         return stripped.joinToString(File.separator)
     }
@@ -219,6 +224,15 @@ class SherpaVoiceInstaller(
     companion object {
         private const val INSTALL_MANIFEST = ".audoiboo-model.properties"
         private val SHA256 = Regex("[0-9a-fA-F]{64}")
+        internal val SUPERTONIC_RUNTIME_FILES = listOf(
+            "duration_predictor.int8.onnx",
+            "text_encoder.int8.onnx",
+            "vector_estimator.int8.onnx",
+            "vocoder.int8.onnx",
+            "tts.json",
+            "unicode_indexer.bin",
+            "voice.bin",
+        )
         private const val MAX_ENTRIES = 512
         private const val MAX_SINGLE_FILE_BYTES = 128L * 1024 * 1024
         private const val MAX_EXTRACTED_BYTES = 256L * 1024 * 1024

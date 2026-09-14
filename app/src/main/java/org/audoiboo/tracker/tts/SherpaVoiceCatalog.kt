@@ -10,6 +10,7 @@ data class SherpaVoicePackage(
     val archiveSha256: String,
     val archiveSizeBytes: Long,
     val modelFileName: String,
+    val engineFamily: TtsEngineFamily = TtsEngineFamily.PIPER_VITS,
 ) {
     init {
         require(modelId.isNotBlank())
@@ -60,5 +61,11 @@ object SherpaVoiceCatalog {
     fun forLanguage(language: String): SherpaVoicePackage? {
         val normalized = language.trim().lowercase().substringBefore('-').substringBefore('_')
         return all.firstOrNull { it.language == normalized }
+    }
+
+    /** High-quality families are added separately; until installed, FAST is the only resolvable tier. */
+    fun forLanguage(language: String, quality: TtsQuality): SherpaVoicePackage? = when (quality) {
+        TtsQuality.FAST -> forLanguage(language)
+        TtsQuality.HIGH_QUALITY -> null
     }
 }

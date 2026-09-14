@@ -31,13 +31,18 @@ internal class TtsBackgroundJobStore(private val root: File) {
 
         val documentJson = encodeDocument(job.document)
         val documentText = documentJson.toString()
-        val documentFile = documentFileFor(job.sessionId, documentText)
+        val expectedDocumentDigest = documentDigest(documentText)
+        val documentFile = documentFileFor(job.sessionId, expectedDocumentDigest)
+        val documentExisted = documentFile.exists()
+        val documentIsValid = documentFile.isFile && runCatching {
+            documentDigest(documentFile.readText(Charsets.UTF_8)) == expectedDocumentDigest
+        }.getOrDefault(false)
         var createdDocument = false
-        if (!documentFile.isFile) {
+        if (!documentIsValid) {
             val documentTemp = File(documentFile.parentFile, documentFile.name + ".tmp")
             documentTemp.writeText(documentText, Charsets.UTF_8)
             commitTempFile(documentTemp, documentFile, "Cannot commit TTS background document")
-            createdDocument = true
+            createdDocument = !documentExisted
         }
 
         val target = fileFor(job.sessionId)
@@ -156,8 +161,8 @@ internal class TtsBackgroundJobStore(private val root: File) {
         )
     }
 
-    private fun documentFileFor(sessionId: String, documentText: String): File =
-        File(rootDir(), "${TtsStableId.hex(sessionId)}.${documentDigest(documentText)}$DOCUMENT_SUFFIX")
+    private fun documentFileFor(sessionId: String, digest: String): File =
+        File(rootDir(), "${TtsStableId.hex(sessionId)}.$digest$DOCUMENT_SUFFIX")
 
     private fun documentDigest(documentText: String): String =
         MessageDigest.getInstance("SHA-256")
@@ -189,7 +194,9 @@ internal class TtsBackgroundJobStore(private val root: File) {
         var success = true
         rootDir().listFiles()?.forEach { file ->
             if (file.name.startsWith(prefix) &&
-                (file.name.endsWith(DOCUMENT_SUFFIX) || file.name.endsWith(DOCUMENT_SUFFIX + ".tmp")) &&
+                (file.name.endsWith(DOCUMENT_SUFFIX) ||
+                    file.name.endsWith(DOCUMENT_SUFFIX + ".tmp") ||
+                    file.name.endsWith(DOCUMENT_SUFFIX + ".bak")) &&
                 file.absolutePath != keep?.absolutePath
             ) {
                 success = file.delete() && success

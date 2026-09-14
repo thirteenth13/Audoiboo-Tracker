@@ -17,6 +17,11 @@ import androidx.work.workDataOf
 import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.audoiboo.tracker.R
 import org.audoiboo.tracker.ebook.BookDocument
 import org.audoiboo.tracker.ebook.TtsSynthesisPlanner
@@ -162,13 +167,31 @@ internal class TtsGenerationWorker(
     appContext: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
-    override suspend fun doWork(): Result {
-        val sessionId = TtsGenerationScheduler.sessionId(this) ?: return Result.failure()
-        val title = TtsGenerationScheduler.title(this).ifBlank { "Аудіокнига" }
-        setForeground(foregroundInfo(sessionId, title))
+    override suspend fun doWork(): Result = coroutineScope {
+        val sessionId = TtsGenerationScheduler.sessionId(this@TtsGenerationWorker)
+            ?: return@coroutineScope Result.failure()
+        val title = TtsGenerationScheduler.title(this@TtsGenerationWorker).ifBlank { "Аудіокнига" }
+        val filesRoot = File(applicationContext.filesDir, "tts")
+        val sessionStore = TtsSessionStore(File(filesRoot, "sessions"))
+        val totalChunks = TtsBackgroundJobStore(File(filesRoot, "jobs"))
+            .load(sessionId)
+            ?.let { TtsSynthesisPlanner.build(it.document).chunkCount }
+            ?.coerceAtLeast(0)
+            ?: 0
 
-        val runtime = TtsBackgroundRuntimeRegistry.current() ?: return Result.retry()
-        return try {
+        createChannel()
+        setForeground(foregroundInfo(sessionId, title, sessionStore.load(sessionId)?.nextGlobalChunkIndex ?: 0, totalChunks))
+
+        val runtime = TtsBackgroundRuntimeRegistry.current() ?: return@coroutineScope Result.retry()
+        val progressJob = launch {
+            while (isActive) {
+                delay(PROGRESS_REFRESH_MS)
+                val current = sessionStore.load(sessionId)?.nextGlobalChunkIndex ?: 0
+                setForeground(foregroundInfo(sessionId, title, current, totalChunks))
+            }
+        }
+
+        try {
             when (runtime.run(applicationContext, sessionId)) {
                 TtsSessionState.COMPLETED -> Result.success()
                 TtsSessionState.FAILED -> Result.failure()
@@ -178,18 +201,23 @@ internal class TtsGenerationWorker(
             throw cancelled
         } catch (_: Throwable) {
             Result.retry()
+        } finally {
+            progressJob.cancelAndJoin()
         }
     }
 
-    private fun foregroundInfo(sessionId: String, title: String): ForegroundInfo {
-        createChannel()
+    private fun foregroundInfo(sessionId: String, title: String, currentChunk: Int, totalChunks: Int): ForegroundInfo {
+        val boundedCurrent = currentChunk.coerceAtLeast(0).coerceAtMost(totalChunks.coerceAtLeast(0))
+        val hasProgress = totalChunks > 0
+        val content = if (hasProgress) "$title • $boundedCurrent/$totalChunks" else title
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_audoiboo)
             .setContentTitle("Озвучення книги")
-            .setContentText(title)
+            .setContentText(content)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setProgress(totalChunks.coerceAtLeast(0), boundedCurrent, !hasProgress)
             .build()
         val notificationId = TtsStableId.notificationId(sessionId)
         return if (Build.VERSION.SDK_INT >= 35) {
@@ -213,5 +241,6 @@ internal class TtsGenerationWorker(
 
     companion object {
         private const val CHANNEL_ID = "audoiboo_tts"
+        private const val PROGRESS_REFRESH_MS = 1_000L
     }
 }

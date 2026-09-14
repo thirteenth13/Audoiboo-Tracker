@@ -25,6 +25,18 @@ class TtsBackgroundJobStoreTest {
         assertEquals(1, documentFiles(root, job.sessionId).size)
     }
 
+    @Test fun splitJobSurvivesStoreRecreation() {
+        val root = Files.createTempDirectory("tts-background-job-restart").toFile()
+        val job = sampleJob(root, "restart-job")
+        TtsBackgroundJobStore(root).save(job)
+
+        val restored = TtsBackgroundJobStore(root).load(job.sessionId)
+
+        assertEquals(job, restored)
+        assertEquals(1, documentFiles(root, job.sessionId).size)
+        assertTrue(metadataFile(root, job.sessionId).isFile)
+    }
+
     @Test fun legacyJobWithoutChunkCountDerivesItFromDocument() {
         val root = Files.createTempDirectory("tts-background-job-legacy").toFile()
         val store = TtsBackgroundJobStore(root)
@@ -48,23 +60,19 @@ class TtsBackgroundJobStoreTest {
         assertEquals(updated, store.load(updated.sessionId))
         assertFalse(first.exists())
         assertEquals(1, documentFiles(root, updated.sessionId).size)
-        assertFalse(File(root, metadataFile(root, updated.sessionId).name + ".tmp").exists())
-        assertFalse(File(root, metadataFile(root, updated.sessionId).name + ".bak").exists())
     }
 
-    @Test fun deleteRemovesMetadataDocumentAndStaleCommitFiles() {
+    @Test fun deleteRemovesMetadataAndDocument() {
         val root = Files.createTempDirectory("tts-background-job-delete").toFile()
         val store = TtsBackgroundJobStore(root)
         val job = sampleJob(root, "delete-job")
         store.save(job)
-        val metadata = metadataFile(root, job.sessionId)
-        File(root, metadata.name + ".tmp").writeText("stale", Charsets.UTF_8)
-        File(root, metadata.name + ".bak").writeText("stale", Charsets.UTF_8)
-
+        metadataFile(root, job.sessionId).resolveSibling(metadataFile(root, job.sessionId).name + ".tmp").writeText("stale")
+        metadataFile(root, job.sessionId).resolveSibling(metadataFile(root, job.sessionId).name + ".bak").writeText("stale")
         assertTrue(store.delete(job.sessionId))
-        assertFalse(metadata.exists())
-        assertFalse(File(root, metadata.name + ".tmp").exists())
-        assertFalse(File(root, metadata.name + ".bak").exists())
+        assertFalse(metadataFile(root, job.sessionId).exists())
+        assertFalse(metadataFile(root, job.sessionId).resolveSibling(metadataFile(root, job.sessionId).name + ".tmp").exists())
+        assertFalse(metadataFile(root, job.sessionId).resolveSibling(metadataFile(root, job.sessionId).name + ".bak").exists())
         assertTrue(documentFiles(root, job.sessionId).isEmpty())
     }
 

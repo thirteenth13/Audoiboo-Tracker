@@ -26,6 +26,8 @@ class TtsSessionStore(
             session.voice.speakerId?.let { setProperty("voice.speakerId", it.toString()) }
             setProperty("documentFingerprint", session.documentFingerprint)
             setProperty("speed", session.speed.toString())
+            setProperty("quality", session.quality.name)
+            setProperty("engineFamily", session.engineFamily.name)
             setProperty("state", session.state.name)
             setProperty("nextGlobalChunkIndex", session.nextGlobalChunkIndex.toString())
             setProperty("completedChapterIndexes", session.completedChapterIndexes.sorted().joinToString(","))
@@ -45,7 +47,9 @@ class TtsSessionStore(
         if (!file.isFile) return null
         return runCatching {
             val props = Properties().apply { file.inputStream().buffered().use(::load) }
-            require(props.getProperty("version")?.toIntOrNull() == FORMAT_VERSION) { "Unsupported TTS session format" }
+            val version = props.getProperty("version")?.toIntOrNull()
+                ?: throw IllegalArgumentException("Missing TTS session format version")
+            require(version in 1..FORMAT_VERSION) { "Unsupported TTS session format" }
             val storedSessionId = required(props, "sessionId")
             require(storedSessionId == sessionId) { "TTS session id mismatch" }
             val voice = TtsVoice(
@@ -61,12 +65,24 @@ class TtsSessionStore(
                 .split(',')
                 .mapNotNull { it.trim().takeIf(String::isNotBlank)?.toIntOrNull() }
                 .toSet()
+            val quality = if (version >= 2) {
+                TtsQuality.valueOf(required(props, "quality"))
+            } else {
+                TtsQuality.FAST
+            }
+            val engineFamily = if (version >= 2) {
+                TtsEngineFamily.valueOf(required(props, "engineFamily"))
+            } else {
+                TtsEngineFamily.PIPER_VITS
+            }
             TtsSession(
                 sessionId = storedSessionId,
                 providerId = required(props, "providerId"),
                 voice = voice,
                 documentFingerprint = required(props, "documentFingerprint"),
                 speed = required(props, "speed").toFloat(),
+                quality = quality,
+                engineFamily = engineFamily,
                 state = TtsSessionState.valueOf(required(props, "state")),
                 nextGlobalChunkIndex = required(props, "nextGlobalChunkIndex").toInt(),
                 completedChapterIndexes = completed,
@@ -91,6 +107,6 @@ class TtsSessionStore(
             ?: throw IllegalArgumentException("Missing TTS session field: $key")
 
     companion object {
-        private const val FORMAT_VERSION = 1
+        private const val FORMAT_VERSION = 2
     }
 }

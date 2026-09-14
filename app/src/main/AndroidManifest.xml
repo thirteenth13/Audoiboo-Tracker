@@ -33,6 +33,7 @@
         <receiver android:name=".DownloadRecoveryReceiver" android:exported="false">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /><action android:name="android.intent.action.MY_PACKAGE_REPLACED" /></intent-filter>
         </receiver>
+        <receiver android:name=".tts.TtsPauseReceiver" android:exported="false" />
         <service android:name=".ManagedDownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
         <service android:name=".SleepTimerService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
         <service

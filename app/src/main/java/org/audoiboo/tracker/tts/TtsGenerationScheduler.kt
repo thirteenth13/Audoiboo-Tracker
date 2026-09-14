@@ -2,7 +2,10 @@ package org.audoiboo.tracker.tts
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
@@ -143,6 +146,32 @@ internal object TtsGenerationScheduler {
             a.speed == b.speed
 }
 
+/** Handles the foreground notification pause action without exposing the receiver outside the app. */
+class TtsPauseReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != ACTION_PAUSE) return
+        val sessionId = intent.getStringExtra(EXTRA_SESSION_ID)?.takeIf(String::isNotBlank) ?: return
+        TtsGenerationScheduler.pause(context.applicationContext, sessionId)
+    }
+
+    companion object {
+        private const val ACTION_PAUSE = "org.audoiboo.tracker.tts.PAUSE"
+        private const val EXTRA_SESSION_ID = "session_id"
+
+        internal fun pendingIntent(context: Context, sessionId: String): PendingIntent {
+            val intent = Intent(context, TtsPauseReceiver::class.java)
+                .setAction(ACTION_PAUSE)
+                .putExtra(EXTRA_SESSION_ID, sessionId)
+            return PendingIntent.getBroadcast(
+                context,
+                TtsStableId.notificationId(sessionId),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
+    }
+}
+
 /** Concrete app runtime hook; keeps WorkManager orchestration independent from Sherpa JNI wiring. */
 internal fun interface TtsBackgroundRuntime {
     suspend fun run(context: Context, sessionId: String): TtsSessionState
@@ -218,6 +247,11 @@ internal class TtsGenerationWorker(
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setProgress(totalChunks.coerceAtLeast(0), boundedCurrent, !hasProgress)
+            .addAction(
+                android.R.drawable.ic_media_pause,
+                "Пауза",
+                TtsPauseReceiver.pendingIntent(applicationContext, sessionId),
+            )
             .build()
         val notificationId = TtsStableId.notificationId(sessionId)
         return if (Build.VERSION.SDK_INT >= 35) {

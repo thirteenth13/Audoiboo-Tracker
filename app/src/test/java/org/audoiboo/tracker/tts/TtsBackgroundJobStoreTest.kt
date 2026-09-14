@@ -60,6 +60,35 @@ class TtsBackgroundJobStoreTest {
         assertTrue(documentFiles(root, job.sessionId).isEmpty())
     }
 
+    @Test fun tamperedDocumentIsRejected() {
+        val root = Files.createTempDirectory("tts-background-job-tampered").toFile()
+        val store = TtsBackgroundJobStore(root)
+        val job = sampleJob(root, "tampered-job")
+        store.save(job)
+
+        val document = documentFiles(root, job.sessionId).single()
+        document.appendText(" ", Charsets.UTF_8)
+
+        assertNull(store.load(job.sessionId))
+    }
+
+    @Test fun metadataCannotReferenceAnotherSessionsDocument() {
+        val root = Files.createTempDirectory("tts-background-job-cross-session").toFile()
+        val store = TtsBackgroundJobStore(root)
+        val first = sampleJob(root, "first-job")
+        val second = sampleJob(root, "second-job")
+        store.save(first)
+        store.save(second)
+
+        val firstMetadata = metadataFile(root, first.sessionId)
+        val json = JSONObject(firstMetadata.readText(Charsets.UTF_8))
+        json.put("documentFile", documentFiles(root, second.sessionId).single().name)
+        firstMetadata.writeText(json.toString(), Charsets.UTF_8)
+
+        assertNull(store.load(first.sessionId))
+        assertEquals(second, store.load(second.sessionId))
+    }
+
     @Test fun previouslyAmbiguousSessionIdsDoNotOverwriteEachOther() {
         val root = Files.createTempDirectory("tts-background-job-collision").toFile()
         val store = TtsBackgroundJobStore(root)

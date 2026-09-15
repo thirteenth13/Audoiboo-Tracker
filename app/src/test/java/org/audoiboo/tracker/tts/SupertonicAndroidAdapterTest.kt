@@ -2,7 +2,9 @@ package org.audoiboo.tracker.tts
 
 import java.io.File
 import java.nio.file.Files
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,5 +31,17 @@ class SupertonicAndroidAdapterTest {
         assertTrue(SupertonicAndroidAdapter.isModel(primary))
         File(dir, SupertonicAndroidAdapter.VOICE_STYLE).writeBytes(ByteArray(0))
         assertFalse(SupertonicAndroidAdapter.isModel(primary))
+    }
+
+    @Test fun normalizesSupportedRegionalLanguageTags() {
+        assertEquals("uk", SupertonicAndroidAdapter.normalizeLanguage("uk-UA"))
+        assertEquals("ru", SupertonicAndroidAdapter.normalizeLanguage("ru-RU"))
+        assertEquals("uk", SupertonicAndroidAdapter.normalizeLanguage(" UK_ua "))
+    }
+
+    @Test fun rejectsUnsupportedLanguageBeforeInference() {
+        assertThrows(IllegalArgumentException::class.java) {
+            SupertonicAndroidAdapter.normalizeLanguage("en-US")
+        }
     }
 }

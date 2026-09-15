@@ -70,6 +70,39 @@ class SherpaOnnxTtsProviderTest {
         provider.close()
     }
 
+    @Test fun passesRussianLocaleToAdapter() {
+        val root = Files.createTempDirectory("tts-provider-language-ru").toFile()
+        val source = File(root, "source.bin").apply { writeText("model") }
+        val spec = VoiceModelSpec("ru-model", "1", "ru", VoiceModelManager.digest(source), "model.bin")
+        val manager = VoiceModelManager(root)
+        manager.modelDir(spec).mkdirs()
+        source.copyTo(manager.modelFile(spec), overwrite = true)
+        val voice = TtsVoice("ru-1", "RU", "ru", spec.modelId, spec.version, 0)
+        var receivedLanguage: String? = null
+        val provider = SherpaOnnxTtsProvider(
+            manager, mapOf(spec.modelId to spec), listOf(voice),
+            SherpaAdapterFactory {
+                object : SherpaOnnxAdapter {
+                    override fun synthesize(text: String, speakerId: Int, speed: Float) =
+                        SherpaAudio(FloatArray(240), 24000)
+
+                    override fun synthesize(text: String, speakerId: Int, speed: Float, language: String): SherpaAudio {
+                        receivedLanguage = language
+                        return SherpaAudio(FloatArray(240), 24000)
+                    }
+                }
+            },
+            { _, file -> file.writeBytes(byteArrayOf(1, 2, 3)) },
+        )
+
+        kotlinx.coroutines.runBlocking {
+            provider.synthesize(TtsSynthesisRequest("Текст", "ru-RU", voice, 1f, File(root, "ru.wav").path))
+        }
+
+        assertEquals("ru-RU", receivedLanguage)
+        provider.close()
+    }
+
     @Test fun rejectsMissingOrCorruptModelBeforeInference() {
         val root = Files.createTempDirectory("tts-provider-missing").toFile()
         val spec = VoiceModelSpec("uk-model", "1", "uk", "0".repeat(64), "model.bin")

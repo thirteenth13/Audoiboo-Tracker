@@ -59,6 +59,34 @@ class SherpaSupertonicInstallerTest {
     }
 
     @Test
+    fun `ensureInstalled repairs tampered Supertonic runtime from verified archive`() {
+        val root = Files.createTempDirectory("supertonic-repair").toFile()
+        try {
+            val archive = supertonicArchive()
+            val pkg = testPackage(archive, "uk")
+            val manager = VoiceModelManager(root)
+            var downloads = 0
+            val installer = SherpaVoiceInstaller(manager) {
+                downloads++
+                ByteArrayInputStream(archive)
+            }
+            val initial = installer.ensureInstalled(pkg).getOrThrow()
+            val voiceFile = java.io.File(manager.modelDir(initial), "voice.bin")
+            val original = voiceFile.readBytes()
+            voiceFile.appendText("tampered")
+
+            assertNull(installer.installedSpec(pkg))
+            val repaired = installer.ensureInstalled(pkg).getOrThrow()
+
+            assertEquals(2, downloads)
+            assertEquals(original.toList(), java.io.File(manager.modelDir(repaired), "voice.bin").readBytes().toList())
+            assertNotNull(installer.installedSpec(pkg))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `rejects Supertonic archive missing any required runtime file`() {
         val root = Files.createTempDirectory("supertonic-missing").toFile()
         try {

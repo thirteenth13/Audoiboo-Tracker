@@ -61,4 +61,44 @@ class TtsSessionTest {
         assertEquals(7, session.nextGlobalChunkIndex)
         assertEquals("thermal pause", session.lastError)
     }
+
+    @Test fun highQualitySupertonicPairIsAccepted() {
+        val session = TtsSession(
+            sessionId = "hq",
+            providerId = "sherpa-onnx",
+            voice = voice,
+            documentFingerprint = "abc123",
+            speed = 1.0f,
+            quality = TtsQuality.HIGH_QUALITY,
+            engineFamily = TtsEngineFamily.SUPERTONIC,
+        )
+        assertEquals(TtsQuality.HIGH_QUALITY, session.quality)
+        assertEquals(TtsEngineFamily.SUPERTONIC, session.engineFamily)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun fastSupertonicPairIsRejected() {
+        TtsSession(
+            sessionId = "bad-fast",
+            providerId = "sherpa-onnx",
+            voice = voice,
+            documentFingerprint = "abc123",
+            speed = 1.0f,
+            quality = TtsQuality.FAST,
+            engineFamily = TtsEngineFamily.SUPERTONIC,
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun highQualityPiperPairIsRejected() {
+        TtsSession(
+            sessionId = "bad-hq",
+            providerId = "sherpa-onnx",
+            voice = voice,
+            documentFingerprint = "abc123",
+            speed = 1.0f,
+            quality = TtsQuality.HIGH_QUALITY,
+            engineFamily = TtsEngineFamily.PIPER_VITS,
+        )
+    }
 }

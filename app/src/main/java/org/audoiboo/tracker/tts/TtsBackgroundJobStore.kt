@@ -21,7 +21,10 @@ internal data class TtsBackgroundBookJob(
         require(sessionId.isNotBlank())
         require(outputDir.isNotBlank())
         require(chunkCount >= 0)
-        require(quality != TtsQuality.HIGH_QUALITY || engineFamily == TtsEngineFamily.SUPERTONIC)
+        require(
+            (quality == TtsQuality.FAST && engineFamily == TtsEngineFamily.PIPER_VITS) ||
+                (quality == TtsQuality.HIGH_QUALITY && engineFamily == TtsEngineFamily.SUPERTONIC)
+        ) { "TTS background job quality must match its engine family" }
     }
 }
 

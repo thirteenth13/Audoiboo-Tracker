@@ -17,8 +17,7 @@ internal class SupertonicAndroidAdapter private constructor(
         require(text.isNotBlank()) { "TTS text must not be blank" }
         require(speakerId >= 0) { "Speaker id must be non-negative" }
         require(speed > 0f) { "TTS speed must be positive" }
-        val lang = language.trim().lowercase().substringBefore('-').substringBefore('_')
-        require(lang == "uk" || lang == "ru") { "Unsupported Supertonic language for Audoiboo: $language" }
+        val lang = normalizeLanguage(language)
 
         val audio = tts.generateWithConfig(
             text = text,
@@ -53,6 +52,14 @@ internal class SupertonicAndroidAdapter private constructor(
             UNICODE_INDEXER,
             VOICE_STYLE,
         )
+
+        internal fun normalizeLanguage(language: String): String {
+            val normalized = language.trim().lowercase().substringBefore('-').substringBefore('_')
+            require(normalized == "uk" || normalized == "ru") {
+                "Unsupported Supertonic language for Audoiboo: $language"
+            }
+            return normalized
+        }
 
         private fun isRuntimeFile(file: File): Boolean = file.isFile && file.length() > 0L
 

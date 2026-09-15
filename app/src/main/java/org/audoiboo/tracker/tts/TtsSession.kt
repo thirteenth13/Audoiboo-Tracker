@@ -43,8 +43,9 @@ data class TtsSession(
         require(nextGlobalChunkIndex >= 0)
         require(completedChapterIndexes.all { it >= 0 })
         require(
-            quality != TtsQuality.HIGH_QUALITY || engineFamily == TtsEngineFamily.SUPERTONIC
-        ) { "High-quality TTS sessions must use the Supertonic engine" }
+            (quality == TtsQuality.FAST && engineFamily == TtsEngineFamily.PIPER_VITS) ||
+                (quality == TtsQuality.HIGH_QUALITY && engineFamily == TtsEngineFamily.SUPERTONIC)
+        ) { "TTS quality must match its engine family" }
     }
 
     fun checkpoint(): TtsSessionCheckpoint = TtsSessionCheckpoint(

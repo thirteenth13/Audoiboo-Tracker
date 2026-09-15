@@ -9,6 +9,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -39,6 +40,18 @@ class TtsBackgroundJobStoreTest {
         assertEquals(job, restored)
         assertEquals(TtsQuality.HIGH_QUALITY, restored?.quality)
         assertEquals(TtsEngineFamily.SUPERTONIC, restored?.engineFamily)
+    }
+
+    @Test fun backgroundJobRejectsQualityEngineMismatch() {
+        val root = Files.createTempDirectory("tts-background-job-invariant").toFile()
+        val fast = sampleJob(root, "invariant-job")
+
+        assertThrows(IllegalArgumentException::class.java) {
+            fast.copy(engineFamily = TtsEngineFamily.SUPERTONIC)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            fast.copy(quality = TtsQuality.HIGH_QUALITY)
+        }
     }
 
     @Test fun versionOneJobDefaultsToFastPiper() {

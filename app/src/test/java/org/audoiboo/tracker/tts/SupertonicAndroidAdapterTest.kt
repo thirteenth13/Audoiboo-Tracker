@@ -20,4 +20,14 @@ class SupertonicAndroidAdapterTest {
         assertTrue(SupertonicAndroidAdapter.isModel(primary))
         assertFalse(SupertonicAndroidAdapter.isModel(File(dir, SupertonicAndroidAdapter.TEXT_ENCODER)))
     }
+
+    @Test fun rejectsCompleteRuntimeWhenAnySiblingIsEmpty() {
+        val dir = Files.createTempDirectory("supertonic-runtime-empty").toFile()
+        SupertonicAndroidAdapter.REQUIRED_FILES.forEach { name -> File(dir, name).writeText("x") }
+        val primary = File(dir, SupertonicAndroidAdapter.DURATION_PREDICTOR)
+
+        assertTrue(SupertonicAndroidAdapter.isModel(primary))
+        File(dir, SupertonicAndroidAdapter.VOICE_STYLE).writeBytes(ByteArray(0))
+        assertFalse(SupertonicAndroidAdapter.isModel(primary))
+    }
 }

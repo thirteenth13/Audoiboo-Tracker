@@ -103,6 +103,22 @@ class SherpaSupertonicInstallerTest {
     }
 
     @Test
+    fun `rejects empty Supertonic runtime file`() {
+        val root = Files.createTempDirectory("supertonic-empty").toFile()
+        try {
+            val archive = supertonicArchive(empty = "voice.bin")
+            val pkg = testPackage(archive, "uk")
+            val manager = VoiceModelManager(root)
+            val installer = SherpaVoiceInstaller(manager) { ByteArrayInputStream(archive) }
+
+            assertTrue(installer.install(pkg).isFailure)
+            assertFalse(manager.modelDir(pkg.modelId, pkg.version).exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `Supertonic top-level release directory is stripped safely`() {
         val root = Files.createTempDirectory("supertonic-root").toFile()
         try {
@@ -119,10 +135,10 @@ class SherpaSupertonicInstallerTest {
         }
     }
 
-    private fun supertonicArchive(exclude: String? = null): ByteArray {
+    private fun supertonicArchive(exclude: String? = null, empty: String? = null): ByteArray {
         val files = SherpaVoiceInstaller.SUPERTONIC_RUNTIME_FILES
             .filterNot { it == exclude }
-            .associateWith { name -> "test-$name".toByteArray() }
+            .associateWith { name -> if (name == empty) ByteArray(0) else "test-$name".toByteArray() }
         return archiveOf(files)
     }
 

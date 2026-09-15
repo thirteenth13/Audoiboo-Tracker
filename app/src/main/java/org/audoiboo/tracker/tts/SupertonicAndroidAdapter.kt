@@ -54,18 +54,20 @@ internal class SupertonicAndroidAdapter private constructor(
             VOICE_STYLE,
         )
 
+        private fun isRuntimeFile(file: File): Boolean = file.isFile && file.length() > 0L
+
         fun isModel(modelFile: File): Boolean {
             val dir = modelFile.parentFile ?: return false
-            return modelFile.name == DURATION_PREDICTOR && REQUIRED_FILES.all { File(dir, it).isFile }
+            return modelFile.name == DURATION_PREDICTOR && REQUIRED_FILES.all { isRuntimeFile(File(dir, it)) }
         }
 
         fun create(modelFile: File, numThreads: Int): SupertonicAndroidAdapter {
-            require(modelFile.isFile) { "Sherpa model file is missing: ${modelFile.absolutePath}" }
+            require(isRuntimeFile(modelFile)) { "Sherpa model file is missing or empty: ${modelFile.absolutePath}" }
             require(numThreads > 0)
             val dir = requireNotNull(modelFile.parentFile)
             fun path(name: String): String {
                 val file = File(dir, name)
-                require(file.isFile) { "Supertonic runtime file is missing: ${file.absolutePath}" }
+                require(isRuntimeFile(file)) { "Supertonic runtime file is missing or empty: ${file.absolutePath}" }
                 return file.absolutePath
             }
 

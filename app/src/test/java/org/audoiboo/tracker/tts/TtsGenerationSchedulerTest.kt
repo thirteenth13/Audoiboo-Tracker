@@ -19,7 +19,7 @@ class TtsGenerationSchedulerTest {
     }
 
     @Test
-    fun `quality mismatch is rejected`() {
+    fun `quality mismatch is rejected using valid configurations`() {
         val document = document()
         val session = session(document, TtsQuality.HIGH_QUALITY, TtsEngineFamily.SUPERTONIC)
         val mismatched = job(document, TtsQuality.FAST, TtsEngineFamily.PIPER_VITS)
@@ -30,7 +30,7 @@ class TtsGenerationSchedulerTest {
     }
 
     @Test
-    fun `engine mismatch is rejected`() {
+    fun `fast session cannot resume high quality Supertonic job`() {
         val document = document()
         val session = session(document, TtsQuality.FAST, TtsEngineFamily.PIPER_VITS)
         val mismatched = job(document, TtsQuality.HIGH_QUALITY, TtsEngineFamily.SUPERTONIC)

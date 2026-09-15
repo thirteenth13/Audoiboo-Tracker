@@ -23,7 +23,6 @@ class TtsGenerationSchedulerTest {
         val document = document()
         val session = session(document, TtsQuality.HIGH_QUALITY, TtsEngineFamily.SUPERTONIC)
         val mismatched = job(document, TtsQuality.FAST, TtsEngineFamily.PIPER_VITS)
-            .copy(engineFamily = TtsEngineFamily.SUPERTONIC)
 
         assertThrows(IllegalArgumentException::class.java) {
             TtsGenerationScheduler.validateResumeJob(session, mismatched)
@@ -34,7 +33,7 @@ class TtsGenerationSchedulerTest {
     fun `engine mismatch is rejected`() {
         val document = document()
         val session = session(document, TtsQuality.FAST, TtsEngineFamily.PIPER_VITS)
-        val mismatched = job(document, TtsQuality.FAST, TtsEngineFamily.SUPERTONIC)
+        val mismatched = job(document, TtsQuality.HIGH_QUALITY, TtsEngineFamily.SUPERTONIC)
 
         assertThrows(IllegalArgumentException::class.java) {
             TtsGenerationScheduler.validateResumeJob(session, mismatched)

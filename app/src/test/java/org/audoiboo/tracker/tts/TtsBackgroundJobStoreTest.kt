@@ -27,6 +27,29 @@ class TtsBackgroundJobStoreTest {
         assertEquals(1, documentFiles(root, job.sessionId).size)
     }
 
+    @Test fun unicodeBookMetadataAndTextRoundTripExactly() {
+        val root = Files.createTempDirectory("tts-background-job-unicode").toFile()
+        val store = TtsBackgroundJobStore(root)
+        val base = sampleJob(root, "unicode-job")
+        val document = base.document.copy(
+            title = "Київ — Привіт, світе!",
+            authors = listOf("Сергій Жадан", "Людмила Улицька"),
+            series = "Історії / Истории",
+            chapters = listOf(
+                BookChapter(0, "Розділ перший", listOf("Український текст: Ґанок, їжак, Європа.")),
+                BookChapter(1, "Глава вторая", listOf("Русский текст: ещё один абзац — без потерь.")),
+            ),
+        )
+        val job = base.copy(document = document, chunkCount = TtsSynthesisPlanner.build(document).chunkCount)
+
+        store.save(job)
+
+        assertEquals(job, store.load(job.sessionId))
+        val persisted = documentFiles(root, job.sessionId).single().readText(Charsets.UTF_8)
+        assertTrue(persisted.contains("Київ — Привіт, світе!"))
+        assertTrue(persisted.contains("Русский текст: ещё один абзац — без потерь."))
+    }
+
     @Test fun highQualityJobRoundTripPreservesQualityAndEngine() {
         val root = Files.createTempDirectory("tts-background-job-supertonic").toFile()
         val store = TtsBackgroundJobStore(root)

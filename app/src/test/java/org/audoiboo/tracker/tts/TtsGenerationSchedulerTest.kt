@@ -46,6 +46,8 @@ class TtsGenerationSchedulerTest {
         title = "Test book",
         authors = listOf("Author"),
         language = "uk",
+        series = null,
+        seriesNumber = null,
         chapters = listOf(BookChapter(0, "Chapter", listOf("Text"))),
     )
 

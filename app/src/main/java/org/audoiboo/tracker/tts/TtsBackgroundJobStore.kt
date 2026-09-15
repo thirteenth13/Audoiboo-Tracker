@@ -35,16 +35,16 @@ internal class TtsBackgroundJobStore(private val root: File) {
         val expectedDigest = documentDigest(documentText)
         val documentFile = documentFileFor(job.sessionId, expectedDigest)
         val existed = documentFile.exists()
-        val valid = documentFile.isFile && runCatching { documentDigest(documentFile.readText()) == expectedDigest }.getOrDefault(false)
+        val valid = documentFile.isFile && runCatching { documentDigest(documentFile.readText(Charsets.UTF_8)) == expectedDigest }.getOrDefault(false)
         var created = false
         if (!valid) {
             val temp = File(documentFile.parentFile, documentFile.name + ".tmp")
-            temp.writeText(documentText)
+            temp.writeText(documentText, Charsets.UTF_8)
             commitTempFile(temp, documentFile, "Cannot commit TTS background document")
             created = !existed
         }
         val target = fileFor(job.sessionId); val temp = File(target.parentFile, target.name + ".tmp")
-        temp.writeText(encode(job, documentFile.name).toString())
+        temp.writeText(encode(job, documentFile.name).toString(), Charsets.UTF_8)
         try { commitTempFile(temp, target, "Cannot commit TTS background job") }
         catch (error: Throwable) { temp.delete(); if (created) documentFile.delete(); throw error }
         cleanupDocuments(job.sessionId, documentFile)
@@ -52,7 +52,7 @@ internal class TtsBackgroundJobStore(private val root: File) {
 
     @Synchronized fun load(sessionId: String): TtsBackgroundBookJob? {
         require(sessionId.isNotBlank()); val file = fileFor(sessionId); if (!file.isFile) return null
-        return runCatching { decode(JSONObject(file.readText()), sessionId) }.getOrNull()
+        return runCatching { decode(JSONObject(file.readText(Charsets.UTF_8)), sessionId) }.getOrNull()
     }
 
     @Synchronized fun delete(sessionId: String): Boolean {
@@ -72,7 +72,7 @@ internal class TtsBackgroundJobStore(private val root: File) {
     private fun decode(root:JSONObject, requestedSessionId:String):TtsBackgroundBookJob {
         val version=root.optInt("version",-1); require(version in 1..FORMAT_VERSION){"Unsupported TTS background job format"}
         val sessionId=root.getString("sessionId"); require(sessionId==requestedSessionId){"TTS background job session mismatch"}; val modelJson=root.getJSONObject("model")
-        val documentJson=if(root.has("documentFile")&&!root.isNull("documentFile")){val name=root.getString("documentFile");require(DOCUMENT_FILE_NAME.matches(name));val prefix=TtsStableId.hex(sessionId)+".";require(name.startsWith(prefix));val digest=name.removePrefix(prefix).removeSuffix(DOCUMENT_SUFFIX);val file=File(rootDir(),name);require(file.isFile);val text=file.readText();require(documentDigest(text)==digest);JSONObject(text)}else root.getJSONObject("document")
+        val documentJson=if(root.has("documentFile")&&!root.isNull("documentFile")){val name=root.getString("documentFile");require(DOCUMENT_FILE_NAME.matches(name));val prefix=TtsStableId.hex(sessionId)+".";require(name.startsWith(prefix));val digest=name.removePrefix(prefix).removeSuffix(DOCUMENT_SUFFIX);val file=File(rootDir(),name);require(file.isFile);val text=file.readText(Charsets.UTF_8);require(documentDigest(text)==digest);JSONObject(text)}else root.getJSONObject("document")
         val document=decodeDocument(documentJson); val persistedChunkCount=root.optInt("chunkCount",-1)
         val quality=if(version>=2) TtsQuality.valueOf(root.getString("quality")) else TtsQuality.FAST
         val engine=if(version>=2) TtsEngineFamily.valueOf(root.getString("engineFamily")) else TtsEngineFamily.PIPER_VITS
@@ -81,7 +81,7 @@ internal class TtsBackgroundJobStore(private val root: File) {
 
     private fun decodeDocument(j:JSONObject):BookDocument { val chapters=j.getJSONArray("chapters"); return BookDocument(nullableString(j,"title"),strings(j.getJSONArray("authors")),nullableString(j,"language"),nullableString(j,"series"),if(j.isNull("seriesNumber"))null else j.getInt("seriesNumber"),(0 until chapters.length()).map{idx->val c=chapters.getJSONObject(idx);BookChapter(c.getInt("index"),c.getString("title"),strings(c.getJSONArray("blocks")))}) }
     private fun documentFileFor(sessionId:String,digest:String)=File(rootDir(),"${TtsStableId.hex(sessionId)}.$digest$DOCUMENT_SUFFIX")
-    private fun documentDigest(text:String)=MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString(""){"%02x".format(it)}
+    private fun documentDigest(text:String)=MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).joinToString(""){"%02x".format(it)}
     private fun commitTempFile(temp:File,target:File,msg:String){val backup=File(target.parentFile,target.name+".bak");require(!backup.exists()||backup.delete());if(temp.renameTo(target))return;if(!target.exists()){temp.delete();error(msg)};require(target.renameTo(backup)){msg};try{require(temp.renameTo(target)){msg};backup.delete()}catch(e:Throwable){target.delete();backup.renameTo(target);throw e}}
     private fun cleanupDocuments(sessionId:String,keep:File?):Boolean{val prefix=TtsStableId.hex(sessionId)+".";var ok=true;rootDir().listFiles()?.forEach{f->if(f.name.startsWith(prefix)&&(f.name.endsWith(DOCUMENT_SUFFIX)||f.name.endsWith(DOCUMENT_SUFFIX+".tmp")||f.name.endsWith(DOCUMENT_SUFFIX+".bak"))&&f.absolutePath!=keep?.absolutePath)ok=f.delete()&&ok};return ok}
     private fun strings(a:JSONArray)= (0 until a.length()).map{a.getString(it)}

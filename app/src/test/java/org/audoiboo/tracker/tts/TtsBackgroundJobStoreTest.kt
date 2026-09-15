@@ -45,9 +45,12 @@ class TtsBackgroundJobStoreTest {
         store.save(job)
 
         assertEquals(job, store.load(job.sessionId))
-        val persisted = documentFiles(root, job.sessionId).single().readText(Charsets.UTF_8)
-        assertTrue(persisted.contains("Київ — Привіт, світе!"))
-        assertTrue(persisted.contains("Русский текст: ещё один абзац — без потерь."))
+        val persisted = JSONObject(documentFiles(root, job.sessionId).single().readText(Charsets.UTF_8))
+        assertEquals("Київ — Привіт, світе!", persisted.getString("title"))
+        assertEquals(
+            "Русский текст: ещё один абзац — без потерь.",
+            persisted.getJSONArray("chapters").getJSONObject(1).getJSONArray("blocks").getString(0),
+        )
     }
 
     @Test fun highQualityJobRoundTripPreservesQualityAndEngine() {

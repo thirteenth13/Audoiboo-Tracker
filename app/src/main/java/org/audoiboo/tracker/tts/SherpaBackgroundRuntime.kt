@@ -20,7 +20,7 @@ internal class SherpaBackgroundRuntime(
         TtsGenerationScheduler.validateResumeJob(session, job)
 
         val provider = SherpaOnnxTtsProvider(
-            modelManager = VoiceModelManager(File(filesRoot, "models")),
+            modelManager = VoiceModelManager(TtsModelStorage.root(context.applicationContext)),
             models = mapOf(job.model.modelId to job.model),
             voices = listOf(session.voice),
             adapterFactory = adapterFactory,

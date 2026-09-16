@@ -58,6 +58,34 @@ class FlibustaSourcePluginTest {
         assertTrue(requested.single().startsWith("https://flibusta.site/booksearch?ask="))
     }
 
+    @Test fun searchFallsBackToNextHostWhenPrimaryIsUnavailable() = runBlocking {
+        val html = """
+            <html><body><div class="book-card">
+              <a href="/books/61205-istinnyy/">Звездная кровь 8. Истинный</a>
+              <a href="/authors/77-prokofev/">Роман Прокофьев</a>
+              <a href="/series/88-zvezdnaya-krov/">Звездная кровь</a>
+              <span>#8</span>
+            </div></body></html>
+        """.trimIndent()
+        val requested = mutableListOf<String>()
+        val plugin = FlibustaSourcePlugin { url, _ ->
+            requested += url
+            if (url.contains("flibusta.site")) {
+                FlibustaHttpResponse(503, url, emptyMap(), ByteArray(0))
+            } else {
+                FlibustaHttpResponse(200, url, mapOf("Content-Type" to listOf("text/html")), html.toByteArray())
+            }
+        }
+
+        val result = plugin.searchSeries(SeriesSearchQuery("Звездная кровь"))
+
+        assertEquals(2, requested.size)
+        assertTrue(requested[0].startsWith("https://flibusta.site/"))
+        assertTrue(requested[1].startsWith("https://flibusta.one/"))
+        assertEquals(1, result.size)
+        assertEquals("Звездная кровь", result.single().series.title)
+    }
+
     @Test fun searchUrlsAreVariantSpecificAndEncoded() {
         assertEquals(
             "https://flibusta.site/booksearch?ask=%D0%97%D0%B2%D0%B5%D0%B7%D0%B4%D0%BD%D0%B0%D1%8F+%D0%BA%D1%80%D0%BE%D0%B2%D1%8C",

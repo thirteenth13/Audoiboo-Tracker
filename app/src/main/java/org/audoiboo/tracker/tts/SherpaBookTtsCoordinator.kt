@@ -92,8 +92,7 @@ class SherpaBookTtsCoordinator(
         private const val PROVIDER_ID = "sherpa-onnx"
 
         fun create(context: Context): SherpaBookTtsCoordinator {
-            val modelsRoot = File(context.filesDir, "tts/models")
-            val manager = VoiceModelManager(modelsRoot)
+            val manager = VoiceModelManager(TtsModelStorage.root(context.applicationContext))
             return SherpaBookTtsCoordinator(SherpaVoiceInstaller(manager))
         }
     }

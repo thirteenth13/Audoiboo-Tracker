@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.work.BackoffPolicy
 import androidx.work.CoroutineWorker
@@ -18,6 +19,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancelAndJoin
@@ -140,9 +142,24 @@ internal class TtsGenerationWorker(appContext: Context, params: WorkerParameters
         val filesRoot = File(applicationContext.filesDir, "tts")
         val sessionStore = TtsSessionStore(File(filesRoot, "sessions"))
         val totalChunks = TtsBackgroundJobStore(File(filesRoot, "jobs")).load(sessionId)?.chunkCount?.coerceAtLeast(0) ?: 0
-        createChannel(); setForeground(foregroundInfo(sessionId, title, sessionStore.load(sessionId)?.nextGlobalChunkIndex ?: 0, totalChunks))
+        val startChunk = sessionStore.load(sessionId)?.nextGlobalChunkIndex ?: 0
+        val startedAtMs = SystemClock.elapsedRealtime()
+        createChannel()
+        setForeground(foregroundInfo(sessionId, title, startChunk, totalChunks, null))
         val runtime = TtsBackgroundRuntimeRegistry.current() ?: return@coroutineScope Result.retry()
-        val progressJob = launch { while (isActive) { delay(PROGRESS_REFRESH_MS); setForeground(foregroundInfo(sessionId, title, sessionStore.load(sessionId)?.nextGlobalChunkIndex ?: 0, totalChunks)) } }
+        val progressJob = launch {
+            while (isActive) {
+                delay(PROGRESS_REFRESH_MS)
+                val currentChunk = sessionStore.load(sessionId)?.nextGlobalChunkIndex ?: startChunk
+                val estimate = TtsProgressEstimator.estimate(
+                    startChunk = startChunk,
+                    currentChunk = currentChunk,
+                    totalChunks = totalChunks,
+                    elapsedMs = SystemClock.elapsedRealtime() - startedAtMs,
+                )
+                setForeground(foregroundInfo(sessionId, title, currentChunk, totalChunks, estimate))
+            }
+        }
         try {
             when (runtime.run(applicationContext, sessionId)) {
                 TtsSessionState.COMPLETED -> Result.success()
@@ -154,16 +171,37 @@ internal class TtsGenerationWorker(appContext: Context, params: WorkerParameters
         finally { progressJob.cancelAndJoin() }
     }
 
-    private fun foregroundInfo(sessionId: String, title: String, currentChunk: Int, totalChunks: Int): ForegroundInfo {
-        val bounded = currentChunk.coerceAtLeast(0).coerceAtMost(totalChunks.coerceAtLeast(0)); val hasProgress = totalChunks > 0
-        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID).setSmallIcon(R.drawable.ic_launcher_audoiboo)
-            .setContentTitle("Озвучення книги").setContentText(if (hasProgress) "$title • $bounded/$totalChunks" else title)
+    private fun foregroundInfo(
+        sessionId: String,
+        title: String,
+        currentChunk: Int,
+        totalChunks: Int,
+        estimate: TtsProgressEstimate?,
+    ): ForegroundInfo {
+        val bounded = currentChunk.coerceAtLeast(0).coerceAtMost(totalChunks.coerceAtLeast(0))
+        val hasProgress = totalChunks > 0
+        val progressText = if (hasProgress) "$title • $bounded/$totalChunks" else title
+        val telemetry = estimate?.remainingMs?.let { remaining ->
+            val speed = estimate.chunksPerMinute?.let { String.format(Locale.US, "%.1f", it) }
+            buildString {
+                append("Залишилось ~")
+                append(TtsProgressEstimator.formatRemaining(remaining))
+                if (speed != null) append(" • $speed фраг./хв")
+            }
+        }
+        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_audoiboo)
+            .setContentTitle("Озвучення книги")
+            .setContentText(progressText)
+            .setStyle(telemetry?.let { NotificationCompat.BigTextStyle().bigText("$progressText\n$it") })
+            .setSubText(telemetry)
             .setOngoing(true).setOnlyAlertOnce(true).setPriority(NotificationCompat.PRIORITY_LOW)
             .setProgress(totalChunks.coerceAtLeast(0), bounded, !hasProgress)
             .addAction(android.R.drawable.ic_media_pause, "Пауза", TtsPauseReceiver.pendingIntent(applicationContext, sessionId)).build()
         val id = TtsStableId.notificationId(sessionId)
         return if (Build.VERSION.SDK_INT >= 35) ForegroundInfo(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING) else ForegroundInfo(id, notification)
     }
+
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         (applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)

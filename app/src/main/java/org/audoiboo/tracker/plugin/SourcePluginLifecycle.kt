@@ -1,5 +1,7 @@
 package org.audoiboo.tracker.plugin
 
+import org.audoiboo.tracker.plugin.flibusta.FlibustaBuiltInSourcePlugin
+
 enum class PluginOrigin {
     BUILT_IN,
     PACKAGE
@@ -138,7 +140,8 @@ object BuiltInSourcePluginManager {
                 AudiobooSourcePlugin,
                 OpenLibraryMetadataPlugin,
                 GoogleBooksCatalogPlugin,
-                FantLabCatalogPlugin
+                FantLabCatalogPlugin,
+                FlibustaBuiltInSourcePlugin
             )
         )
     }

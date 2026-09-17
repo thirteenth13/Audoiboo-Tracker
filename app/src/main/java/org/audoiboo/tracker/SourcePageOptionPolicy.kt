@@ -10,7 +10,7 @@ internal object SourcePageOptionPolicy {
             .distinctBy { it.sourceId to SourceKeys.normalizeUrl(it.url) }
 
     fun providerIds(sources: List<BookSourceEntity>): List<String> =
-        options(sources).map { it.sourceId }.distinct()
+        sources.map { it.sourceId }.distinct()
 
     fun needsObservationHint(source: BookSourceEntity, all: List<BookSourceEntity>): Boolean =
         options(all).count { it.sourceId == source.sourceId } > 1

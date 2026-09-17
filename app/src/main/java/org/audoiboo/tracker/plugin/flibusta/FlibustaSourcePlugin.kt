@@ -51,14 +51,13 @@ class FlibustaSourcePlugin(
         for (query in searches) {
             searchCatalog(query).forEach { entry -> entries.putIfAbsent(normalizeUrl(entry.url), entry) }
         }
-        return entries.values.toList().toCandidates(canonical.title)
+
+        val expanded = expandMatchingSeries(entries.values.toList(), canonical.title)
+        return expanded.toCandidates(canonical.title)
     }
 
     override suspend fun loadBook(url: String): SourceBook? {
-        val parser = FlibustaParserRegistry.forUrl(url) ?: return null
-        val response = runCatching { transport.get(url, requestHeaders()) }.getOrNull() ?: return null
-        if (response.statusCode !in 200..299) return null
-        val page = parser.parseBookPage(response.body.toString(Charsets.UTF_8), response.finalUrl)
+        val page = fetchBookPage(url) ?: return null
         val title = page.title?.takeIf(String::isNotBlank) ?: return null
         return SourceBook(
             sourceId = ID,
@@ -70,6 +69,52 @@ class FlibustaSourcePlugin(
             seriesNumber = page.seriesNumber?.toDouble(),
             coverUrl = page.coverUrl,
         )
+    }
+
+    private fun fetchBookPage(url: String): FlibustaBookPage? {
+        val parser = FlibustaParserRegistry.forUrl(url) ?: return null
+        val response = runCatching { transport.get(url, requestHeaders()) }.getOrNull() ?: return null
+        if (response.statusCode !in 200..299) return null
+        return runCatching {
+            parser.parseBookPage(response.body.toString(Charsets.UTF_8), response.finalUrl)
+        }.getOrNull()
+    }
+
+    /**
+     * Search pages can expose only a matching book link. Hydrate a few such books, follow their
+     * explicit series link and parse that page so discovery gets real book overlap instead of a
+     * title-only candidate with books=0.
+     */
+    private fun expandMatchingSeries(
+        entries: List<FlibustaCatalogEntry>,
+        canonicalSeriesTitle: String,
+    ): List<FlibustaCatalogEntry> {
+        if (entries.isEmpty()) return entries
+        val output = linkedMapOf<String, FlibustaCatalogEntry>()
+        entries.forEach { output.putIfAbsent(normalizeUrl(it.url), it) }
+        val visitedSeries = linkedSetOf<String>()
+
+        entries.asSequence().take(MAX_SERIES_PROBES).forEach { entry ->
+            val page = fetchBookPage(entry.url) ?: return@forEach
+            val seriesTitle = page.series?.trim()?.takeIf(String::isNotBlank) ?: return@forEach
+            if (!seriesTitle.equals(canonicalSeriesTitle.trim(), ignoreCase = true)) return@forEach
+            val seriesUrl = page.seriesUrl?.takeIf(String::isNotBlank) ?: return@forEach
+            val normalizedSeriesUrl = normalizeUrl(seriesUrl)
+            if (!visitedSeries.add(normalizedSeriesUrl)) return@forEach
+            fetchCatalogPage(seriesUrl).forEach { seriesEntry ->
+                output.putIfAbsent(normalizeUrl(seriesEntry.url), seriesEntry)
+            }
+        }
+        return output.values.toList()
+    }
+
+    private fun fetchCatalogPage(url: String): List<FlibustaCatalogEntry> {
+        val parser = FlibustaParserRegistry.forUrl(url) ?: return emptyList()
+        val response = runCatching { transport.get(url, requestHeaders()) }.getOrNull() ?: return emptyList()
+        if (response.statusCode !in 200..299) return emptyList()
+        return runCatching {
+            parser.parseCatalog(response.body.toString(Charsets.UTF_8), response.finalUrl)
+        }.getOrDefault(emptyList()).take(MAX_SEARCH_RESULTS)
     }
 
     private fun searchCatalog(query: String): List<FlibustaCatalogEntry> {
@@ -115,6 +160,7 @@ class FlibustaSourcePlugin(
         val HOSTS = setOf("flibusta.site", "flibusta.one", "flibusta.name")
         private val SEARCH_ORDER = listOf(FlibustaVariant.SITE, FlibustaVariant.ONE, FlibustaVariant.NAME)
         private const val MAX_SEARCH_RESULTS = 40
+        private const val MAX_SERIES_PROBES = 8
 
         internal fun searchUrl(variant: FlibustaVariant, query: String): String {
             val encoded = URLEncoder.encode(query.trim(), StandardCharsets.UTF_8.name())

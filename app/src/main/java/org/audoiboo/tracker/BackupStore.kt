@@ -110,7 +110,7 @@ object BackupStore {
         val objectSections = arrayOf(
             "roomTags", "roomTrackPositions", "roomPlaybackResume", "roomPlayerState",
             "roomPlayerExtras", "settings", "playerLibrary", "playerSettings",
-            "audioEnhancement", "seriesAutomation", "storageAccess", "bookmarks"
+            "audioEnhancement", "seriesAutomation", "storageAccess", "networkFallback", "bookmarks"
         )
         val arraySections = arrayOf("roomPlaybackQueue")
         val sectionsValid = objectSections.all { key ->
@@ -129,21 +129,12 @@ object BackupStore {
         return root
     }
 
-    /**
-     * Series tracking remains backward-compatible through the legacy tracker JSON.
-     * Player data is restored only from current Room-native fields.
-     */
     private suspend fun restoreRoomState(context: Context, tracker: String, root: JSONObject) {
         LibraryRepository.restoreLegacyJson(context, tracker)
         root.optJSONObject("roomTags")?.let { LibraryRepository.restoreTagsJson(context, it) }
         PlayerTagStore.refresh(context)
-
         TrackPositionStore.restoreJson(context, root.optJSONObject("roomTrackPositions"))
-        PlaybackStateRepository.restoreRoomState(
-            context,
-            root.optJSONArray("roomPlaybackQueue"),
-            root.optJSONObject("roomPlaybackResume")
-        )
+        PlaybackStateRepository.restoreRoomState(context, root.optJSONArray("roomPlaybackQueue"), root.optJSONObject("roomPlaybackResume"))
         root.optJSONObject("roomPlayerState")?.let { PlayerStateStore.restoreJson(context, it) }
         root.optJSONObject("roomPlayerExtras")?.let { PlayerExtrasRepository.restoreJson(context, it) }
         PlayerExtrasStore.refresh(context)
@@ -159,6 +150,7 @@ object BackupStore {
             root.put("audioEnhancement", prefsToJson(context, "audio_enhancement"))
             root.put("seriesAutomation", prefsToJson(context, "series_automation"))
             root.put("storageAccess", prefsToJson(context, "storage_access"))
+            root.put("networkFallback", prefsToJson(context, "network_fallback"))
         }
         if (includeBookmarks) root.put("bookmarks", prefsToJson(context, "bookmarks"))
     }
@@ -170,9 +162,11 @@ object BackupStore {
         root.optJSONObject("bookmarks")?.let { jsonToPrefs(context, "bookmarks", it) }
         root.optJSONObject("playerLibrary")?.let { jsonToPrefs(context, "player_library", it) }
         root.optJSONObject("storageAccess")?.let { jsonToPrefs(context, "storage_access", it) }
+        root.optJSONObject("networkFallback")?.let { jsonToPrefs(context, "network_fallback", it) }
     }
 
     private suspend fun recoverAfterRestore(context: Context) {
+        org.audoiboo.tracker.plugin.NetworkFallbackSettings.initialize(context)
         LibraryUriRecovery.recover(context)
         DownloadScheduler.recover(context)
         SeriesAutomationPrefs.schedule(context)

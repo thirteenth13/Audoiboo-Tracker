@@ -67,18 +67,47 @@ internal object RoomSeriesSync {
         context: Context,
         inputUrl: String,
         reviewResolution: RoomSeriesReviewResolution? = null,
-        forceDiscovery: Boolean = false
+        forceDiscovery: Boolean = false,
+        manualCanonicalSeriesId: String? = null
     ): RoomSeriesSyncResult? = withContext(Dispatchers.IO) {
         PluginPackageRuntime.initialize(context.filesDir)
-        val plugin = PluginPackageRuntime.registry.forUrl(inputUrl, SourceCapability.SERIES_LOOKUP) ?: return@withContext null
-        val provider = plugin as? SeriesProvider ?: return@withContext null
-        val resolved = provider.resolveSeries(inputUrl) ?: return@withContext null
-        if (resolved.sourceId != plugin.descriptor.id) return@withContext null
+
+        suspend fun manualDiscoveryFallback(excludeSourceId: String? = null): RoomSeriesSyncResult? {
+            if (!forceDiscovery || manualCanonicalSeriesId.isNullOrBlank()) return null
+            val db = AudoibooDatabase.get(context)
+            val dao = db.libraryDao()
+            val snapshot = dao.seriesWithBooks(manualCanonicalSeriesId) ?: return null
+            android.util.Log.i("AudoibooSeries", "MANUAL DISCOVERY fallback series=" + manualCanonicalSeriesId + " exclude=" + (excludeSourceId ?: "none"))
+            try {
+                discoverAndPersistAlternates(
+                    context = context,
+                    canonicalSeriesId = manualCanonicalSeriesId,
+                    canonical = canonicalSeriesInput(snapshot),
+                    excludeSourceId = excludeSourceId.orEmpty()
+                )
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                android.util.Log.e("AudoibooSeries", "MANUAL DISCOVERY fallback error=" + t.javaClass.simpleName + ":" + t.message, t)
+            }
+            val refreshed = dao.seriesWithBooks(manualCanonicalSeriesId) ?: snapshot
+            return RoomSeriesSyncResult(refreshed.series.id, refreshed.series.name, refreshed.books.size)
+        }
+
+        android.util.Log.i("AudoibooSeries", "MANUAL REFRESH forceDiscovery=" + forceDiscovery + " canonical=" + (manualCanonicalSeriesId ?: "none") + " url=" + inputUrl)
+        val plugin = PluginPackageRuntime.registry.forUrl(inputUrl, SourceCapability.SERIES_LOOKUP)
+            ?: return@withContext manualDiscoveryFallback()
+        val provider = plugin as? SeriesProvider
+            ?: return@withContext manualDiscoveryFallback(plugin.descriptor.id)
+        val resolved = provider.resolveSeries(inputUrl)
+            ?: return@withContext manualDiscoveryFallback(plugin.descriptor.id)
+        if (resolved.sourceId != plugin.descriptor.id) {
+            return@withContext manualDiscoveryFallback(plugin.descriptor.id)
+        }
         val rawSourceBooks = provider.loadSeriesBooks(resolved)
             .filter { it.sourceId == plugin.descriptor.id }
             .distinctBy { SourceKeys.normalizeUrl(it.url) }
         val sourceBooks = SeriesBookMembershipPolicy.filter(resolved, rawSourceBooks)
-        if (sourceBooks.isEmpty()) return@withContext null
+        if (sourceBooks.isEmpty()) return@withContext manualDiscoveryFallback(plugin.descriptor.id)
 
         val db = AudoibooDatabase.get(context)
         val dao = db.libraryDao()

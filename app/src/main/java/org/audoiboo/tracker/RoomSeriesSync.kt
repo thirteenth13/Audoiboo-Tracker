@@ -66,7 +66,8 @@ internal object RoomSeriesSync {
     suspend fun sync(
         context: Context,
         inputUrl: String,
-        reviewResolution: RoomSeriesReviewResolution? = null
+        reviewResolution: RoomSeriesReviewResolution? = null,
+        forceDiscovery: Boolean = false
     ): RoomSeriesSyncResult? = withContext(Dispatchers.IO) {
         PluginPackageRuntime.initialize(context.filesDir)
         val plugin = PluginPackageRuntime.registry.forUrl(inputUrl, SourceCapability.SERIES_LOOKUP) ?: return@withContext null
@@ -344,7 +345,7 @@ internal object RoomSeriesSync {
         if (SourceDiscoveryThrottle.shouldRun(
                 lastSuccessAt = discoveryPrefs.getLong(discoveryKey, 0L),
                 now = discoveryNow,
-                force = reviewResolution != null
+                force = forceDiscovery || reviewResolution != null
             )) {
             try {
                 val canonicalSnapshot = dao.seriesWithBooks(canonicalSeriesId)

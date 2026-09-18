@@ -71,9 +71,13 @@ class SourceDiscoveryEngine(
             }
         val providers = registry.plugins
             .filterNot { it.descriptor.id == excludeSourceId }
-            // Alternate-source discovery is for usable audiobook sources. Metadata/catalog
-            // providers (for example FantLab/Flibusta) must not delay persistence of audio links.
-            .filter { SourceCapability.DOWNLOAD_RESOLUTION in it.descriptor.capabilities }
+            // Alternate-source discovery includes playable audiobook sources and
+            // text-book providers that can feed local TTS. Pure metadata/catalog providers
+            // must not delay persistence of usable book sources.
+            .filter {
+                SourceCapability.DOWNLOAD_RESOLUTION in it.descriptor.capabilities ||
+                    it.descriptor.id == "flibusta"
+            }
             .filter {
                 SourceCapability.SERIES_SEARCH in it.descriptor.capabilities ||
                     SourceCapability.SERIES_DISCOVERY in it.descriptor.capabilities

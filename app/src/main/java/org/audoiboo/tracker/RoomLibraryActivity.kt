@@ -75,11 +75,23 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
         })
     }
 
-    fun syncUrl(url: String, fallbackToBrowser: Boolean, resolution: RoomSeriesReviewResolution? = null) {
+    fun syncUrl(url: String, fallbackToBrowser: Boolean, resolution: RoomSeriesReviewResolution? = null, canonicalSeriesId: String? = selectedSeries) {
         if (url.isBlank() || syncing) return
         syncing = true
         scope.launch {
-            val result = runCatching { RoomSeriesSync.sync(activity, url, resolution) }.getOrNull()
+            val refreshUrl = if (url.startsWith("http://") || url.startsWith("https://")) {
+                url
+            } else {
+                canonicalSeriesId
+                    ?.let { SourceMetadataRepository.sourcesForSeries(activity, it) }
+                    ?.asSequence()
+                    ?.filter { it.url.startsWith("http://") || it.url.startsWith("https://") }
+                    ?.sortedByDescending { it.userVerified }
+                    ?.map { it.url }
+                    ?.firstOrNull()
+                    ?: url
+            }
+            val result = runCatching { RoomSeriesSync.sync(activity, refreshUrl, resolution) }.getOrNull()
             syncing = false
             when {
                 result?.review != null -> pendingReview = PendingSeriesReview(url, fallbackToBrowser, result.review)

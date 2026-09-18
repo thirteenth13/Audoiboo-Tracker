@@ -91,7 +91,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
                     ?.firstOrNull()
                     ?: url
             }
-            val result = runCatching { RoomSeriesSync.sync(activity, refreshUrl, resolution, forceDiscovery) }.getOrNull()
+            val result = runCatching { RoomSeriesSync.sync(activity, refreshUrl, resolution, forceDiscovery, canonicalSeriesId) }.getOrNull()
             syncing = false
             when {
                 result?.review != null -> pendingReview = PendingSeriesReview(url, fallbackToBrowser, result.review)

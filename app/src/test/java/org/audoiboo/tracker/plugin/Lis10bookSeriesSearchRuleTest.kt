@@ -63,4 +63,62 @@ class Lis10bookSeriesSearchRuleTest {
             root.deleteRecursively()
         }
     }
+    @Test
+    fun directDiscoveryKeepsSeriesCardsEvenWhenCanonicalMatcherRejectsOneTitle() {
+        val root = createTempDirectory("lis10book-discovery-test-").toFile()
+        try {
+            val requested = mutableListOf<String>()
+            val runtime = DeclarativePluginRuntime(
+                PluginSandbox(PluginHttpTransport { request, _ ->
+                    requested += request.url
+                    PluginHttpResponse(
+                        200,
+                        request.url,
+                        """
+                        <main>
+                          <a class='mcard' href='/audio/dlan-sistemy-kniga-1/'>
+                            <span class='mcard-t'>Длань системы. Книга 1</span>
+                            <span class='mcard-a'>Роман Прокофьев</span>
+                          </a>
+                          <a class='mcard' href='/audio/dlan-sistemy-kniga-2/'>
+                            <span class='mcard-t'>Длань системы. Том второй</span>
+                            <span class='mcard-a'>Роман Прокофьев</span>
+                          </a>
+                        </main>
+                        """.trimIndent()
+                    )
+                })
+            )
+            val manifest = PluginPackageManifest(
+                id = "lis10book",
+                name = "Lis10book",
+                version = 8,
+                apiVersion = SOURCE_PLUGIN_API_VERSION,
+                runtime = PluginRuntime.DECLARATIVE,
+                hosts = setOf("lis10book.com"),
+                capabilities = setOf(SourceCapability.SERIES_DISCOVERY),
+                permissions = PluginPermissions(networkHosts = setOf("lis10book.com")),
+                entrypoints = emptyMap()
+            )
+            val canonical = CanonicalSeriesMatchInput(
+                id = "dlan",
+                title = "Длань системы",
+                authors = listOf("Роман Прокофьев"),
+                books = listOf(
+                    CanonicalBookMatchInput("1", "Длань системы. Книга 1", listOf("Роман Прокофьев"), 1.0),
+                    CanonicalBookMatchInput("2", "Совсем другое сохраненное название", listOf("Роман Прокофьев"), 2.0)
+                )
+            )
+
+            val result = runtime.discoverCanonicalSeries(manifest, canonical)
+
+            assertEquals(1, requested.size)
+            assertEquals("https://lis10book.com/serie/dlan-sistemy/", requested.single())
+            assertEquals(2, result.single().series.books.size)
+            assertEquals(2.0, result.single().series.books[1].number)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
 }

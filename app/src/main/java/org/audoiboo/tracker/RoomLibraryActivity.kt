@@ -75,7 +75,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
         })
     }
 
-    fun syncUrl(url: String, fallbackToBrowser: Boolean, resolution: RoomSeriesReviewResolution? = null, canonicalSeriesId: String? = selectedSeries) {
+    fun syncUrl(url: String, fallbackToBrowser: Boolean, resolution: RoomSeriesReviewResolution? = null, canonicalSeriesId: String? = selectedSeries, forceDiscovery: Boolean = false) {
         if (url.isBlank() || syncing) return
         syncing = true
         scope.launch {
@@ -91,7 +91,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
                     ?.firstOrNull()
                     ?: url
             }
-            val result = runCatching { RoomSeriesSync.sync(activity, refreshUrl, resolution) }.getOrNull()
+            val result = runCatching { RoomSeriesSync.sync(activity, refreshUrl, resolution, forceDiscovery) }.getOrNull()
             syncing = false
             when {
                 result?.review != null -> pendingReview = PendingSeriesReview(url, fallbackToBrowser, result.review)
@@ -140,7 +140,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
             navigationIcon = { if (series != null) IconButton(onClick = { showTopMenu = false; selectedSeries = null }) { Icon(Icons.Filled.ArrowBack, "Назад") } },
             actions = {
                 if (series != null) {
-                    IconButton(onClick = { syncUrl(series.series.url, false) }, enabled = !syncing) { Icon(Icons.Filled.Refresh, "Оновити") }
+                    IconButton(onClick = { syncUrl(series.series.url, false, forceDiscovery = true) }, enabled = !syncing) { Icon(Icons.Filled.Refresh, "Оновити") }
                     Box {
                         IconButton(onClick = { showTopMenu = true }) { Icon(Icons.Filled.MoreVert, "Ще") }
                         DropdownMenu(expanded = showTopMenu, onDismissRequest = { showTopMenu = false }) {

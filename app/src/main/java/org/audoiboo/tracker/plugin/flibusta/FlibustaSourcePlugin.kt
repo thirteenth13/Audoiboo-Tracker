@@ -122,16 +122,32 @@ class FlibustaSourcePlugin(
     override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> {
         if (series.sourceId != ID) return emptyList()
         return series.books.mapNotNull { ref ->
-            loadBook(ref.url) ?: ref.title?.takeIf(String::isNotBlank)?.let { title ->
-                SourceBook(
+            val listedTitle = ref.title?.trim()?.takeIf(String::isNotBlank)
+            val loaded = loadBook(ref.url)
+            when {
+                // The classic /b/<id> page can expose only the site heading ("Флибуста")
+                // as h1/title. The /s/<id> catalog row is the authoritative book title.
+                // Never let that generic page heading collapse every series row into one
+                // logical book during canonical dedupe.
+                listedTitle != null && loaded != null -> loaded.copy(
+                    remoteId = ref.remoteId ?: loaded.remoteId,
+                    url = ref.url,
+                    title = listedTitle,
+                    authors = loaded.authors.ifEmpty { series.authors },
+                    seriesTitle = series.title,
+                    seriesNumber = ref.number ?: loaded.seriesNumber,
+                )
+                loaded != null && !loaded.title.equals("Флибуста", ignoreCase = true) -> loaded
+                listedTitle != null -> SourceBook(
                     sourceId = ID,
                     remoteId = ref.remoteId,
                     url = ref.url,
-                    title = title,
+                    title = listedTitle,
                     authors = series.authors,
                     seriesTitle = series.title,
                     seriesNumber = ref.number,
                 )
+                else -> null
             }
         }
     }

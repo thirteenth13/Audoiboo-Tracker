@@ -156,7 +156,10 @@ abstract class BaseFlibustaParser(
 
     override fun parseBookPage(html: String, pageUrl: String): FlibustaBookPage {
         val document = Jsoup.parse(html, pageUrl)
-        val canonical = canonicalUrl(document, pageUrl)\n        val canonicalBookUrl = if (variant == FlibustaVariant.SITE) {\n            bookId(pathOf(canonical))?.let { "https://${variant.host}/b/$it" } ?: canonical\n        } else canonical
+        val canonical = canonicalUrl(document, pageUrl)
+        val canonicalBookUrl = if (variant == FlibustaVariant.SITE) {
+            bookId(pathOf(canonical))?.let { "https://${variant.host}/b/$it" } ?: canonical
+        } else canonical
         val waitSeconds = extractWaitSeconds(document)
         val author = firstMeaningfulLink(document, authorSelector())
         val series = firstMeaningfulLink(document, seriesSelector())

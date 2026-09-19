@@ -6,6 +6,8 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -28,6 +30,7 @@ import kotlinx.coroutines.launch
 import org.audoiboo.tracker.plugin.PendingBookReview
 import org.audoiboo.tracker.plugin.SeriesMatchDecisionEntity
 import org.audoiboo.tracker.plugin.SourceMetadataRepository
+import org.audoiboo.tracker.tts.ManualBookTtsImporter
 
 class RoomLibraryActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +65,21 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
     val pagingFlow = remember(query, bookFilter) { LibraryRepository.pagedBooks(activity, query, bookFilter) }
     val paged = pagingFlow.collectAsLazyPagingItems()
     val series = library.firstOrNull { it.series.id == selectedSeries }
+    var importingTtsBook by remember { mutableStateOf(false) }
+    val manualTtsPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null && !importingTtsBook) {
+            importingTtsBook = true
+            scope.launch {
+                val result = ManualBookTtsImporter.enqueue(activity, uri)
+                importingTtsBook = false
+                result.onSuccess {
+                    Toast.makeText(activity, "Озвучення «${it.title}» додано в чергу • ${it.chunkCount} фраг.", Toast.LENGTH_LONG).show()
+                }.onFailure {
+                    Toast.makeText(activity, "Не вдалося додати книгу: ${it.message ?: "невідома помилка"}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
 
     LaunchedEffect(selectedSeries, reviewRefreshKey) {
         val id = selectedSeries
@@ -145,6 +163,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
                         IconButton(onClick = { showTopMenu = true }) { Icon(Icons.Filled.MoreVert, "Ще") }
                         DropdownMenu(expanded = showTopMenu, onDismissRequest = { showTopMenu = false }) {
                             DropdownMenuItem(text = { Text("Плеєр") }, leadingIcon = { Icon(Icons.Filled.Headphones, null) }, onClick = { showTopMenu = false; activity.startActivity(Intent(activity, PlayerActivity::class.java)) })
+                            DropdownMenuItem(text = { Text("Додати книгу для озвучування") }, leadingIcon = { Icon(Icons.Filled.UploadFile, null) }, onClick = { showTopMenu = false; manualTtsPicker.launch(arrayOf("application/xml", "text/xml", "application/zip", "application/octet-stream")) })
                             DropdownMenuItem(text = { Text("Браузер джерел") }, leadingIcon = { Icon(Icons.Filled.Public, null) }, onClick = { showTopMenu = false; openSourceBrowser() })
                             DropdownMenuItem(text = { Text("Каталог авторів") }, leadingIcon = { Icon(Icons.Filled.Search, null) }, onClick = { showTopMenu = false; activity.startActivity(Intent(activity, CatalogDiscoveryActivity::class.java)) })
                             DropdownMenuItem(text = { Text("Налаштування") }, leadingIcon = { Icon(Icons.Filled.Settings, null) }, onClick = { showTopMenu = false; activity.startActivity(Intent(activity, SettingsActivity::class.java)) })
@@ -154,6 +173,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
                     }
                 } else {
                     if (tab == RoomLibraryTab.SERIES) IconButton(onClick = { addUrl = ""; showAdd = true }) { Icon(Icons.Filled.Add, "Додати серію") }
+                    IconButton(onClick = { manualTtsPicker.launch(arrayOf("application/xml", "text/xml", "application/zip", "application/octet-stream")) }, enabled = !importingTtsBook) { Icon(Icons.Filled.UploadFile, "Додати книгу для озвучування") }
                     IconButton(onClick = { activity.startActivity(Intent(activity, PlayerActivity::class.java)) }) { Icon(Icons.Filled.Headphones, "Плеєр") }
                     IconButton(onClick = { openSourceBrowser() }) { Icon(Icons.Filled.Public, "Браузер джерел") }
                     IconButton(onClick = { activity.startActivity(Intent(activity, CatalogDiscoveryActivity::class.java)) }) { Icon(Icons.Filled.Search, "Каталог авторів") }
@@ -168,7 +188,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
         } }
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            if (syncing || resolvingDiscoveryReview || resolvingBookReview) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (syncing || resolvingDiscoveryReview || resolvingBookReview || importingTtsBook) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (series == null && tab != RoomLibraryTab.DOWNLOADS) {
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(12.dp), singleLine = true, leadingIcon = { Icon(Icons.Filled.Search, null) }, label = { Text(if (tab == RoomLibraryTab.BOOKS) "Книга, автор або тег" else "Пошук серії") })
                 if (tab == RoomLibraryTab.BOOKS) { Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { RoomBookFilter.entries.forEach { filter -> FilterChip(bookFilter == filter, { bookFilter = filter }, { Text(roomFilterLabel(filter)) }) } }; Spacer(Modifier.height(6.dp)) }

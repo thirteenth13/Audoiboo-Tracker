@@ -92,7 +92,7 @@ object FlibustaSiteParser : BaseFlibustaParser(FlibustaVariant.SITE) {
 
     override fun bookId(path: String): String? = bookPath.matchEntire(path)?.groupValues?.getOrNull(1)
 
-    override fun isBookPath(path: String): Boolean = Regex("^/b/\\d+/?$").matches(path)
+    override fun isBookPath(path: String): Boolean = Regex("^/b/\\d+(?:/read)?/?$").matches(path)
 
     override fun authorSelector(): String = "a[href~=(?i)^/a/\\d+/?$], a[href*='flibusta.site/a/']"
 
@@ -156,7 +156,7 @@ abstract class BaseFlibustaParser(
 
     override fun parseBookPage(html: String, pageUrl: String): FlibustaBookPage {
         val document = Jsoup.parse(html, pageUrl)
-        val canonical = canonicalUrl(document, pageUrl)
+        val canonical = canonicalUrl(document, pageUrl)\n        val canonicalBookUrl = if (variant == FlibustaVariant.SITE) {\n            bookId(pathOf(canonical))?.let { "https://${variant.host}/b/$it" } ?: canonical\n        } else canonical
         val waitSeconds = extractWaitSeconds(document)
         val author = firstMeaningfulLink(document, authorSelector())
         val series = firstMeaningfulLink(document, seriesSelector())
@@ -169,7 +169,7 @@ abstract class BaseFlibustaParser(
         return FlibustaBookPage(
             variant = variant,
             remoteId = bookId(pathOf(canonical)),
-            canonicalUrl = canonical,
+            canonicalUrl = canonicalBookUrl,
             title = extractTitle(document),
             author = author?.first,
             authorUrl = author?.second,

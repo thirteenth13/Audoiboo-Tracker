@@ -173,7 +173,7 @@ abstract class BaseFlibustaParser(
             variant = variant,
             remoteId = bookId(pathOf(canonical)),
             canonicalUrl = canonicalBookUrl,
-            title = extractTitle(document),
+            title = extractTitle(document, canonicalBookUrl),
             author = author?.first,
             authorUrl = author?.second,
             series = series?.first,
@@ -325,7 +325,28 @@ abstract class BaseFlibustaParser(
         )
     }
 
-    private fun extractTitle(document: Document): String? {
+    private fun extractTitle(document: Document, canonicalBookUrl: String): String? {
+        val remoteId = bookId(pathOf(canonicalBookUrl))
+        if (variant == FlibustaVariant.SITE && remoteId != null) {
+            // Classic flibusta.site often exposes a generic page heading ("Флибуста")
+            // for /b/<id>. Prefer the exact canonical book link text from the main
+            // content. This also keeps unrelated sidebar/search books out of identity
+            // matching for catalog-backed series.
+            val canonicalPath = "/b/$remoteId"
+            val root = document.selectFirst("#main, #content, #bodyContent, main, .content") ?: document.body()
+            val exact = root?.select("a[href]")?.asSequence()
+                ?.filter { it.closest("#sidebar, #right, .sidebar, .right, #navigation, .navigation, #comments, .comments, #backpack, .backpack") == null }
+                ?.firstOrNull { anchor ->
+                    val absolute = absoluteUrl(canonicalBookUrl, anchor.attr("href")) ?: return@firstOrNull false
+                    pathOf(absolute).trimEnd('/') == canonicalPath
+                }
+                ?.text()
+                ?.let(::cleanText)
+                ?.let(::cleanClassicBookTitle)
+                ?.takeIf { it.length >= 2 && !it.equals("Флибуста", ignoreCase = true) }
+            if (exact != null) return exact
+        }
+
         val candidates = sequenceOf(
             document.selectFirst("meta[property=og:title]")?.attr("content"),
             document.selectFirst("h1")?.text(),
@@ -334,8 +355,12 @@ abstract class BaseFlibustaParser(
         )
         return candidates.mapNotNull { it?.let(::cleanText)?.takeIf(String::isNotBlank) }
             .map { stripSiteSuffix(it) }
-            .firstOrNull()
+            .firstOrNull { !it.equals("Флибуста", ignoreCase = true) }
     }
+
+    private fun cleanClassicBookTitle(value: String): String = cleanText(value)
+        .replace(Regex("\\s*\\[(?:litres|=)[^]]*]\\s*$", RegexOption.IGNORE_CASE), "")
+        .trim()
 
     private fun extractCover(document: Document, pageUrl: String): String? {
         val raw = sequenceOf(

@@ -185,6 +185,9 @@ abstract class BaseFlibustaParser(
 
     override fun parseCatalog(html: String, pageUrl: String): List<FlibustaCatalogEntry> {
         val document = Jsoup.parse(html, pageUrl)
+        if (variant == FlibustaVariant.SITE && Regex("^/s/\\d+/?$").matches(pathOf(pageUrl))) {
+            parseClassicSeriesPage(document, pageUrl).takeIf { it.isNotEmpty() }?.let { return it }
+        }
         val seen = linkedSetOf<String>()
         val output = mutableListOf<FlibustaCatalogEntry>()
 
@@ -249,6 +252,51 @@ abstract class BaseFlibustaParser(
         val value = cleanText(text).lowercase().trim('(', ')', '[', ']', '-', '–', '—', ':')
         return value in setOf("fb2", "epub", "mobi", "pdf", "txt", "скачать", "читать", "download")
     }
+
+    private fun parseClassicSeriesPage(document: Document, pageUrl: String): List<FlibustaCatalogEntry> {
+        val root = document.selectFirst("#main, #content, #bodyContent, main, .content") ?: document.body() ?: return emptyList()
+        val output = mutableListOf<FlibustaCatalogEntry>()
+        val seen = linkedSetOf<String>()
+
+        // Classic /s/<id> pages render every volume as a checkbox followed by a numbered
+        // block. The title/read/download links are all in that same local block.
+        root.select("input[type=checkbox]").forEach { checkbox ->
+            val container = checkbox.closest("li, tr, p, div") ?: checkbox.parent() ?: return@forEach
+            if (container.closest("#sidebar, #right, .sidebar, .right, #navigation, .navigation, #comments, .comments, #backpack, .backpack") != null) return@forEach
+
+            val bookAnchor = container.select("a[href]").firstOrNull { a ->
+                val absolute = absoluteUrl(pageUrl, a.attr("href")) ?: return@firstOrNull false
+                isBookPath(pathOf(absolute))
+            } ?: return@forEach
+            val bookUrl = absoluteUrl(pageUrl, bookAnchor.attr("href")) ?: return@forEach
+            val remoteId = bookId(pathOf(bookUrl)) ?: return@forEach
+            if (!seen.add(remoteId)) return@forEach
+
+            val text = cleanText(container.text())
+            val number = Regex("(?:^|\\s)-?\\s*(\\d{1,4})\\.").find(text)
+                ?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val title = sequenceOf(
+                container.select("a[href]").asSequence()
+                    .map { cleanText(it.text()) }
+                    .firstOrNull { it.length >= 2 && !isFormatLabel(it) && !it.equals("читать", true) },
+                Regex("(?:^|\\s)-?\\s*\\d{1,4}\\.\\s*(.+?)(?=\\s*\\[=|\\s*\\d+[KКМMБB],|\\s*\\(читать\\)|\\s*скачать:|$)", RegexOption.IGNORE_CASE)
+                    .find(text)?.groupValues?.getOrNull(1)?.trim()
+            ).filterNotNull().firstOrNull { it.isNotBlank() } ?: return@forEach
+
+            output += FlibustaCatalogEntry(
+                remoteId = remoteId,
+                title = title,
+                url = bookUrl,
+                author = nearbyAuthor(container),
+                series = null,
+                seriesNumber = number
+            )
+        }
+        return output
+    }
+
+    private fun nearbyAuthor(element: Element): String? =
+        element.selectFirst(authorSelector())?.text()?.let(::cleanText)?.takeIf(String::isNotBlank)
 
     protected open fun directDownloadFromAnchor(
         anchor: Element,

@@ -359,9 +359,16 @@ class SourceDiscoveryEngine(
             if (accepted != null) findings += accepted else if (directFinding != null) findings += directFinding
         }
 
-        bookSearchFinding
-            ?.takeIf { searchFinding -> findings.none { canonicalCoverage(it.books, canonical) >= canonicalCoverage(searchFinding.books, canonical) } }
-            ?.let(findings::add)
+        bookSearchFinding?.let { searchFinding ->
+            val searchCoverage = canonicalCoverage(searchFinding.books, canonical)
+            // Prefer exact canonical book-page matches over a provider series page when the
+            // latter contains previews/fragments. Otherwise those fragment entries can be
+            // persisted as new canonical books beside the already known volumes.
+            findings.removeAll { finding ->
+                canonicalCoverage(finding.books, canonical) <= searchCoverage
+            }
+            findings += searchFinding
+        }
 
         val result = findings
             .distinctBy { finding -> finding.books.map { SourceKeys.normalizeUrl(it.url) }.sorted().joinToString("|") }

@@ -169,7 +169,7 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
         }
     }
 
-    val registrations = revision.let { PluginPackageRuntime.registrations.filter { it.origin == PluginOrigin.PACKAGE } }
+    val registrations = revision.let { PluginPackageRuntime.registrations }
     val quarantinedIds = revision.let { PluginPackageRuntime.store?.quarantinedPluginIds().orEmpty() }
     val visibleIds = (registrations.map { it.packageId } + quarantinedIds).distinct().sorted()
     val updatesById = updates.associateBy { it.entry.id }
@@ -180,7 +180,7 @@ private fun PluginManagementScreen(activity: ComponentActivity) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                "Зовнішні джерела встановлюються як .abplugin. Плагін не отримує прямого доступу до Android, файлів або мережі — HTTP виконується через sandbox застосунку.",
+                "Вбудовані та зовнішні джерела. Зовнішні встановлюються як .abplugin; HTTP для них виконується через sandbox застосунку.",
                 style = MaterialTheme.typography.bodyMedium
             )
             Text("Збірка: ${BuildProvenance.label}", style = MaterialTheme.typography.bodySmall)

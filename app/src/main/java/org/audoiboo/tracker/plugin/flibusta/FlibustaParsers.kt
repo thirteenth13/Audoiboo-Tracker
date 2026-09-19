@@ -188,7 +188,14 @@ abstract class BaseFlibustaParser(
         val seen = linkedSetOf<String>()
         val output = mutableListOf<FlibustaCatalogEntry>()
 
-        document.select("a[href]").forEach { anchor ->
+        // Flibusta uses a two-column layout: #main contains the actual catalog/series
+        // content, while #sidebar/#right contains navigation, comments and backpack links.
+        // Never treat book links from those auxiliary sections as catalog entries.
+        val catalogRoot = document.selectFirst("#main, #content, main") ?: document.body()
+        catalogRoot?.select("a[href]")?.forEach { anchor ->
+            if (anchor.closest("#sidebar, #right, .sidebar, .right, #navigation, .navigation, #comments, .comments, #backpack, .backpack") != null) {
+                return@forEach
+            }
             val href = anchor.attr("href").trim()
             val absolute = absoluteUrl(pageUrl, href) ?: return@forEach
             val path = pathOf(absolute)

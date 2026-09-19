@@ -258,36 +258,37 @@ abstract class BaseFlibustaParser(
         val output = mutableListOf<FlibustaCatalogEntry>()
         val seen = linkedSetOf<String>()
 
-        // Classic /s/<id> pages render every volume as a checkbox followed by a numbered
-        // block. The title/read/download links are all in that same local block.
-        root.select("input[type=checkbox]").forEach { checkbox ->
-            val container = checkbox.closest("li, tr, p, div") ?: checkbox.parent() ?: return@forEach
-            if (container.closest("#sidebar, #right, .sidebar, .right, #navigation, .navigation, #comments, .comments, #backpack, .backpack") != null) return@forEach
-
-            val bookAnchor = container.select("a[href]").firstOrNull { a ->
-                val absolute = absoluteUrl(pageUrl, a.attr("href")) ?: return@firstOrNull false
-                isBookPath(pathOf(absolute))
-            } ?: return@forEach
-            val bookUrl = absoluteUrl(pageUrl, bookAnchor.attr("href")) ?: return@forEach
+        // On classic Flibusta the checkbox, title and format links are siblings in the
+        // main column, not necessarily wrapped in one book div. Anchor the parse on each
+        // /b/<id> "читать" link and read its local text/siblings instead of a broad div.
+        root.select("a[href]").forEach { anchor ->
+            if (anchor.closest("#sidebar, #right, .sidebar, .right, #navigation, .navigation, #comments, .comments, #backpack, .backpack") != null) return@forEach
+            val bookUrl = absoluteUrl(pageUrl, anchor.attr("href")) ?: return@forEach
             val remoteId = bookId(pathOf(bookUrl)) ?: return@forEach
+            val label = cleanText(anchor.text()).lowercase()
+            if (label != "читать" && label != "(читать)" && !anchor.attr("href").matches(Regex("^/?b/\\d+/?$"))) return@forEach
             if (!seen.add(remoteId)) return@forEach
 
-            val text = cleanText(container.text())
-            val number = Regex("(?:^|\\s)-?\\s*(\\d{1,4})\\.").find(text)
+            val parent = anchor.parent() ?: return@forEach
+            val context = cleanText(parent.text())
+            val number = Regex("(?:^|\\s)-?\\s*(\\d{1,4})\\.").find(context)
                 ?.groupValues?.getOrNull(1)?.toIntOrNull()
-            val title = sequenceOf(
-                container.select("a[href]").asSequence()
-                    .map { cleanText(it.text()) }
-                    .firstOrNull { it.length >= 2 && !isFormatLabel(it) && !it.equals("читать", true) },
-                Regex("(?:^|\\s)-?\\s*\\d{1,4}\\.\\s*(.+?)(?=\\s*\\[=|\\s*\\d+[KКМMБB],|\\s*\\(читать\\)|\\s*скачать:|$)", RegexOption.IGNORE_CASE)
-                    .find(text)?.groupValues?.getOrNull(1)?.trim()
-            ).filterNotNull().firstOrNull { it.isNotBlank() } ?: return@forEach
+
+            // The visible title is normally the nearest preceding non-format link/text.
+            val title = anchor.parent()?.select("a[href]")?.asSequence()
+                ?.takeWhile { it != anchor }
+                ?.map { cleanText(it.text()) }
+                ?.filter { it.length >= 2 && !isFormatLabel(it) && it.lowercase() !in setOf("главная", "авторы", "сериалы") }
+                ?.lastOrNull()
+                ?: Regex("(?:^|\\s)-?\\s*\\d{1,4}\\.\\s*(.+?)(?=\\s*\\[=|\\s*\\d+[KКМMБB],|\\s*\\(читать\\)|\\s*скачать:|$)", RegexOption.IGNORE_CASE)
+                    .find(context)?.groupValues?.getOrNull(1)?.trim()
+                ?: return@forEach
 
             output += FlibustaCatalogEntry(
                 remoteId = remoteId,
                 title = title,
                 url = bookUrl,
-                author = nearbyAuthorFromElement(container),
+                author = nearbyAuthorFromElement(parent),
                 series = null,
                 seriesNumber = number
             )

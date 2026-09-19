@@ -287,7 +287,7 @@ abstract class BaseFlibustaParser(
                 remoteId = remoteId,
                 title = title,
                 url = bookUrl,
-                author = nearbyAuthor(container),
+                author = nearbyAuthorFromElement(container),
                 series = null,
                 seriesNumber = number
             )
@@ -295,7 +295,7 @@ abstract class BaseFlibustaParser(
         return output
     }
 
-    private fun nearbyAuthor(element: Element): String? =
+    private fun nearbyAuthorFromElement(element: Element): String? =
         element.selectFirst(authorSelector())?.text()?.let(::cleanText)?.takeIf(String::isNotBlank)
 
     protected open fun directDownloadFromAnchor(

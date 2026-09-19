@@ -76,11 +76,19 @@ class RoomBookDeduplicationPolicyTest {
     }
 
     @Test
-    fun unnumberedFantLabSeriesIsNotAggressivelyFiltered() {
+    fun unnumberedFantLabSeriesIsNotAuthoritativeForPruning() {
         val books = (1..7).map { number ->
             book("book-$number", "Отдельное название $number", "Автор", number - 1)
         }
-        assertEquals(books, RoomBookDeduplicationPolicy.authoritativeFantLabAnchors("Серия", books))
+        assertTrue(RoomBookDeduplicationPolicy.authoritativeFantLabAnchors("Серия", books).isEmpty())
+    }
+
+    @Test
+    fun partialFantLabSnapshotIsNotAuthoritativeForPruning() {
+        val books = (1..5).map { number ->
+            book("book-$number", "Серия. Книга $number", "Автор", number - 1)
+        }
+        assertTrue(RoomBookDeduplicationPolicy.authoritativeFantLabAnchors("Серия", books).isEmpty())
     }
 
     private fun book(id: String, title: String, author: String?, sortIndex: Int) = BookEntity(

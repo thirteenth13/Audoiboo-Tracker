@@ -54,12 +54,15 @@ internal object RoomBookDeduplicationPolicy {
         // Returning every FantLab row here used to be dangerous: a partial FantLab snapshot
         // (for example 5 mapped books) was then treated as the complete series and the repair
         // deleted valid Flibusta/Knigavuhe/Izib/Poleknig rows on the next refresh.
+        // A provider-backed series may only have a handful of FantLab mappings even when
+        // FantLab itself returned a larger cycle. Those mapped rows are a partial enrichment,
+        // not an authoritative snapshot, and must never become a pruning backbone.
         if (books.size < 6) return emptyList()
         val numbered = books.mapNotNull { explicitSeriesVolume(it.title, seriesTitle) }
             .filter { it >= 1 }
             .distinct()
             .sorted()
-        if (numbered.size < 5) return emptyList()
+        if (numbered.size < 6) return emptyList()
         val contiguous = numbered.zipWithNext().all { (left, right) -> right - left <= 1 }
         if (!contiguous) return emptyList()
 

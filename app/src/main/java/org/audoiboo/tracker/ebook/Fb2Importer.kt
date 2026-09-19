@@ -86,22 +86,19 @@ object Fb2Importer {
         if (prefix.contains("<!DOCTYPE", ignoreCase = true) || prefix.contains("<!ENTITY", ignoreCase = true)) {
             throw EbookImportException("FB2 XML contains a forbidden DOCTYPE/entity declaration")
         }
-        val factory = DocumentBuilderFactory.newInstance().apply {
-            isNamespaceAware = true
-            isXIncludeAware = false
-            isExpandEntityReferences = false
-
-            // Android's bundled XML parser does not implement every JAXP feature/
-            // property exposed by desktop Java. Never let an unsupported hardening
-            // option abort an otherwise valid local FB2 import. Supported options are
-            // still applied; DOCTYPE is also rejected explicitly before parsing.
-            safeFeature(FEATURE_DISALLOW_DOCTYPE, true)
-            safeFeature(FEATURE_EXTERNAL_GENERAL, false)
-            safeFeature(FEATURE_EXTERNAL_PARAMETER, false)
-            safeFeature(FEATURE_LOAD_EXTERNAL_DTD, false)
-            safeAttribute(ACCESS_EXTERNAL_DTD, "")
-            safeAttribute(ACCESS_EXTERNAL_SCHEMA, "")
-        }
+        val factory = DocumentBuilderFactory.newInstance()
+        // Every optional JAXP switch is guarded individually. In particular,
+        // Android may throw UnsupportedOperationException from setXIncludeAware()
+        // before we even reach setFeature/setAttribute.
+        runCatching { factory.isNamespaceAware = true }
+        runCatching { factory.isXIncludeAware = false }
+        runCatching { factory.isExpandEntityReferences = false }
+        factory.safeFeature(FEATURE_DISALLOW_DOCTYPE, true)
+        factory.safeFeature(FEATURE_EXTERNAL_GENERAL, false)
+        factory.safeFeature(FEATURE_EXTERNAL_PARAMETER, false)
+        factory.safeFeature(FEATURE_LOAD_EXTERNAL_DTD, false)
+        factory.safeAttribute(ACCESS_EXTERNAL_DTD, "")
+        factory.safeAttribute(ACCESS_EXTERNAL_SCHEMA, "")
 
         val dom = try {
             factory.newDocumentBuilder().parse(ByteArrayInputStream(bytes))

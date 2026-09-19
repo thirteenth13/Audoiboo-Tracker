@@ -7,6 +7,7 @@ import org.audoiboo.tracker.plugin.CanonicalSeriesMatchInput
 import org.audoiboo.tracker.plugin.SeriesCandidate
 import org.audoiboo.tracker.plugin.SeriesDiscoveryProvider
 import org.audoiboo.tracker.plugin.SeriesSearchProvider
+import org.audoiboo.tracker.plugin.SeriesProvider
 import org.audoiboo.tracker.plugin.SeriesSearchQuery
 import org.audoiboo.tracker.plugin.SourceAuthor
 import org.audoiboo.tracker.plugin.SourceBook
@@ -19,7 +20,7 @@ import org.audoiboo.tracker.plugin.SourceSeries
 /** Makes the existing Flibusta parsers visible to the common source-discovery pipeline. */
 class FlibustaSourcePlugin(
     private val transport: FlibustaTransport = HttpUrlConnectionFlibustaTransport(),
-) : SourcePlugin, SeriesSearchProvider, SeriesDiscoveryProvider, BookProvider {
+) : SourcePlugin, SeriesSearchProvider, SeriesDiscoveryProvider, SeriesProvider, BookProvider {
 
     override val descriptor = SourceDescriptor(
         id = ID,
@@ -28,6 +29,7 @@ class FlibustaSourcePlugin(
         hosts = HOSTS,
         capabilities = setOf(
             SourceCapability.BOOK_LOOKUP,
+            SourceCapability.SERIES_LOOKUP,
             SourceCapability.SERIES_SEARCH,
             SourceCapability.SERIES_DISCOVERY,
         ),
@@ -52,6 +54,47 @@ class FlibustaSourcePlugin(
             searchCatalog(query).forEach { entry -> entries.putIfAbsent(normalizeUrl(entry.url), entry) }
         }
         return entries.values.toList().toCandidates(canonical.title)
+    }
+
+    override suspend fun resolveSeries(url: String): SourceSeries? {
+        val parser = FlibustaParserRegistry.forUrl(url) ?: return null
+        val response = runCatching { transport.get(url, requestHeaders()) }.getOrNull() ?: return null
+        if (response.statusCode !in 200..299) return null
+        val entries = parser.parseCatalog(response.body.toString(Charsets.UTF_8), response.finalUrl)
+        if (entries.isEmpty()) return null
+        val seriesTitle = entries.mapNotNull { it.series?.trim()?.takeIf(String::isNotBlank) }
+            .groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
+            ?: return null
+        val matching = entries.filter { it.series?.trim().equals(seriesTitle, ignoreCase = true) }
+            .ifEmpty { entries }
+        return SourceSeries(
+            sourceId = ID,
+            remoteId = Regex("/(?:s|series|books-series)/(\\d+)").find(response.finalUrl)?.groupValues?.getOrNull(1),
+            url = response.finalUrl,
+            title = seriesTitle,
+            authors = matching.mapNotNull { it.author?.trim()?.takeIf(String::isNotBlank) }
+                .distinct().map(::SourceAuthor),
+            books = matching.distinctBy { normalizeUrl(it.url) }.map {
+                SourceBookRef(it.remoteId, it.url, it.title, it.seriesNumber?.toDouble())
+            },
+        )
+    }
+
+    override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> {
+        if (series.sourceId != ID) return emptyList()
+        return series.books.mapNotNull { ref ->
+            loadBook(ref.url) ?: ref.title?.takeIf(String::isNotBlank)?.let { title ->
+                SourceBook(
+                    sourceId = ID,
+                    remoteId = ref.remoteId,
+                    url = ref.url,
+                    title = title,
+                    authors = series.authors,
+                    seriesTitle = series.title,
+                    seriesNumber = ref.number,
+                )
+            }
+        }
     }
 
     override suspend fun loadBook(url: String): SourceBook? {

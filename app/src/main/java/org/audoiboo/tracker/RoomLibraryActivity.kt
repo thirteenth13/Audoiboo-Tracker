@@ -239,12 +239,12 @@ private fun RoomSeriesDetail(item: SeriesWithBooks, pendingReviews: List<SeriesM
                 }
             }
         } } }
-        items(item.books.sortedBy { it.sortIndex }, key = { it.id }) { book -> RoomBookCard(book, item.series.name) }
+        items(item.books.sortedBy { it.sortIndex }, key = { it.id }) { book -> RoomBookCard(book, item.series.name, item.series.id, item.series.url) }
     }
 }
 
 @Composable
-private fun RoomBookCard(book: BookEntity, seriesName: String?) {
+private fun RoomBookCard(book: BookEntity, seriesName: String?, seriesId: String, seriesUrl: String) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tags by remember(book.id) { mutableStateOf<List<String>>(emptyList()) }
@@ -268,7 +268,21 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
         if (resolvingArchive) return
         scope.launch {
             resolvingArchive = true
-            val resolved = runCatching { RoomArchiveResolver.resolveDownloads(context, book, sourceId) }.getOrDefault(emptyList())
+            var resolved = runCatching { RoomArchiveResolver.resolveDownloads(context, book, sourceId) }.getOrDefault(emptyList())
+            // Flibusta is a text/FB2 source. A download request from a Flibusta-only
+            // canonical book must discover audiobook mirrors instead of asking Flibusta
+            // for audio and immediately failing.
+            if (resolved.isEmpty() && (sourceId == "flibusta" || sourceIds.all { it == "flibusta" })) {
+                runCatching {
+                    RoomSeriesSync.sync(
+                        context = context,
+                        inputUrl = seriesUrl,
+                        forceDiscovery = true,
+                        manualCanonicalSeriesId = seriesId
+                    )
+                }
+                resolved = runCatching { RoomArchiveResolver.resolveDownloads(context, book, null) }.getOrDefault(emptyList())
+            }
             val downloads = if (resolved.isNotEmpty()) resolved else if (sourceId == null) {
                 listOfNotNull(book.archiveUrl?.let { RoomResolvedDownload(it, book.url, "legacy") })
             } else emptyList()
@@ -287,7 +301,7 @@ private fun RoomBookCard(book: BookEntity, seriesName: String?) {
                     )
                 }
                 Toast.makeText(context, if (distinct.size == 1) "Додано до завантажень" else "Додано треків: ${distinct.size}", Toast.LENGTH_SHORT).show()
-            } else if (sourceId != null) Toast.makeText(context, "${roomSourceLabel(sourceId)}: аудіо не знайдено", Toast.LENGTH_LONG).show()
+            } else if (sourceId != null) Toast.makeText(context, if (sourceId == "flibusta") "Аудіоверсію не знайдено в інших джерелах" else "${roomSourceLabel(sourceId)}: аудіо не знайдено", Toast.LENGTH_LONG).show()
             else { Toast.makeText(context, "Плагін не знайшов аудіо — відкриваю браузер джерел", Toast.LENGTH_LONG).show(); context.startActivity(Intent(context, MainActivity::class.java).putExtra(MainActivity.EXTRA_URL, book.url)) }
         }
     }

@@ -44,6 +44,33 @@ class FlibustaParsersTest {
     }
 
     @Test
+    fun siteUsesExactCanonicalBookLinkWhenPageHeadingIsGeneric() {
+        val html = """
+            <html><head>
+              <title>Флибуста</title>
+              <link rel="canonical" href="https://flibusta.site/b/419855">
+            </head><body>
+              <div id="main">
+                <h1>Флибуста</h1>
+                <a href="/a/37193">Сергей Сергеевич Тармашев</a>
+                <a href="/b/419855">Предыстория. Книга 1 [=Истоки]</a>
+                <a href="/b/419855/fb2">(fb2)</a>
+              </div>
+              <div id="sidebar">
+                <a href="/b/999999">Чужая книга</a>
+              </div>
+            </body></html>
+        """.trimIndent()
+
+        val parsed = FlibustaSiteParser.parseBookPage(html, "https://flibusta.site/b/419855")
+
+        assertEquals("419855", parsed.remoteId)
+        assertEquals("Предыстория. Книга 1", parsed.title)
+        assertEquals("Сергей Сергеевич Тармашев", parsed.author)
+        assertTrue(parsed.downloads.any { it.url.endsWith("/b/419855/fb2") })
+    }
+
+    @Test
     fun oneParsesFiveSecondCountdownReaderAndRejectsStoreAd() {
         val html = """
             <html><head>

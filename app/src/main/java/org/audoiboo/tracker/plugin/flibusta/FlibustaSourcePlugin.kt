@@ -69,7 +69,8 @@ class FlibustaSourcePlugin(
         val document = org.jsoup.Jsoup.parse(body, response.finalUrl)
         val seriesTitle = entries.mapNotNull { it.series?.trim()?.takeIf(String::isNotBlank) }
             .groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
-            ?: document.selectFirst("h1")?.text()?.trim()?.takeIf(String::isNotBlank)
+            ?: classicSiteSeriesTitle(document, response.finalUrl)
+            ?: document.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotBlank() && !it.equals("Флибуста", ignoreCase = true) }
             ?: document.selectFirst("title")?.text()
                 ?.replace(Regex("\\s*[|—-]\\s*Флибуста.*$", RegexOption.IGNORE_CASE), "")
                 ?.trim()?.takeIf(String::isNotBlank)
@@ -87,6 +88,23 @@ class FlibustaSourcePlugin(
                 SourceBookRef(it.remoteId, it.url, it.title, it.seriesNumber?.toDouble())
             },
         )
+    }
+
+    private fun classicSiteSeriesTitle(document: org.jsoup.nodes.Document, url: String): String? {
+        if (FlibustaParserRegistry.forUrl(url)?.variant != FlibustaVariant.SITE ||
+            !Regex("^/s/\\d+/?$").matches(pathOf(url))) return null
+        val body = document.selectFirst("#main, #content, #bodyContent, main, .content") ?: document.body() ?: return null
+        val label = body.select("*").firstOrNull { element ->
+            element.ownText().trim().equals("Тип серии:", ignoreCase = true)
+        }
+        val root = label?.parent() ?: body
+        val text = root.text().replace(Regex("\\s+"), " ").trim()
+        return Regex("(.+?)\\s+Тип серии:", RegexOption.IGNORE_CASE).find(text)
+            ?.groupValues?.getOrNull(1)
+            ?.substringAfterLast("Главная »")
+            ?.substringAfterLast("Книги")
+            ?.trim()
+            ?.takeIf { it.length >= 2 && !it.equals("Флибуста", ignoreCase = true) }
     }
 
     override suspend fun loadSeriesBooks(series: SourceSeries): List<SourceBook> {

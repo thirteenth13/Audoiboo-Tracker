@@ -24,7 +24,11 @@ internal object CatalogBookDeduplicationPolicy {
     fun anchors(seriesUrl: String, seriesTitle: String, books: List<BookEntity>): List<BookEntity> {
         val catalogBooks = books.filter(::isCanonicalCatalogBook)
         return if (catalogProviderId(seriesUrl) == "fantlab") {
+            // For catalog-backed FantLab series the catalog rows themselves remain the anchors.
+            // The stricter authoritative check is only for pruning ordinary provider-backed
+            // series, where a partial FantLab snapshot must never delete valid provider books.
             RoomBookDeduplicationPolicy.authoritativeFantLabAnchors(seriesTitle, catalogBooks)
+                .ifEmpty { catalogBooks }
         } else {
             catalogBooks
         }

@@ -50,14 +50,18 @@ internal object RoomBookDeduplicationPolicy {
      * nested cycle node and its unnumbered children from becoming permanent books of the parent.
      */
     internal fun authoritativeFantLabAnchors(seriesTitle: String, books: List<BookEntity>): List<BookEntity> {
-        if (books.size < 6) return books
+        // An empty result means FantLab is NOT authoritative enough to prune provider books.
+        // Returning every FantLab row here used to be dangerous: a partial FantLab snapshot
+        // (for example 5 mapped books) was then treated as the complete series and the repair
+        // deleted valid Flibusta/Knigavuhe/Izib/Poleknig rows on the next refresh.
+        if (books.size < 6) return emptyList()
         val numbered = books.mapNotNull { explicitSeriesVolume(it.title, seriesTitle) }
             .filter { it >= 1 }
             .distinct()
             .sorted()
-        if (numbered.size < 5) return books
+        if (numbered.size < 5) return emptyList()
         val contiguous = numbered.zipWithNext().all { (left, right) -> right - left <= 1 }
-        if (!contiguous) return books
+        if (!contiguous) return emptyList()
 
         val normalizedSeries = SourceIdentityMatcher.normalizeTitle(seriesTitle)
         return books.filter { book ->

@@ -178,7 +178,7 @@ private fun RoomLibraryScreen(activity: ComponentActivity) {
                 tab == RoomLibraryTab.SERIES -> RoomSeriesList(library.filter { query.isBlank() || it.series.name.contains(query, true) }, onOpen = { selectedSeries = it })
                 tab == RoomLibraryTab.DOWNLOADS -> ManagedDownloadsScreen(activity)
                 else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(paged.itemCount) { index -> paged[index]?.let { RoomBookCard(it, library.firstOrNull { s -> s.series.id == it.seriesId }?.series?.name) } }
+                    items(paged.itemCount) { index -> paged[index]?.let { book -> val parent = library.firstOrNull { s -> s.series.id == book.seriesId }?.series; RoomBookCard(book, parent?.name, parent?.id ?: book.seriesId, parent?.url ?: book.url) } }
                     if (paged.loadState.refresh is androidx.paging.LoadState.Loading) item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
                     if (paged.loadState.append is androidx.paging.LoadState.Loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
                     val error = (paged.loadState.refresh as? androidx.paging.LoadState.Error)?.error ?: (paged.loadState.append as? androidx.paging.LoadState.Error)?.error

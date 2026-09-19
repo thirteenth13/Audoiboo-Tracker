@@ -60,10 +60,19 @@ class FlibustaSourcePlugin(
         val parser = FlibustaParserRegistry.forUrl(url) ?: return null
         val response = runCatching { transport.get(url, requestHeaders()) }.getOrNull() ?: return null
         if (response.statusCode !in 200..299) return null
-        val entries = parser.parseCatalog(response.body.toString(Charsets.UTF_8), response.finalUrl)
+        val body = response.body.toString(Charsets.UTF_8)
+        val entries = parser.parseCatalog(body, response.finalUrl)
         if (entries.isEmpty()) return null
+        // On flibusta.site /s/<id> pages the book rows do not necessarily repeat a
+        // link back to the current series, so parseCatalog() can legitimately return
+        // entries with series == null. Derive the series title from the page heading.
+        val document = org.jsoup.Jsoup.parse(body, response.finalUrl)
         val seriesTitle = entries.mapNotNull { it.series?.trim()?.takeIf(String::isNotBlank) }
             .groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
+            ?: document.selectFirst("h1")?.text()?.trim()?.takeIf(String::isNotBlank)
+            ?: document.selectFirst("title")?.text()
+                ?.replace(Regex("\\s*[|—-]\\s*Флибуста.*$", RegexOption.IGNORE_CASE), "")
+                ?.trim()?.takeIf(String::isNotBlank)
             ?: return null
         val matching = entries.filter { it.series?.trim().equals(seriesTitle, ignoreCase = true) }
             .ifEmpty { entries }

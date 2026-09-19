@@ -261,49 +261,42 @@ abstract class BaseFlibustaParser(
         val output = mutableListOf<FlibustaCatalogEntry>()
         val seen = linkedSetOf<String>()
 
-        // A classic /s/<id> page has a stable visible pattern:
-        //   checkbox - N. <title> [=subtitle] size, pages (читать) скачать: (fb2) ...
-        // The title itself is a link and the following "(читать)" link points to the same /b/<id>.
-        // Use only "(читать)" anchors as book boundaries so navigation/genre links cannot shift titles.
-        root.select("a[href]").forEach { readAnchor ->
-            if (readAnchor.closest("#sidebar, #right, .sidebar, .right, #navigation, .navigation, #comments, .comments, #backpack, .backpack") != null) return@forEach
-            if (cleanText(readAnchor.text()).lowercase().trim() !in setOf("читать", "(читать)")) return@forEach
-            val bookUrl = absoluteUrl(pageUrl, readAnchor.attr("href")) ?: return@forEach
-            val remoteId = bookId(pathOf(bookUrl)) ?: return@forEach
+        // Classic flibusta.site /s/<id>: only FB2 download links are book boundaries.
+        // This deliberately ignores navigation/sidebar/read links and mirrors the stable
+        // /b/<id> + /b/<id>/fb2 relationship exposed by the series page.
+        root.select("a[href]").forEach { fb2Anchor ->
+            if (fb2Anchor.closest("#sidebar, #right, .sidebar, .right, #navigation, .navigation, #comments, .comments, #backpack, .backpack") != null) return@forEach
+            val fb2Url = absoluteUrl(pageUrl, fb2Anchor.attr("href")) ?: return@forEach
+            val match = Regex("^/b/(\\d+)/fb2/?$").matchEntire(pathOf(fb2Url)) ?: return@forEach
+            val remoteId = match.groupValues[1]
             if (!seen.add(remoteId)) return@forEach
 
-            val parent = readAnchor.parent() ?: return@forEach
-            val sameBookAnchors = parent.select("a[href]").filter { a ->
-                val absolute = absoluteUrl(pageUrl, a.attr("href")) ?: return@filter false
-                bookId(pathOf(absolute)) == remoteId
-            }
-            val title = sameBookAnchors.asSequence()
-                .map { cleanText(it.text()) }
-                .firstOrNull { text ->
-                    text.length >= 2 && !isFormatLabel(text) &&
-                        text.lowercase().trim('(', ')') != "читать"
-                } ?: run {
-                    // Some themes render the title as plain text immediately before "(читать)".
-                    val context = cleanText(parent.text())
-                    Regex("(?:^|\\s)-?\\s*\\d{1,4}\\.\\s*(.+?)(?=\\s*\\[=|\\s*\\d+[KКМMБB],|\\s*\\(читать\\))", RegexOption.IGNORE_CASE)
-                        .find(context)?.groupValues?.getOrNull(1)?.trim()
-                } ?: return@forEach
-
-            val context = cleanText(parent.text())
-            val number = Regex("(?:^|\\s)-?\\s*(\\d{1,4})\\.\\s*" + Regex.escape(title))
+            val canonicalPath = "/b/$remoteId"
+            val titleAnchor = root.select("a[href]").firstOrNull { candidate ->
+                val absolute = absoluteUrl(pageUrl, candidate.attr("href")) ?: return@firstOrNull false
+                pathOf(absolute).trimEnd('/') == canonicalPath
+            } ?: return@forEach
+            val title = cleanClassicSeriesTitle(titleAnchor.text()).takeIf { it.length >= 2 } ?: return@forEach
+            val row = titleAnchor.closest("li, tr, p, div") ?: titleAnchor.parent()
+            val context = cleanText(row?.text().orEmpty())
+            val number = Regex("(?:^|\\s)-?\\s*(\\d{1,4})\\.\\s*" + Regex.escape(titleAnchor.text().trim()))
                 .find(context)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
             output += FlibustaCatalogEntry(
                 remoteId = remoteId,
                 title = title,
-                url = bookUrl,
-                author = nearbyAuthorFromElement(parent),
+                url = "https://${variant.host}$canonicalPath",
+                author = row?.let(::nearbyAuthorFromElement),
                 series = null,
                 seriesNumber = number
             )
         }
         return output
     }
+
+    private fun cleanClassicSeriesTitle(value: String): String = cleanText(value)
+        .replace(Regex("\\s*\\[(?:litres|=)[^]]*]\\s*$", RegexOption.IGNORE_CASE), "")
+        .trim()
 
     private fun nearbyAuthorFromElement(element: Element): String? =
         element.selectFirst(authorSelector())?.text()?.let(::cleanText)?.takeIf(String::isNotBlank)

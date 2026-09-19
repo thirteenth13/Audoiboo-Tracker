@@ -191,7 +191,9 @@ abstract class BaseFlibustaParser(
         // Flibusta uses a two-column layout: #main contains the actual catalog/series
         // content, while #sidebar/#right contains navigation, comments and backpack links.
         // Never treat book links from those auxiliary sections as catalog entries.
-        val catalogRoot = document.selectFirst("#main, #content, main") ?: document.body()
+        val catalogRoot = document.selectFirst("#main, #content, main")
+            ?: document.selectFirst("#bodyContent, .content")
+            ?: document.body()
         catalogRoot?.select("a[href]")?.forEach { anchor ->
             if (anchor.closest("#sidebar, #right, .sidebar, .right, #navigation, .navigation, #comments, .comments, #backpack, .backpack") != null) {
                 return@forEach
@@ -201,7 +203,7 @@ abstract class BaseFlibustaParser(
             val path = pathOf(absolute)
             if (!sameHostOrVariant(absolute) || !isBookPath(path)) return@forEach
 
-            val title = cleanText(anchor.text()).takeIf { it.length >= 2 } ?: return@forEach
+            val title = catalogBookTitle(anchor).takeIf { it.length >= 2 } ?: return@forEach
             val normalized = normalizeUrl(absolute)
             if (!seen.add(normalized)) return@forEach
 
@@ -217,6 +219,35 @@ abstract class BaseFlibustaParser(
         }
 
         return output
+    }
+
+    private fun catalogBookTitle(anchor: Element): String {
+        val own = cleanText(anchor.text())
+        if (own.length >= 2 && !isFormatLabel(own)) return own
+
+        // Classic flibusta.site series pages can put the book title as plain text next
+        // to a /b/<id> download/format link. Keep the book row even when the anchor
+        // itself is only "(fb2)", "(epub)", "скачать", etc.
+        val row = anchor.closest("li, tr, p, div") ?: anchor.parent()
+        if (row != null) {
+            val clone = row.clone()
+            clone.select("a[href]").forEach { link ->
+                val text = cleanText(link.text())
+                if (isFormatLabel(text) || pathOf(link.absUrl("href").ifBlank { link.attr("href") }).contains("/${bookId(pathOf(absoluteUrl(anchor.baseUri(), anchor.attr("href")) ?: ""))}/")) {
+                    link.remove()
+                }
+            }
+            val text = cleanText(clone.text())
+                .replace(Regex("^[-–—#№\\d.()\\s]+"), "")
+                .trim()
+            if (text.length >= 2 && !isFormatLabel(text)) return text
+        }
+        return own
+    }
+
+    private fun isFormatLabel(text: String): Boolean {
+        val value = cleanText(text).lowercase().trim('(', ')', '[', ']', '-', '–', '—', ':')
+        return value in setOf("fb2", "epub", "mobi", "pdf", "txt", "скачать", "читать", "download")
     }
 
     protected open fun directDownloadFromAnchor(

@@ -69,10 +69,13 @@ class FlibustaSourcePlugin(
         val document = org.jsoup.Jsoup.parse(body, response.finalUrl)
         val seriesTitle = entries.mapNotNull { it.series?.trim()?.takeIf(String::isNotBlank) }
             .groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
+            // Classic Flibusta exposes the useful series name in <title> even when
+            // <h1> is only the site name. Prefer it before heuristic body parsing.
+            ?: classicSiteTitleTag(document, response.finalUrl)
             ?: classicSiteSeriesTitle(document, response.finalUrl)
             ?: document.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotBlank() && !it.equals("Флибуста", ignoreCase = true) }
             ?: document.selectFirst("title")?.text()
-                ?.replace(Regex("\\s*[|—-]\\s*Флибуста.*$", RegexOption.IGNORE_CASE), "")
+                ?.replace(Regex("\\s*[|—-]\\s*(?:Flibusta|Флибуста|Lib\\.ru).*$", RegexOption.IGNORE_CASE), "")
                 ?.trim()?.takeIf(String::isNotBlank)
             ?: return null
         val matching = entries.filter { it.series?.trim().equals(seriesTitle, ignoreCase = true) }
@@ -88,6 +91,15 @@ class FlibustaSourcePlugin(
                 SourceBookRef(it.remoteId, it.url, it.title, it.seriesNumber?.toDouble())
             },
         )
+    }
+
+    private fun classicSiteTitleTag(document: org.jsoup.nodes.Document, url: String): String? {
+        if (FlibustaParserRegistry.forUrl(url)?.variant != FlibustaVariant.SITE ||
+            !Regex("^/s/\\d+/?$").matches(pathOf(url))) return null
+        return document.selectFirst("title")?.text()
+            ?.replace(Regex("\\s*[|—-]\\s*(?:Flibusta|Флибуста|Lib\\.ru).*$", RegexOption.IGNORE_CASE), "")
+            ?.trim()
+            ?.takeIf { it.length >= 2 && !it.equals("Флибуста", ignoreCase = true) }
     }
 
     private fun classicSiteSeriesTitle(document: org.jsoup.nodes.Document, url: String): String? {

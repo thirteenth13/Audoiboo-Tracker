@@ -14,6 +14,10 @@ object Fb2Importer {
     private const val MAX_TOTAL_UNCOMPRESSED_BYTES = 64L * 1024 * 1024
     private const val ACCESS_EXTERNAL_DTD = "http://javax.xml.XMLConstants/property/accessExternalDTD"
     private const val ACCESS_EXTERNAL_SCHEMA = "http://javax.xml.XMLConstants/property/accessExternalSchema"
+    private const val FEATURE_DISALLOW_DOCTYPE = "http://apache.org/xml/features/disallow-doctype-decl"
+    private const val FEATURE_EXTERNAL_GENERAL = "http://xml.org/sax/features/external-general-entities"
+    private const val FEATURE_EXTERNAL_PARAMETER = "http://xml.org/sax/features/external-parameter-entities"
+    private const val FEATURE_LOAD_EXTERNAL_DTD = "http://apache.org/xml/features/nonvalidating/load-external-dtd"
 
     fun import(payload: ByteArray): ImportedEbook {
         if (payload.size < 4) throw EbookImportException("FB2 payload is empty or too small")
@@ -22,6 +26,14 @@ object Fb2Importer {
         } else {
             ImportedEbook(EbookPayloadKind.FB2_XML, parseXml(payload))
         }
+    }
+
+    private fun DocumentBuilderFactory.safeFeature(name: String, value: Boolean) {
+        try { setFeature(name, value) } catch (_: Throwable) { /* unsupported on this Android parser */ }
+    }
+
+    private fun DocumentBuilderFactory.safeAttribute(name: String, value: String) {
+        try { setAttribute(name, value) } catch (_: Throwable) { /* unsupported on this Android parser */ }
     }
 
     private fun looksLikeZip(bytes: ByteArray): Boolean =
@@ -70,16 +82,25 @@ object Fb2Importer {
 
     private fun parseXml(bytes: ByteArray): BookDocument {
         if (bytes.size > MAX_FB2_BYTES) throw EbookImportException("FB2 XML is too large")
+        val prefix = bytes.copyOfRange(0, minOf(bytes.size, 8192)).toString(Charsets.UTF_8)
+        if (prefix.contains("<!DOCTYPE", ignoreCase = true) || prefix.contains("<!ENTITY", ignoreCase = true)) {
+            throw EbookImportException("FB2 XML contains a forbidden DOCTYPE/entity declaration")
+        }
         val factory = DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = true
             isXIncludeAware = false
             isExpandEntityReferences = false
-            runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
-            runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
-            runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
-            runCatching { setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false) }
-            runCatching { setAttribute(ACCESS_EXTERNAL_DTD, "") }
-            runCatching { setAttribute(ACCESS_EXTERNAL_SCHEMA, "") }
+
+            // Android's bundled XML parser does not implement every JAXP feature/
+            // property exposed by desktop Java. Never let an unsupported hardening
+            // option abort an otherwise valid local FB2 import. Supported options are
+            // still applied; DOCTYPE is also rejected explicitly before parsing.
+            safeFeature(FEATURE_DISALLOW_DOCTYPE, true)
+            safeFeature(FEATURE_EXTERNAL_GENERAL, false)
+            safeFeature(FEATURE_EXTERNAL_PARAMETER, false)
+            safeFeature(FEATURE_LOAD_EXTERNAL_DTD, false)
+            safeAttribute(ACCESS_EXTERNAL_DTD, "")
+            safeAttribute(ACCESS_EXTERNAL_SCHEMA, "")
         }
 
         val dom = try {
